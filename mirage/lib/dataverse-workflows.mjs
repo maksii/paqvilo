@@ -4,21 +4,31 @@ import { createRequestContext, currentRequest, runWithRequest } from './request-
 // Workflows in the Dataverse API: workflow rows from the Solution's Workflows folder with their activation rows, the
 // activation rules on PATCH, ExecuteWorkflow, the run of a classic workflow and the classic triggers on writes (background
 // jobs from committed writes, real-time runs inside the write).
-//  - A classic workflow (category 0) is XAML. Mirage never interprets it: a run is a trusted pack handler (the `workflows`
-//    export), a mock, or a placeholder that ends the job Canceled. Its writes are one store transaction.
+//  - A classic workflow (category 0) is designer XAML. A run is, in this order: a /_sim/ override (disabled, placeholder or
+//    mock), a trusted pack handler (the `workflows` export), the interpreted XAML when the whole definition is in the
+//    supported subset (classic-workflow-xaml.mjs; mode 'xaml'), else a placeholder that ends a background job Canceled
+//    (WORKFLOW_PLACEHOLDER, with WORKFLOW_XAML_UNSUPPORTED naming the first step outside the subset). An interpreted run
+//    writes through the records pipeline as its run-as user (Learn "Overview of using workflow processes", security
+//    context: an event-started background run as the owner, an on-demand one as the user who started it, a real-time one
+//    as the owner or the calling user per runas). Its writes are one store transaction, as a handler's are.
 //  - A cloud flow (category 5) runs its exported definition through flow-runtime, as a job. Its activation is the workflow
 //    row's statecode, which workflowsWithActivation copies onto the exported flow map (the portal trigger path reads that map).
-import { stampMs, systemIds } from './runtime-clock.mjs';
+import { clockFunction, stampMs, systemClock, systemIds } from './runtime-clock.mjs';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
 import { descendants, parseSolutionXml } from './solution-xml.mjs';
+import { FAILED_STEP_CODE, parseClassicWorkflow, runClassicWorkflow } from './classic-workflow-xaml.mjs';
+import { portalCallerUserId } from './plugin-portal-caller.mjs';
+import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { contextUrl, dataverseError } from './dataverse-odata.mjs';
 import { ownerColumns, uuidV5 } from './dataverse-security.mjs';
-import { committedJobs, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
+import { committedJobs, encodeEvent, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
+import v8 from 'node:v8';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
+import { invitationProcessHandlers, withInvitationProcesses } from './power-pages-invitation-processes.mjs';
 
 // A stored date, held across a small backward step of the wall clock (runtime-clock.mjs stampMs).
 const stampOf = (api) => new Date(stampMs(api.store, api.clock)).toISOString();
@@ -57,10 +67,15 @@ const COMMON = [
 const PLACEHOLDER_MESSAGE =
   'Simulator: classic workflow XAML is not executed; register a trusted pack workflow handler or a mock.';
 const DISABLED_MESSAGE = 'Simulator: classic workflow is disabled in this simulator.';
+const STOP_CANCELED_MESSAGE = 'Simulator: the classic workflow stopped with status Canceled.';
 const PLACEHOLDER_CANCEL = 'Simulator: operation has no local simulation; the job is canceled.';
 const DEPTH_MESSAGE =
   'This workflow job was canceled because the workflow that started it included an infinite loop. Correct the workflow logic and try again. For information about workflow logic, see Help.';
-const NOT_SUPPORTED_XAML = 'Creating a classic workflow with XAML through the Web API is not supported with Dataverse.';
+// The Web API accepts a category-0 definition whose XAML is designer-shaped and refuses the rest (summary-F6 OPS-01d).
+const CUSTOM_XAML =
+  'This workflow cannot be created, updated or published because it was created outside the Microsoft Dynamics 365 Web application. Your organization does not allow this type of workflow.';
+// The wait-until of a waiting or failed classic workflow job without a time (summary-F6 OPS-01d).
+const WAIT_FOREVER = '9999-12-30T23:59:59Z';
 const EXECUTE_ROUTE = /^\/api\/data\/v[\d.]+\/workflows\(([^)]+)\)\/Microsoft\.Dynamics\.CRM\.ExecuteWorkflow$/i;
 const EXECUTE_CSDL = `<Action Name="ExecuteWorkflow" IsBound="true">
   <Parameter Name="entity" Type="mscrm.workflow" />
@@ -341,21 +356,67 @@ function updateWorkflowStatus(type, existing, data) {
   }
 }
 
-function workflowWriteRule(c, mapping, { operation, data, existing }) {
+// A category-0 definition's XAML written through the Web API: designer-shaped XAML (the supported subset without the
+// forms the Web API refuses: every Postpone, RetrieveCurrentTime without xml:space="preserve") is accepted; the rest
+// answers 400 0x80045040 (summary-F6 OPS-01d). XAML the subset cannot read is refused the same way.
+function assertDesignerXaml(row) {
+  if (Number(row.type ?? TYPE.definition) !== TYPE.definition) return;
+  if (Number(row.category ?? CATEGORY_WORKFLOW) !== CATEGORY_WORKFLOW) return;
+  if (row.xaml === undefined || row.xaml === null || row.xaml === '') return;
+  const { program } = parseClassicWorkflow(String(row.xaml));
+  if (!program || program.webApi.length) throw native('0x80045040', CUSTOM_XAML);
+}
+
+// Activation checks each lookup literal of the XAML: a row that does not exist refuses it with 0x80048455 and the map of
+// the designer steps around each reference (innermost first, to WorkflowStep0) (summary-F6 OPS-01d).
+function assertLookupLiterals(store, row) {
+  if (Number(row.category) !== CATEGORY_WORKFLOW || !row.xaml) return;
+  const { program } = parseClassicWorkflow(String(row.xaml));
+  const steps = [];
+  for (const reference of program?.references ?? []) {
+    if (referencedRowExists(store, reference)) continue;
+    for (const step of reference.steps) if (!steps.includes(step)) steps.push(step);
+  }
+  if (!steps.length) return;
+  const map = steps.map((step) => step + ': InvalidGuidReference').join(' ; ');
+  throw native(
+    '0x80048455',
+    `Error: This workflow has errors and cannot be published. Please remove the errors and try again., Worklfow Id: ${bare(row.workflowid)}, ErrorMap Details: {${map}}`,
+  );
+}
+
+// Whether the row a lookup literal names exists (a table the organization does not know has none).
+function referencedRowExists(store, reference) {
+  let mapping;
+  try {
+    mapping = store.resolveMapping(reference.table);
+  } catch {
+    return false;
+  }
+  return store.tableRows(mapping.logicalName).some((item) => sameId(item[mapping.idColumn], reference.id));
+}
+
+function workflowWriteRule(c, mapping, { operation, data, existing }, store) {
   if (operation === 'delete') {
     if (Number(existing?.type) === TYPE.activation) throw native('0x80045004', 'Cannot delete a workflow activation.');
     return;
   }
   if (operation === 'create') {
-    if (
-      Number(data.type ?? TYPE.definition) === TYPE.definition &&
-      Number(data.category ?? CATEGORY_WORKFLOW) === CATEGORY_WORKFLOW
-    ) {
-      throw invalid(NOT_SUPPORTED_XAML, '0x80040203'); // the native refusal and its code are a guess
+    assertDesignerXaml(data);
+    if (Number(data.statecode) === STATE_ACTIVATED) {
+      assertTriggerableTable(store, data);
+      assertLookupLiterals(store, data);
     }
     return;
   }
-  if (operation === 'update') workflowUpdateRule(existing, data);
+  if (operation === 'update') {
+    workflowUpdateRule(existing, data);
+    if ('xaml' in data) assertDesignerXaml({ ...existing, ...data });
+    if (Number(data.statecode) === STATE_ACTIVATED && Number(existing.statecode) !== STATE_ACTIVATED) {
+      assertTriggerableTable(store, { ...existing, ...data });
+      assertLookupLiterals(store, { ...existing, ...data });
+    }
+  }
 }
 
 // After a write: an activated definition has one activation row and points activeworkflowid at it; a deactivated one has none.
@@ -406,7 +467,19 @@ export function workflowHandlers(packs = []) {
   return new Map([...collectPackExport(packs, 'workflows')].map(([key, { value }]) => [key, value]));
 }
 
-// Which run a classic workflow gets: an override (placeholder, mock or disabled), its pack handler, or the placeholder.
+// The parsed XAML of a definition row, kept while the row's XAML text is unchanged. A row without XAML has no reason to report.
+const parsedXaml = new WeakMap();
+function xamlOf(row) {
+  if (row.xaml === null || row.xaml === undefined || row.xaml === '') return { unsupported: null };
+  const cached = parsedXaml.get(row);
+  if (cached?.xaml === row.xaml) return cached.parsed;
+  const parsed = parseClassicWorkflow(row.xaml);
+  parsedXaml.set(row, { xaml: row.xaml, parsed });
+  return parsed;
+}
+
+// Which run a classic workflow gets: an override (placeholder, mock or disabled), its pack handler, its XAML when the whole
+// definition is in the supported subset, or the placeholder (with the reason the XAML is not interpreted, when it has some).
 // config.overrides is a map or a function returning one, read per run so /_sim/ changes apply at once.
 function classicChoice(config, row) {
   const id = bare(row.workflowid);
@@ -422,7 +495,38 @@ function classicChoice(config, row) {
       message: override.message ?? 'Simulator: mock workflow result.',
     };
   const handler = names.map((key) => config.handlers?.get(key)).find(Boolean);
-  return handler ? { mode: 'handler', handler } : { mode: 'placeholder' };
+  if (handler) return { mode: 'handler', handler };
+  const { program, unsupported } = xamlOf(row);
+  // Learn "Configure workflow stages and steps": real-time workflows cannot use wait conditions (the designer refuses to
+  // activate one); a waiting step in a real-time definition is not interpreted.
+  if (program?.waits && Number(row.mode) === 1)
+    return { mode: 'placeholder', unsupported: 'A real-time workflow cannot use wait conditions or Postpone.' };
+  if (program) return { mode: 'xaml', program };
+  return unsupported ? { mode: 'placeholder', unsupported } : { mode: 'placeholder' };
+}
+
+/** Readiness uses the same local execution choice as a real-time or background run: mode 'xaml' runs, so it is satisfied. */
+export function classicWorkflowReadiness(store, config) {
+  return store
+    .tableRows('workflow')
+    .filter(
+      (row) =>
+        Number(row.type) === TYPE.definition &&
+        Number(row.category) === CATEGORY_WORKFLOW &&
+        Number(row.statecode) === STATE_ACTIVATED,
+    )
+    .map((row) => {
+      const { mode } = classicChoice(config, row);
+      // A trusted handler and interpreted XAML both run the workflow: each names what resolves it (pack or xaml).
+      const resolver = { handler: 'pack', xaml: 'xaml' }[mode] ?? null;
+      return {
+        key: `classic-workflow:${bare(row.workflowid)}`,
+        kind: 'classic-workflow',
+        mode,
+        registered: resolver !== null,
+        ...(resolver ? { resolver } : {}),
+      };
+    });
 }
 
 // The writes of one run of a classic workflow, inside the caller's transaction. A handler or mock run logs a workflowlog row.
@@ -435,14 +539,7 @@ async function runClassic(api, config, run) {
   if ((outer?.depth ?? 0) >= DEPTH_LIMIT) throw canceled(DEPTH_MESSAGE, '0x80044182');
   const choice = classicChoice(config, run.row);
   const id = bare(run.row.workflowid);
-  if (choice.mode === 'placeholder' || choice.mode === 'disabled') {
-    config.diagnostic?.({
-      code: choice.mode === 'disabled' ? 'WORKFLOW_DISABLED' : 'WORKFLOW_PLACEHOLDER',
-      workflowId: id,
-    });
-    if (!run.realtime) throw canceled(choice.mode === 'disabled' ? DISABLED_MESSAGE : PLACEHOLDER_MESSAGE);
-    return null;
-  }
+  if (choice.mode === 'placeholder' || choice.mode === 'disabled') return placeholderRun(config, run, choice, id);
   const startedon = stampOf(api);
   if (choice.mode === 'mock') {
     config.diagnostic?.({
@@ -454,32 +551,301 @@ async function runClassic(api, config, run) {
     writeLog(store, api, run, { status: LOG_STATUS.succeeded, message: choice.message, startedon });
     return choice.message;
   }
-  const trace = [];
-  // Each trace() line is also a trace event on the run's workflow span (current here; tracedRun), so it reads in the trace.
-  const span = store.traces?.enabled ? store.traces.current() : null;
   const previous = store.flowChain;
   store.flowChain = { id: outer?.id ?? (api.ids ?? systemIds).uuid(), depth: (outer?.depth ?? 0) + 1 };
-  let message;
+  let outcome;
   try {
-    const result = await invokeTrustedHandler(
-      api,
-      choice.handler,
-      { workflow: run.row, target: run.target, caller: run.caller, inputs: run.inputs },
-      {
-        workingTarget: true,
-        label: `The data pack's workflows handler for "${run.row?.name ?? run.row?.workflowid ?? 'this workflow'}"`,
-        trace: (text) => {
-          trace.push(String(text));
-          span?.event('trace', { message: String(text) });
-        },
-      },
-    );
-    message = result?.message ?? (trace.join('\n') || null);
+    outcome = await executeChoice(api, run, choice);
   } finally {
     store.flowChain = previous;
   }
-  writeLog(store, api, run, { status: LOG_STATUS.succeeded, message, startedon });
+  if (choice.mode === 'xaml') return finishInterpreted(store, api, run, outcome);
+  if (outcome.status === 'canceled') return stopCanceled(store, api, run, outcome.message, startedon);
+  writeLog(store, api, run, { status: LOG_STATUS.succeeded, message: outcome.message, startedon });
+  return outcome.message;
+}
+
+// An interpreted run's end (summary-F6 OPS-01d). Real-time: no log rows; Stop Canceled refuses the write with 0x80040265
+// and the Stop message. Background: one log row per executed step; Stop Canceled ends the job Canceled (3/32) without a
+// message; a wait suspends it (run.waiting); a failing step suspends it with its error (run.failed). Earlier writes stay.
+function finishInterpreted(store, api, run, outcome) {
+  if (run.realtime) {
+    if (outcome.status === 'canceled') throw native('0x80040265', outcome.message ?? STOP_CANCELED_MESSAGE);
+    return null;
+  }
+  writeStepLogs(store, api, run, outcome);
+  if (outcome.status === 'canceled') run.stopped = { message: null };
+  if (outcome.status === 'waiting') run.waiting = outcome;
+  if (outcome.status === 'failed') run.failed = outcome;
+  return null;
+}
+
+// The step log rows of a background run (classic-workflow-xaml.mjs logs): owned by the workflow owner, about the primary
+// row. A successful run of an async-autodelete workflow keeps none, as its job is deleted.
+function writeStepLogs(store, api, run, outcome) {
+  if (run.row.asyncautodelete && outcome.status === 'succeeded') return;
+  const owner = definitionOwnerId(store, run.row);
+  for (const entry of outcome.logs ?? []) {
+    store.insertRow('workflowlog', rowsOf(store, 'workflowlog'), {
+      workflowlogid: (api.ids ?? systemIds).uuid(),
+      asyncoperationid: run.jobId ? lookup('asyncoperation', run.jobId) : null,
+      status: entry.status,
+      stepname: entry.stepname,
+      activityname: entry.activityname,
+      message: entry.message,
+      errorcode: entry.errorcode,
+      createdon: stampOf(api),
+      completedon: entry.status === LOG_STATUS.failed ? null : stampOf(api),
+      regardingobjectid: run.regarding ? lookup(run.regarding.logicalName, run.regarding.id) : null,
+      regardingobjecttypecode: run.regarding?.logicalName ?? null,
+      ...(owner ? ownerColumns(store, { id: owner, logical_name: 'systemuser' }) : {}),
+    });
+  }
+}
+
+// A placeholder or disabled run: its diagnostics (and the reason its XAML is not interpreted); a background job ends Canceled.
+function placeholderRun(config, run, choice, id) {
+  if (choice.unsupported)
+    config.diagnostic?.({ code: 'WORKFLOW_XAML_UNSUPPORTED', workflowId: id, message: choice.unsupported });
+  config.diagnostic?.({
+    code: choice.mode === 'disabled' ? 'WORKFLOW_DISABLED' : 'WORKFLOW_PLACEHOLDER',
+    workflowId: id,
+  });
+  if (!run.realtime) throw canceled(choice.mode === 'disabled' ? DISABLED_MESSAGE : PLACEHOLDER_MESSAGE);
+  return null;
+}
+
+// A handler or interpreted run inside the run's flow chain: { status: 'succeeded' | 'canceled', message }. Each trace() line
+// is also a trace event on the run's workflow span (current here; tracedRun), so it reads in the trace.
+async function executeChoice(api, run, choice) {
+  const trace = [];
+  const span = api.store.traces?.enabled ? api.store.traces.current() : null;
+  const traced = (text) => {
+    trace.push(String(text));
+    span?.event('trace', { message: String(text) });
+  };
+  if (choice.mode === 'xaml') return interpretXaml(api, run, choice.program, traced);
+  const result = await invokeTrustedHandler(
+    api,
+    choice.handler,
+    { workflow: run.row, target: run.target, caller: run.caller, inputs: run.inputs },
+    {
+      workingTarget: true,
+      label: `The data pack's workflows handler for "${run.row?.name ?? run.row?.workflowid ?? 'this workflow'}"`,
+      trace: traced,
+    },
+  );
+  return { status: 'succeeded', message: result?.message ?? (trace.join('\n') || null) };
+}
+
+// Stop workflow with status Canceled. A real-time run refuses the operation with the stop message (Learn "Configure
+// real-time workflow stages and steps": "When you set the status to canceled, you prevent the operation"); the code of that
+// refusal (0x80040265, the plug-in cancel) is a guess. A background run keeps the writes its earlier steps made, logs
+// Canceled and marks the run, so attempt ends the job Canceled once those writes have committed.
+function stopCanceled(store, api, run, message, startedon) {
+  if (run.realtime) throw native('0x80040265', message ?? STOP_CANCELED_MESSAGE);
+  writeLog(store, api, run, { status: LOG_STATUS.canceled, message, startedon });
+  run.stopped = { message: message ?? STOP_CANCELED_MESSAGE };
   return message;
+}
+
+// The run-as user's id (Learn "Overview of using workflow processes", security context): a real-time run as the calling user
+// when runas is 1 (Calling User) and as the owner otherwise; a background run as run.caller, which is the owner for an
+// event-started job (stageBackgroundRuns) and the starting user for ExecuteWorkflow.
+// Hosted runs (summary-F6 OPS-01d): a real-time run with runas 1 (calling user) writes as the request's user, on behalf of
+// the principal that called (an impersonating application: createdonbehalfby); with runas 0 as the workflow owner, on
+// behalf of no one. An event-started background run writes as the owner whatever runas says; an on-demand run as the
+// user who started it (Learn "Overview of using workflow processes"; not hosted-checked).
+// A calling-user run without a calling user fails (runAsContext) instead of running as the owner.
+function runAsUserId(store, run) {
+  const callerId = idOf(run.caller?.systemuserid);
+  if (!run.realtime) return callerId || definitionOwnerId(store, run.row);
+  if (Number(run.row.runas) !== 1) return definitionOwnerId(store, run.row);
+  return (run.portal && portalApplicationUserId(store)) || idOf(run.user?.systemuserid) || callerId;
+}
+
+// The calling user of a standard-model portal write (Learn "Power Pages connectivity to a Microsoft Dataverse": a site
+// writes as its application user "# Portals-<site name>", an older site as SYSTEM): the site's observed application user
+// (observed.portalApplicationUserId, the user the store stamps on rows the portal writes) when that user exists, else
+// null, and the run takes the SYSTEM user the portal write itself runs as (dataverse-records.mjs internalContext).
+function portalApplicationUserId(store) {
+  const id = idOf(store.observed?.portalApplicationUserId);
+  return id && store.tableRows('systemuser').some((row) => sameId(row.systemuserid, id)) ? id : null;
+}
+
+const userById = (api, id) =>
+  api.principals?.byId?.(id) ?? api.store.tableRows('systemuser').find((row) => sameId(row.systemuserid, id));
+
+// The context of an interpreted run's writes: the run-as user through the records pipeline (privileges checked, as the run's
+// own security context). A disabled or missing run-as user fails the run, as a deactivated owner's waiting runs fail.
+function runAsContext(api, run) {
+  const { store } = api;
+  const userId = runAsUserId(store, run);
+  const user = userById(api, userId);
+  if (!user || user.isdisabled === true)
+    throw failure(`The classic workflow's run-as user ${userId || '(none)'} is not available.`);
+  const onBehalf =
+    run.realtime && Number(run.row.runas) === 1 && run.caller?.systemuserid && !sameId(run.caller.systemuserid, userId)
+      ? userById(api, idOf(run.caller.systemuserid))
+      : null;
+  return organizationPrincipalContext(store, user, onBehalf ? { caller: onBehalf } : {});
+}
+
+const storedRowOf = (store, mapping, id) => {
+  const rows = store.tableRows(mapping.logicalName);
+  return rows[store.rowIndex(mapping, rows, id)] ?? null;
+};
+
+// One interpreted run (classic-workflow-xaml.mjs) over the primary row as stored now (the trigger's row when it is gone, as for
+// a delete). Each write gets its own copy of the run-as context: the record hooks key per-write state on the context object.
+function interpretXaml(api, run, program, trace) {
+  const { store } = api;
+  const context = runAsContext(api, run);
+  const write = () => ({ ...context });
+  // A real-time run inside a portal call: its writes keep that call's IsPortalsClientCall and PortalsContactId at their
+  // depth (hosted F2 state 0, s0a/s0b workflow.json execute:realtime); a background run's job does not (false, zero GUID).
+  const portalWrite =
+    run.realtime && run.portalCall ? { writeOptions: { inheritedPortalCall: run.portalCall } } : undefined;
+  const primary = store.resolveMapping(run.target.logicalName);
+  const known = (table) => {
+    try {
+      return Boolean(store.resolveMapping(table));
+    } catch {
+      return false;
+    }
+  };
+  const stored = storedRowOf(store, primary, bare(run.target.id));
+  // A waiting run resumes against the record as it is now; a record deleted meanwhile ends the job Canceled (local model).
+  if (run.resume && !stored) throw canceled('The record this workflow waits on no longer exists.');
+  return runClassicWorkflow(
+    program,
+    {
+      primary: {
+        logicalName: primary.logicalName,
+        id: bare(run.target.id),
+        row: stored ?? run.target.row,
+      },
+      // The store's runtime clock, which the committed-job runner also reads for postponeuntil.
+      now: () => clockFunction(store.clock ?? systemClock)(),
+      idColumn: (table) => store.resolveMapping(table).idColumn,
+      hasTable: known,
+      read: (table, id) => {
+        const mapping = store.resolveMapping(table);
+        const row = storedRowOf(store, mapping, id);
+        if (row)
+          api.principals.authorize({
+            user: context.user,
+            entity: mapping.logicalName,
+            operation: 'read',
+            row,
+            mapping,
+          });
+        return row;
+      },
+      create: (table, data) => api.records.createInternal(write(), table, data, portalWrite),
+      update: (table, id, data) => api.records.updateInternal(write(), table, id, data, portalWrite),
+      trace,
+    },
+    { resume: run.resume ?? null, suspendOnFailure: !run.realtime },
+  ).catch((error) => {
+    // A real-time run's failing step refuses the triggering write with 0x80040265 and the step's own message. The depth
+    // guard of a chain of runs (0x80044182) keeps its own code.
+    if (run.realtime && error?.details?.innerCode !== '0x80044182') throw native('0x80040265', error.message);
+    throw error;
+  });
+}
+
+// ---- Waiting runs (Learn "Configure workflow stages and steps": a wait condition pauses a background workflow until its
+// criteria are met and it starts again automatically; parallel wait branches with a timeout; SDK Postpone). The job row is
+// Suspended (1) / Waiting (10), with postponeuntil for a timeout; its committed-job payload keeps the run's snapshot
+// (classic-workflow-xaml.mjs) and the wait kind. The committed-job runner turns a timed row Ready at its postponeuntil, and
+// a later committed write of the record wakes a condition wait (wakeWaitingRuns): the run continues at its wait, which reads
+// the record again and waits once more when no condition holds yet.
+const encodeSnapshot = (snapshot) => v8.serialize(snapshot).toString('base64');
+const decodeSnapshot = (text) => v8.deserialize(Buffer.from(text, 'base64'));
+const WAITING_STATE = { statecode: 1, statuscode: 10 };
+
+// The row values of a run that suspended: Suspended/Waiting, the timeout, and the payload that resumes it.
+function waitingPatch(api, payload, waiting) {
+  const until = waiting.wait.until;
+  return {
+    ...WAITING_STATE,
+    // A condition wait has no time: the job waits until 9999-12-30 (summary-F6 OPS-01d). A Postpone's time is local.
+    postponeuntil: Number.isFinite(until) ? new Date(until).toISOString() : WAIT_FOREVER,
+    message: null,
+    data: JSON.stringify({
+      ...payload,
+      attempts: 0,
+      wait: waiting.wait.kind,
+      columns: waiting.wait.columns ?? [],
+      resume: encodeSnapshot(waiting.snapshot),
+    }),
+  };
+}
+
+// A background run whose step failed (summary-F6 OPS-01d): the job is Suspended / Waiting with error code 0x80044331, the
+// step's message as friendlymessage and in the plug-in trace of message, wait-until 9999-12-30; a Resume retries the step.
+function failedPatch(payload, failed) {
+  const step = failed.logs.find((entry) => entry.status === LOG_STATUS.failed && entry.activityname);
+  const name = step?.activityname?.replace(/_step$/, '') ?? 'WorkflowStep0';
+  const message = String(failed.error?.message ?? failed.error);
+  return {
+    ...WAITING_STATE,
+    postponeuntil: WAIT_FOREVER,
+    errorcode: FAILED_STEP_CODE,
+    friendlymessage: message,
+    message: `Plugin Trace:\r\n\r\n[${name}]\r\n\r\nError Message:\r\n\r\n${message}`,
+    data: JSON.stringify({
+      ...payload,
+      attempts: 0,
+      wait: 'failure',
+      columns: [],
+      resume: encodeSnapshot(failed.snapshot),
+    }),
+  };
+}
+
+// A committed write of a record wakes the condition waits on it (inside the committing transaction).
+// A committed write of a record wakes the condition waits on it that read a column it wrote (summary-F6 OPS-01d: a write
+// of another column, or the clock passing a time the condition compares, does not wake it). A delete wakes every wait on
+// the record (local model): the run then ends Canceled.
+function wakeWaitingRuns(store, events) {
+  const touched = events
+    .filter((event) => !event.messageEvent && event.entity !== 'asyncoperation' && event.row)
+    .map((event) => {
+      try {
+        const mapping = store.resolveMapping(event.entity);
+        const changed =
+          event.operation === 'delete'
+            ? null
+            : new Set((event.submittedAttributes ?? []).map((name) => String(name).toLowerCase()));
+        return { entity: mapping.logicalName, id: bare(event.row[mapping.idColumn]), changed };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (!touched.length) return null;
+  // A Suspended row names its wait's columns; a Locked one (a run in progress) may be about to wait on any wait of its
+  // definition: wake() keeps it pending.
+  const columnsOf = (row, payload) => {
+    // A designer Timeout wait also names the columns its branches read: a write of one (the parallel branch's condition, or
+    // the due date itself) wakes it before its time (summary-F6 DATA-04c2, OPS-01d). A Postpone names none.
+    if (row.statecode === 1) return ['condition', 'timeout'].includes(payload.wait) ? (payload.columns ?? []) : [];
+    const program = xamlOf(workflowRow(store, payload.definitionId) ?? {}).program;
+    return program?.waitColumns ?? [];
+  };
+  return committedJobs(store).wake((row, payload) => {
+    if (payload.kind !== JOB_KIND) return false;
+    const columns = columnsOf(row, payload);
+    if (!columns.length) return false;
+    return touched.some(
+      (record) =>
+        record.entity === row.primaryentitytype &&
+        record.id === lookupId(row.regardingobjectid) &&
+        (record.changed === null || columns.some((column) => record.changed.has(column))),
+    );
+  });
 }
 
 // workflowlog row (a background run is also linked to its asyncoperation). Skipped for a successful async-autodelete run.
@@ -548,13 +914,31 @@ function tracedRun(api, run, work, { cloud = false } = {}) {
 }
 
 // One run, atomic: the handler's writes commit or roll back with it. A failed run records its log outside the rolled-back work.
-async function attempt(api, config, run) {
+async function attempt(api, config, run, prepare, verify) {
+  const atomic = (fn) => api.change(() => api.runAtomic(fn));
+  const execute = async () => {
+    verify?.();
+    const outcome = await runClassic(api, config, run);
+    verify?.();
+    return outcome;
+  };
+  let outcome;
   try {
-    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))));
+    if (prepare)
+      outcome = await atomic(async () => {
+        run = await prepare();
+        return tracedRun(api, run, execute);
+      });
+    else outcome = await tracedRun(api, run, () => atomic(execute));
   } catch (error_) {
+    if (!run) throw error_;
+    // A simulator source publication that overlapped the run (HTTP 409) is not a workflow failure: the run is refused and
+    // rolled back with its own error, and leaves no log or process session.
+    if (error_?.code === 'SourceRefreshConflict') throw error_;
     const error = run.realtime ? realtimeFailure(error_) : error_;
     const choice = classicChoice(config, run.row);
-    const logged = choice.mode === 'handler' || choice.mode === 'mock';
+    // A real-time interpreted run leaves no log row; its failure rolls back with the write (summary-F6 OPS-01d).
+    const logged = choice.mode === 'handler' || choice.mode === 'mock' || (choice.mode === 'xaml' && !run.realtime);
     if (logged || (run.realtime && run.row.syncworkflowlogonfailure)) {
       await api.change(() =>
         api.store.transact(() => {
@@ -571,6 +955,9 @@ async function attempt(api, config, run) {
     }
     throw error;
   }
+  // A background Stop workflow with status Canceled (stopCanceled): its earlier writes have committed; the job ends Canceled.
+  if (run?.stopped) throw canceled(run.stopped.message ?? STOP_CANCELED_MESSAGE);
+  return outcome;
 }
 
 // A cloud flow run: its exported definition through the flow runtime, under the flow's local choice (exported, mock, or none).
@@ -636,6 +1023,7 @@ function executionWorkflow(api, c, workflowId) {
   const name = row.name;
   if (category === CATEGORY_WORKFLOW) {
     if (Number(row.statecode) !== STATE_ACTIVATED) throw native('0x80045047', 'Workflow must be in Published state.');
+    assertTriggerableTable(store, row);
     if (!row.ondemand && !row.subprocess)
       throw native('0x80045046', 'Workflow must be marked as on-demand or child workflow.');
   } else if (category === CATEGORY_MODERN_FLOW) {
@@ -660,6 +1048,121 @@ function executionTarget(api, c, row, entityId) {
   return { target, regarding: { logicalName: primary.logicalName, id: bare(entityId) } };
 }
 
+async function portalListRun(api, config, { workflowId, entity, recordId, authorize, principal }) {
+  // The selected row, workflow definition and caller are resolved in the same transaction as the handler.
+  const c = await principal(await authorize());
+  const { row, realtime } = executionWorkflow(api, c, workflowId);
+  // A workflow of another table looks the record up in its own table: the platform answers 500 with the Dataverse
+  // message (captured, paqvilo-developer hosted-f2 summary-F2 OPS-01f); nothing runs.
+  if (bare(row.primaryentity) !== entity)
+    throw new DataError(
+      `Entity '${bare(row.primaryentity)}' With Id = ${recordId} Does Not Exist`,
+      500,
+      'WorkflowRecordNotFound',
+    );
+  if (!realtime || !row.ondemand || classicChoice(config, row).mode !== 'handler')
+    throw new DataError(
+      'A portal list requires an on-demand real-time classic workflow with a trusted local handler for its table.',
+      501,
+      'WorkflowUnsupported',
+    );
+  return portalWorkflowExecution(api, c, row, recordId);
+}
+
+// The portal call a real-time run runs inside: the visitor's contact and the site's host application user as caller, or
+// null outside a portal call.
+function workflowPortalCall(store, c) {
+  const contactId = c.portal === true ? (c.identity?.contactId ?? null) : null;
+  return contactId ? { contactId: bare(contactId), callerUserId: portalCallerUserId(store, c.identity) } : null;
+}
+
+function portalWorkflowExecution(api, c, row, recordId) {
+  const { target, regarding } = executionTarget(api, c, row, recordId);
+  return {
+    row,
+    target: { logicalName: regarding.logicalName, id: regarding.id, row: target },
+    caller: c.caller,
+    inputs: {},
+    regarding,
+    realtime: true,
+    jobId: null,
+  };
+}
+
+function isPortalFormWorkflow(value, entity) {
+  return (
+    Number(value?.type) === TYPE.definition &&
+    Number(value.category) === CATEGORY_WORKFLOW &&
+    Number(value.mode) === 1 &&
+    value.ondemand === true &&
+    bare(value.primaryentity) === entity
+  );
+}
+
+function portalFormWorkflow(store, config, workflowId, entity) {
+  const source = workflowBypassFacts.get(store)?.get(workflowId);
+  if (!isPortalFormWorkflow(source, entity)) return null;
+  const row = workflowRow(store, workflowId);
+  const handler = config.handlers?.get(workflowId);
+  if (!isPortalFormWorkflow(row, entity) || Number(row.statecode) !== STATE_ACTIVATED || !handler) return null;
+  return classicChoice(config, row).handler === handler ? row : null;
+}
+
+async function portalFormRun(api, config, { authorize, principal }) {
+  const { workflowId, entity, recordId, identity } = await authorize();
+  const c = await principal(identity);
+  if (!portalFormWorkflow(api.store, config, workflowId, entity))
+    throw new DataError(
+      'A Basic Form workflow requires an exported, published, on-demand real-time workflow with a trusted handler for its ID.',
+      501,
+      'WorkflowUnsupported',
+    );
+  const { row } = executionWorkflow(api, c, workflowId);
+  return portalWorkflowExecution(api, c, row, recordId);
+}
+
+function portalInvitationWorkflow(store, config, workflowId) {
+  const row = isGuid(workflowId) ? workflowRow(store, workflowId) : null;
+  const handler = config.handlers?.get(workflowId);
+  if (
+    !row ||
+    Number(row.type) !== TYPE.definition ||
+    Number(row.category) !== CATEGORY_WORKFLOW ||
+    Number(row.statecode) !== STATE_ACTIVATED ||
+    ![0, 1].includes(Number(row.mode)) ||
+    !row.ondemand ||
+    bare(row.primaryentity) !== 'contact' ||
+    !handler ||
+    classicChoice(config, row).handler !== handler
+  )
+    return null;
+  return row;
+}
+
+/**
+ * Start a qualifying contact workflow for a committed invitation redemption, as the platform's redemption does after it
+ * has saved (hosted session F4 AUTH-05d): a background workflow becomes a system job owned by the caller, a real-time one
+ * runs in its own transaction. A failure ends that run (a failed job, or a rejected real-time run with its log) and never
+ * the redemption. False when the workflow does not qualify.
+ */
+async function executePortalInvitationWorkflow(api, config, { workflowId, contactId, principal }) {
+  const { store } = api;
+  const row = portalInvitationWorkflow(store, config, workflowId);
+  if (!row) return false;
+  if (store.inTransaction()) throw new TypeError('An invitation workflow starts after its redemption has committed.');
+  const c = await principal();
+  const { target, regarding } = executionTarget(api, c, row, contactId);
+  await startClassicRun(api, config, {
+    row,
+    target: { ...regarding, row: target },
+    caller: c.caller,
+    inputs: {},
+    regarding,
+    realtime: Number(row.mode) === 1,
+  });
+  return true;
+}
+
 function validateModernWorkflow(config, row, name, inputs) {
   const flow = config.cloudFlow?.(bare(row.workflowid));
   const trigger = flow?.definition ? inspectFlowTrigger(flow.definition) : { kind: 'unknown' };
@@ -680,7 +1183,6 @@ function validateModernWorkflow(config, row, name, inputs) {
 
 /** ExecuteWorkflow: validates in the documented order, then starts the run. Returns the Web API body for the asyncoperation id. */
 async function executeWorkflow(api, config, c, workflowId, body = {}) {
-  const { store } = api;
   const { row, category, realtime, name } = executionWorkflow(api, c, workflowId);
   const entityId = body?.EntityId;
   const { target, regarding } = executionTarget(api, c, row, entityId);
@@ -711,45 +1213,95 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
       body: { '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'), asyncoperationid: jobId },
     };
   }
-  const run = {
+  const jobId = await startClassicRun(api, config, {
     row,
     target: { logicalName: regarding.logicalName, id: regarding.id, row: target },
     caller,
     inputs,
     regarding,
     realtime,
+  });
+  return {
+    status: 200,
+    body: {
+      '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'),
+      // the id of a real-time run is a guess
+      asyncoperationid: jobId ?? ZERO_GUID,
+    },
   };
-  const activation = activationOf(store, row.workflowid);
-  if (realtime) {
+}
+
+// An on-demand classic run: a real-time run completes now (null); a background run becomes a system job owned by the caller
+// whose work runs on a later tick, after the job id is assigned (its id).
+async function startClassicRun(api, config, run) {
+  const { store } = api;
+  if (run.realtime) {
     await attempt(api, config, { ...run, jobId: null });
-    return {
-      status: 200,
-      body: {
-        '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'),
-        asyncoperationid: ZERO_GUID,
-      },
-    }; // the id of a real-time run is a guess
+    return null;
   }
-  // The work runs on a later tick, after the job id is assigned.
+  const activation = activationOf(store, run.row.workflowid);
+  const systemUser = idOf(store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid);
   let jobId = null;
   jobId = await api.systemJob(
     {
-      name,
+      name: run.row.name,
       operationtype: JOB_TYPE,
-      callerId: caller.systemuserid,
+      callerId: run.caller.systemuserid,
       columns: {
-        regardingobjectid: lookup(regarding.logicalName, regarding.id),
-        primaryentitytype: regarding.logicalName,
+        regardingobjectid: lookup(run.regarding.logicalName, run.regarding.id),
+        primaryentitytype: run.regarding.logicalName,
         workflowactivationid: activation ? lookup('workflow', activation.workflowid) : null,
+        // An ExecuteWorkflow job is owned by its caller and created by SYSTEM (hosted session F4, invitation-send-*).
+        ...(systemUser ? { createdby: lookup('systemuser', systemUser) } : {}),
       },
     },
-    inRunContext(store, currentRequest()?.correlationId, caller, () => attempt(api, config, { ...run, jobId })),
+    inRunContext(store, currentRequest()?.correlationId, run.caller, async () => {
+      const started = { ...run, jobId };
+      const message = await attempt(api, config, started);
+      if (started.waiting || started.failed)
+        await handOverWaitingRun(api, started, currentRequest()?.correlationId ?? null);
+      return message;
+    }),
   );
-  return {
-    status: 200,
-    body: { '@odata.context': contextUrl(c.origin, c.version, 'asyncoperations/$entity'), asyncoperationid: jobId },
-  };
+  return jobId;
 }
+
+// An on-demand run (an ExecuteWorkflow system job, dataverse-async.mjs) that suspended: its row takes the committed-job
+// payload of a background run and the Pausing status, which the system job ends as Suspended/Waiting; from then on the
+// committed-job runner wakes and resumes it as any waiting background run.
+async function handOverWaitingRun(api, run, correlationId) {
+  const { store } = api;
+  const event = {
+    entity: run.target.logicalName,
+    operation: 'update',
+    row: run.target.row,
+    correlationId,
+  };
+  const payload = {
+    kind: JOB_KIND,
+    definitionId: bare(run.row.workflowid),
+    callerId: run.caller?.systemuserid ?? null,
+    chain: null,
+    inputs: run.inputs ?? {},
+    event: encodeEvent(event),
+  };
+  // A failed step hands over as a waiting job too (failedPatch): Suspended / Waiting with its error.
+  // The system job ends the row Suspended / Waiting itself (from Pausing); only the other columns are written here.
+  const columns = run.failed ? failedPatch(payload, run.failed) : waitingPatch(api, payload, run.waiting);
+  delete columns.statecode;
+  delete columns.statuscode;
+  await api.change(() =>
+    store.transact(
+      () => {
+        const { rows, index } = liveJob(store, run.jobId);
+        if (index >= 0) Object.assign(rows[index], { ...columns, statuscode: PAUSING_STATUS });
+      },
+      { tracked: true },
+    ),
+  );
+  committedJobs(store).watch(run.jobId);
+}
+const PAUSING_STATUS = 21; // asyncoperation Locked / Pausing: the system job ends it Suspended / Waiting
 
 // ---- CreateWorkflowFromTemplate
 
@@ -809,9 +1361,14 @@ const lowerNames = (text) =>
     .map((name) => name.trim().toLowerCase())
     .filter(Boolean);
 
-// The activated classic definitions of a table, whatever their trigger (category 0, type 1, statecode 1).
-function classicDefinitions(store, entity) {
-  return store
+// The user an event-started run acts as: the definition's owner; a seeded definition has none, so the first systemuser.
+const definitionOwnerId = (store, definition) =>
+  idOf(definition.owninguser) || idOf(store.tableRows('systemuser')[0]?.systemuserid);
+
+// The activated classic definitions of a table, whatever their trigger (category 0, type 1, statecode 1). A virtual table's
+// definitions never run (virtualTableTarget): each is reported once through `report` and none is returned.
+function classicDefinitions(store, entity, report = null) {
+  const definitions = store
     .tableRows('workflow')
     .filter(
       (row) =>
@@ -820,6 +1377,52 @@ function classicDefinitions(store, entity) {
         Number(row.statecode) === STATE_ACTIVATED &&
         String(row.primaryentity ?? '').toLowerCase() === String(entity).toLowerCase(),
     );
+  if (!definitions.length || !virtualTableTarget(store, entity)) return definitions;
+  for (const definition of definitions) reportVirtualTarget(store, report, definition);
+  return [];
+}
+
+// Dataverse never triggers a workflow on a virtual table: EntityMetadata.CanTriggerWorkflow is always false for one
+// (Microsoft Learn, "API considerations for virtual tables",
+// https://learn.microsoft.com/power-apps/developer/data-platform/virtual-entities/api-considerations-ve). No hosted session
+// captured such a definition (F1 captured virtual-table reads only), so Mirage fails closed: a write to the table starts
+// no classic run (WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED, once per definition), and publishing or executing a classic definition
+// of the table answers 400 WorkflowVirtualTableUnsupported (the native code and wording are a guess).
+function virtualTableTarget(store, entity) {
+  if (!entity || String(entity).toLowerCase() === 'none') return false;
+  const providers = store.recordPipeline?.virtualProviders;
+  if (!providers) return false;
+  try {
+    return Boolean(providers.status(store.resolveMapping(String(entity)).logicalName)?.virtual);
+  } catch {
+    return false;
+  }
+}
+const virtualTargetReports = new WeakMap();
+function reportVirtualTarget(store, report, definition) {
+  if (!report) return;
+  if (!virtualTargetReports.has(store)) virtualTargetReports.set(store, new Set());
+  const seen = virtualTargetReports.get(store);
+  const id = bare(definition.workflowid);
+  if (seen.has(id)) return;
+  seen.add(id);
+  report({
+    code: 'WORKFLOW_VIRTUAL_TABLE_UNSUPPORTED',
+    severity: 'warning',
+    workflowId: id,
+    table: String(definition.primaryentity).toLowerCase(),
+    message: `Classic workflow '${definition.name ?? id}' targets virtual table '${String(definition.primaryentity).toLowerCase()}'; Dataverse does not trigger workflows on virtual tables (CanTriggerWorkflow is false), so it never runs.`,
+  });
+}
+function assertTriggerableTable(store, row) {
+  if (Number(row?.category ?? CATEGORY_WORKFLOW) !== CATEGORY_WORKFLOW) return;
+  if (!virtualTableTarget(store, row?.primaryentity)) return;
+  throw new DataError(
+    `Workflows cannot be triggered on virtual table '${String(row.primaryentity).toLowerCase()}'.`,
+    400,
+    'WorkflowVirtualTableUnsupported',
+    { innerCode: '0x80040203' },
+  );
 }
 
 // create, delete, or an update that submitted one of the trigger's attributes (changed: lower-case names).
@@ -883,31 +1486,35 @@ function workflowLogic(store, definition) {
     id: definition.sdkmessageprocessingstepid,
   };
 }
+// Whether a committed event starts a background run of the definition: a background definition whose trigger fires, in
+// scope, and not bypassed by the write.
+function startsBackgroundRun(store, config, definition, event, changed) {
+  if (
+    Number(definition.mode) !== 0 ||
+    !triggerFires(definition, event.operation, changed) ||
+    !inScope(store, definition, event.row)
+  )
+    return false;
+  return !pluginStepBypassed(
+    workflowLogic(store, definition),
+    { bypassCustomPlugins: event.bypassCustomAsync === true, bypassStepIds: event.bypassStepIds },
+    config.diagnostic ?? undefined,
+  );
+}
+
 function stageBackgroundRuns(api, config, events) {
   const { store } = api;
   const entries = [];
+  const systemUser = idOf(store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid);
   for (const event of events) {
     if (event.messageEvent) continue;
     const changed = (event.submittedAttributes ?? []).map((name) => String(name).toLowerCase());
-    for (const definition of classicDefinitions(store, event.entity)) {
-      if (
-        Number(definition.mode) !== 0 ||
-        !triggerFires(definition, event.operation, changed) ||
-        !inScope(store, definition, event.row)
-      )
-        continue;
-      if (
-        pluginStepBypassed(
-          workflowLogic(store, definition),
-          { bypassCustomPlugins: event.bypassCustomAsync === true, bypassStepIds: event.bypassStepIds },
-          config.diagnostic ?? undefined,
-        )
-      )
-        continue;
+    for (const definition of classicDefinitions(store, event.entity, config.diagnostic)) {
+      if (!startsBackgroundRun(store, config, definition, event, changed)) continue;
       const mapping = store.resolveMapping(event.entity),
         logical = mapping.logicalName,
         id = bare(event.row?.[mapping.idColumn]);
-      const callerId = idOf(definition.owninguser) || idOf(store.tableRows('systemuser')[0]?.systemuserid);
+      const callerId = definitionOwnerId(store, definition);
       const activation = activationOf(store, definition.workflowid);
       entries.push({
         definitionId: bare(definition.workflowid),
@@ -921,15 +1528,42 @@ function stageBackgroundRuns(api, config, events) {
           primaryentitytype: logical,
           workflowactivationid: activation ? lookup('workflow', activation.workflowid) : null,
           ...ownerColumns(store, { id: callerId, logical_name: 'systemuser' }),
+          // The job is owned by the workflow owner and created by SYSTEM (summary-F6 OPS-01d).
+          ...(systemUser ? { createdby: lookup('systemuser', systemUser) } : {}),
         },
       });
     }
   }
-  return stageCommittedJobs(store, { kind: JOB_KIND, entries });
+  const staged = stageCommittedJobs(store, { kind: JOB_KIND, entries });
+  const woken = wakeWaitingRuns(store, events);
+  if (!woken) return staged;
+  return () => {
+    staged?.();
+    woken();
+  };
 }
 
 // One background run: claim the Ready row (Locked, In Progress), run like any classic run (placeholder, handler or mock),
 // then complete it Succeeded, Failed or Canceled. A row that left Ready (canceled through the Web API) is not run.
+// The job row's end after a run that returned: waiting, failed at a step, or Succeeded.
+function runEndPatch(api, payload, run, message) {
+  if (run.waiting) return waitingPatch(api, payload, run.waiting);
+  if (run.failed) return failedPatch(payload, run.failed);
+  return { statecode: 3, statuscode: JOB_STATUS.succeeded, completedon: stampOf(api), message: message ?? null };
+}
+
+// The job row's end after a run that threw. An interpreted Stop with status Canceled leaves it without a message
+// (summary-F6 OPS-01d).
+function runErrorPatch(api, run, error) {
+  return {
+    statecode: 3,
+    statuscode: error?.jobStatus ?? JOB_STATUS.failed,
+    completedon: stampOf(api),
+    message: run?.stopped ? run.stopped.message : error.message,
+    errorcode: run?.stopped ? null : errorNumber(error),
+  };
+}
+
 async function runBackgroundJob(api, config, { id, payload, event }) {
   const { store } = api;
   const stamp = () => stampOf(api);
@@ -948,7 +1582,8 @@ async function runBackgroundJob(api, config, { id, payload, event }) {
     ),
   );
   if (!claimed) return;
-  let patch;
+  let patch,
+    current = null;
   try {
     const definition = workflowRow(store, payload.definitionId);
     if (!definition) throw canceled('The workflow definition is no longer available.');
@@ -959,24 +1594,21 @@ async function runBackgroundJob(api, config, { id, payload, event }) {
       row: definition,
       target: { logicalName: logical, id: rowId, row: event.row },
       caller: { systemuserid: payload.callerId },
-      inputs: {},
+      inputs: payload.inputs ?? {},
       regarding: { logicalName: logical, id: rowId },
       realtime: false,
       chain: payload.chain ?? null,
       jobId: id,
+      // A waiting run's snapshot: the run continues at its wait.
+      ...(typeof payload.resume === 'string' ? { resume: decodeSnapshot(payload.resume) } : {}),
     };
+    current = run;
     const message = await inRunContext(store, event.correlationId ?? payload.chain?.id, run.caller, () =>
       attempt(api, config, run),
     )();
-    patch = { statecode: 3, statuscode: JOB_STATUS.succeeded, completedon: stamp(), message: message ?? null };
+    patch = runEndPatch(api, payload, run, message);
   } catch (error) {
-    patch = {
-      statecode: 3,
-      statuscode: error?.jobStatus ?? JOB_STATUS.failed,
-      completedon: stamp(),
-      message: error.message,
-      errorcode: errorNumber(error),
-    };
+    patch = runErrorPatch(api, current, error);
   }
   await api.change(() =>
     store.transact(
@@ -1018,6 +1650,11 @@ function realtimeRunForDefinition({ config, c, store, definition, operation, cha
     row: definition,
     target: { logicalName: logical, id: rowId, row: record },
     caller: c.caller ?? null,
+    // The request's own user (the impersonated one when an application calls on someone's behalf).
+    user: c.user ?? null,
+    // A standard-model portal write (under enhanced authorization c.user is the visitor's mapped user).
+    portal: c.portal === true && !store.portalAuthorization?.principalId?.(c.identity),
+    portalCall: workflowPortalCall(store, c),
     inputs: {},
     regarding: { logicalName: logical, id: rowId },
     realtime: true,
@@ -1036,8 +1673,8 @@ function takePendingWrite(c, logical, operation) {
   return list.splice(index, 1)[0];
 }
 
-function realtimeDefinitions(store, logical) {
-  return classicDefinitions(store, logical).filter((definition) => Number(definition.mode) === 1);
+function realtimeDefinitions(store, logical, report) {
+  return classicDefinitions(store, logical, report).filter((definition) => Number(definition.mode) === 1);
 }
 
 function realtimeRecord(store, mapping, operation, logical, rowId, entry) {
@@ -1056,7 +1693,7 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
   const { store } = api;
   const logical = mapping.logicalName;
   const rowId = bare(id);
-  const definitions = realtimeDefinitions(store, logical);
+  const definitions = realtimeDefinitions(store, logical, config.diagnostic);
   if (!definitions.length) return;
   // Through the primary-key index: a search of the table would cost every write a full pass.
   const record = realtimeRecord(store, mapping, operation, logical, rowId, entry);
@@ -1141,15 +1778,21 @@ const subscriptions = new WeakMap();
  */
 export function workflowExtension(config = {}) {
   const settings = { handlers: new Map(), overrides: {}, cloudFlow: null, diagnostic: null, ...config };
+  // The Power Pages invitation processes run as built-in handlers; a pack handler of the same id wins.
+  settings.handlers = new Map([
+    ...invitationProcessHandlers({ origin: () => config.portalOrigin?.() ?? null }),
+    ...settings.handlers,
+  ]);
   // facts: the Solution workflow facts, or a getter over the current sources (source-organization-extensions.mjs refresh).
-  const factsOf = () => (typeof settings.facts === 'function' ? settings.facts() : settings.facts) ?? [];
+  const solutionFacts = () => (typeof settings.facts === 'function' ? settings.facts() : settings.facts) ?? [];
   const indexBypass = (api, facts) => {
     workflowBypassFacts.set(api.store, new Map(facts.map((fact) => [bare(fact.id), fact])));
     return facts;
   };
+  const factsOf = (store, facts = solutionFacts()) => withInvitationProcesses(store, facts);
   const seed = (api) =>
     api.store.transact(() => {
-      seedWorkflows(api.store, indexBypass(api, factsOf()));
+      seedWorkflows(api.store, indexBypass(api, factsOf(api.store)));
     });
   return {
     name: 'dataverse-workflows',
@@ -1172,12 +1815,21 @@ export function workflowExtension(config = {}) {
       };
     },
     /** Reseeds definitions and activations from facts inside the caller's transaction; returns { workflow: { added, changed, removed } }. */
-    sync(api, facts = factsOf()) {
-      return { workflow: seedWorkflows(api.store, indexBypass(api, facts)) };
+    sync(api, facts = solutionFacts()) {
+      return { workflow: seedWorkflows(api.store, indexBypass(api, factsOf(api.store, facts))) };
     },
     install(api) {
+      api.executePortalListWorkflow = (input) =>
+        attempt(api, settings, null, () => portalListRun(api, settings, input), input.verify);
+      api.hasPortalFormWorkflow = (workflowId, entity) =>
+        Boolean(portalFormWorkflow(api.store, settings, workflowId, entity));
+      api.executePortalFormWorkflow = (input) =>
+        attempt(api, settings, null, () => portalFormRun(api, settings, input), input.verify);
+      api.hasPortalInvitationWorkflow = (workflowId) =>
+        Boolean(portalInvitationWorkflow(api.store, settings, workflowId));
+      api.executePortalInvitationWorkflow = (input) => executePortalInvitationWorkflow(api, settings, input);
       api.recordHooks.add('beforeWrite', (c, mapping, info) => {
-        if (mapping.logicalName === 'workflow') return workflowWriteRule(c, mapping, info);
+        if (mapping.logicalName === 'workflow') return workflowWriteRule(c, mapping, info, api.store);
         noteWrite(c, mapping, info);
       });
       api.recordHooks.add('afterWrite', (c, mapping, info) => {

@@ -179,9 +179,9 @@ an official fix is available, the advisory is withdrawn or a pinned input change
 
 | Workflow                                                                                 | Runs on                                              | Required gate   |
 | ---------------------------------------------------------------------------------------- | ---------------------------------------------------- | --------------- |
-| [CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml)               | Pushes to `main`; PRs to `main` and `0.9.8`; release | `CI gate`       |
+| [CI](https://github.com/maksii/paqvilo/blob/main/.github/workflows/ci.yml)               | Pushes to `main`; PRs to `main` and `0.9.9`; release | `CI gate`       |
 | [Security](https://github.com/maksii/paqvilo/blob/main/.github/workflows/security.yml)   | Same pushes and PRs; weekly                          | `Security gate` |
-| [SonarQube](https://github.com/maksii/paqvilo/blob/main/.github/workflows/sonarqube.yml) | Pushes to `main` and `0.9.8`; PRs to them            | none            |
+| [SonarQube](https://github.com/maksii/paqvilo/blob/main/.github/workflows/sonarqube.yml) | Pushes to `main` and `0.9.9`; PRs to them            | none            |
 | [Pages](https://github.com/maksii/paqvilo/blob/main/.github/workflows/pages.yml)         | Site changes; deploys only from `main`               | none            |
 | [Release](https://github.com/maksii/paqvilo/blob/main/.github/workflows/release.yml)     | `v*` tags except previews; manual dispatch           | none            |
 

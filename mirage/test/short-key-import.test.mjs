@@ -127,6 +127,34 @@ test('the data model of a YAML source can be set: standard turns the short-key s
   await assert.rejects(importPortal(SITE, { dataModel: 'classic' }), /dataModel must be standard or enhanced/);
 });
 
+test('a PAC code-site download identifies the SPA client context without a project manifest', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-site-download-'));
+  const owned = ownedFixture(t);
+  owned.remove(() => fs.rm(dir, { recursive: true, force: true }));
+  const site = path.join(dir, '.powerpages-site');
+  await fs.cp(SITE, site, { recursive: true });
+  const portal = await importPortal(dir);
+  assert.equal(portal.codeSite, null);
+  assert.equal(portal.settings['CodeSite/Enabled'], 'true');
+  assert.equal(portal.isSpaSite, true);
+
+  const app = await createSimulator({ sourceDir: dir, watch: false, requirePortalSource: true });
+  owned.add(() => app.close());
+  const home = await fetch(app.url + '/');
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /"isSpaSite":"True"/);
+  const unresolved = await fetch(app.url + '/unmapped/client/route/', { redirect: 'manual' });
+  assert.equal(unresolved.status, 404);
+  await unresolved.arrayBuffer();
+
+  const setting = path.join(site, 'site-settings', 'CodeSite-Enabled.sitesetting.yml');
+  const original = await fs.readFile(setting, 'utf8');
+  await fs.writeFile(setting, original.replace(/^value: true$/m, 'value: false'));
+  assert.equal((await importPortal(dir)).isSpaSite, false);
+  await fs.unlink(setting);
+  assert.equal((await importPortal(dir)).isSpaSite, false);
+});
+
 async function tree(t, files) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-component-types-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -396,11 +424,16 @@ test('cloud flows import with their trigger, flow and roles; source operations d
   const trigger = () =>
     fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${g(82)}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', __requestverificationtoken: token },
+      headers: {
+        'content-type': 'application/json',
+        __requestverificationtoken: token,
+        'x-requested-with': 'XMLHttpRequest',
+      },
       body: JSON.stringify({ eventData: '{}' }),
     });
   const unsupported = await trigger();
-  assert.deepEqual([unsupported.status, (await unsupported.json()).error.code], [403, 'Forbidden']);
+  // The flow API's refusal body (hosted session F8, anonymous group): 403 MissingPermissions.
+  assert.deepEqual([unsupported.status, (await unsupported.json()).Message], [403, 'MissingPermissions']);
   const { csrf } = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   const added = await fetch(app.url + '/__sim/api/endpoints/request-callback', {
     method: 'POST',

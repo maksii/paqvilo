@@ -34,12 +34,20 @@
 // are not known; both are the module's own guesses.
 // ponytail: the mirror takes every column the provider returns, as given; no check that the columns exist on the table.
 // ponytail: provider failures are reported once per table and operation; every attempt still fails with 400.
-// ponytail: select, filter and orderby reach the provider as OData text, unparsed. Every collection read refreshes the whole
-// mirror with the provider's answer (a provider that applies $top answers one page; later pages page the local mirror);
-// pushing a parsed query and provider paging down is the upgrade path. SDK reads (Retrieve, RetrieveMultiple, FetchXML)
+// ponytail: an organization Web API read passes select, filter and orderby as OData text, unparsed (only portal reads of
+// the virtual table itself also pass the translated QueryExpression). Every organization collection read refreshes the
+// whole mirror with the provider's answer (a provider that applies $top answers one page; later pages page the local
+// mirror); passing the parsed query and provider paging there too is the upgrade path. SDK reads (Retrieve, RetrieveMultiple, FetchXML)
 // never read the mirror: they go to the provider's optional synchronous retrieveSync(ctx, id) and
-// retrieveMultipleSync(ctx, request) (readSync below), else answer 501 SdkVirtualReadUnsupported. Portal reads (store reads
-// outside the Web API records layer) read the mirror as the last Web API read or write left it.
+// retrieveMultipleSync(ctx, request) (readSync below), else answer 501 SdkVirtualReadUnsupported. Portal reads load fresh
+// provider rows into a request-local read scope before evaluating table permissions and the local query.
+// A portal collection read of the virtual table itself (Liquid FetchXML, the portal Web API's fetchXml and OData reads)
+// instead passes the portal's translated query to retrieveMultiple ({ select, filter, orderby, top, query }: query is the
+// QueryExpression the platform hands a data provider plug-in, lib/portal-provider-query.mjs) with the site's application
+// user as ctx.userId and ctx.initiatingUserId, and its rows come back as the provider returned them: no local filter,
+// order, top, paging or $select projection, and a total record count of 0 (data.mjs providerAnswered; hosted session F1,
+// DATA-01d). Table permissions and the Web API column settings still apply to those rows; a single portal read
+// (retrieve) passes the same user.
 //
 // Transactions. A data provider's plug-ins run in stage 30, the main core transaction stage of the operation; the pipeline's
 // transaction is a SQL transaction committed or aborted with the operation, and ExecuteTransaction and a $batch changeset run
@@ -502,6 +510,30 @@ const requestOf = (params) => {
   };
 };
 
+// A portal read's provider rows. `request` is the translated query of the read's own table ({ select, filter, orderby, top,
+// query }, lib/portal-provider-query.mjs); a table the read only joins, expands or checks permissions through is read
+// whole (request null) so those predicates see every row. `userId` is the principal portal queries run as (the site's
+// application user), the provider context's user and initiating user.
+async function readPortalRows(state, mapping, id, { request = null, userId = null } = {}) {
+  const resolved = resolveTable(state, mapping);
+  if (!resolved.virtual || !assertProvider(state, resolved)) return null;
+  const c = userId ? { user: { systemuserid: userId } } : null;
+  if (id != null && typeof resolved.provider.retrieve === 'function') {
+    const row = await providerRead(state, resolved, 'retrieve', id, c);
+    if (!row) return [];
+    row[mapping.idColumn] ??= id;
+    return [row];
+  }
+  const rows = await providerRead(
+    state,
+    resolved,
+    'retrieveMultiple',
+    request ?? { ...requestOf(null), query: null },
+    c,
+  );
+  return rows.filter((row) => row[mapping.idColumn] != null);
+}
+
 // Replaces the mirror (all rows for a collection answer, the one row for a single answer) in one store write, without write hooks.
 async function mirror(api, mapping, rows, { id = null } = {}) {
   const logical = mapping.logicalName,
@@ -629,6 +661,9 @@ function install(api, options = {}) {
       return { virtual: resolved.virtual, provider: Boolean(resolved.provider), fallback: resolved.fallback };
     },
     readSync: (c, table, options) => readSync(state, resolve(table), c, options),
+    readPortalRows: (mapping, id, options) => readPortalRows(state, mapping, id, options),
+    // A diagnostic about a provider-backed read that the caller recognised (once per code, table and operation).
+    report: (entry) => report(state, entry),
     diagnostics: () => [...state.reporter.diagnostics],
   };
   // The SDK service and records.readInternal reach the synchronous reads through the store's record pipeline.

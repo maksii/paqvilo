@@ -35,7 +35,7 @@ function readPagingCursor(encoded, sign, query, context, preference, pageSize) {
  * `revision` is the store's data revision (DataStore#dataRevision), which advances with
  * every committed change, so a request doesn't digest the whole state.
  */
-export function prepareODataPage({ url, prefer = '', identity, revision, secret }) {
+export function prepareODataPage({ url, prefer = '', identity, revision, secret, pageWithoutTop = false }) {
   if (revision == null) throw new TypeError('prepareODataPage requires the data revision');
   const params = new URLSearchParams(url.searchParams);
   if (params.has('$skip'))
@@ -43,11 +43,17 @@ export function prepareODataPage({ url, prefer = '', identity, revision, secret 
       status: 400,
       code: 'QueryParamNotSupported',
     });
-  const preference = /(?:^|,)\s*odata\.maxpagesize\s*=\s*(\d+)\s*(?:,|$)/i.exec(prefer);
+  // The portal Web API honours odata.maxpagesize only together with $top (captured, paqvilo-developer pcf-parity
+  // summary-F section 1, runs fa and fb): without $top the preference is ignored and the default 5000-row page
+  // applies; with it a page holds at most the preference and its absolute @odata.nextLink keeps $top. $top stays
+  // the bound of the whole result, so later pages stop at $top (a local model: no later page was captured), unlike
+  // the direct Dataverse Web API, which honours the preference without $top. That capture read a Global-scope table; a
+  // contact-scoped read honoured the preference without $top (hosted session F1, API-02c, two runs: three rows and an
+  // @odata.nextLink), so a caller whose read is permission-filtered (`pageWithoutTop`) gets the page either way.
+  const preference =
+    params.has('$top') || pageWithoutTop ? /(?:^|,)\s*odata\.maxpagesize\s*=\s*(\d+)\s*(?:,|$)/i.exec(prefer) : null;
   const pageSize = preference ? Math.min(Number(preference[1]), 5000) : 5000;
   if (!pageSize || !Number.isSafeInteger(pageSize)) throw failure('Invalid odata.maxpagesize preference.');
-  // Current Power Pages observations retain $top as the total result bound,
-  // unlike the direct Dataverse Web API's documented preference precedence.
   const encoded = params.get('$skiptoken');
   params.delete('$skiptoken');
   const query = digest({ path: url.pathname, params: [...params.entries()].sort((a, b) => a[0].localeCompare(b[0])) });

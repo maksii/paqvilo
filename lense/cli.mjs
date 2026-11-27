@@ -6,6 +6,9 @@ import {
   parseOptions,
   LENSE_OPTIONS as options,
   LENSE_COMMAND_OPTIONS as allowed,
+  MIRAGE_ACTION_OPTIONS,
+  MODEL_DRIVEN_INSPECT_OPTIONS,
+  agentActionOptions,
 } from './cli-options.mjs';
 import { lenseCommandHelp } from './cli-help.mjs';
 import { failureDocument, jsonEnvelope } from './cli-envelope.mjs';
@@ -62,11 +65,15 @@ Browser selection (dev/list/verify/doctor)
   --browser <channel>    msedge, chrome or chromium
   --profile <name>       named persistent toolkit profile
   --user-data-dir <dir>  explicit existing browser user-data root
-  --profile-directory <dir> child profile in that root, such as Default or Profile 1
-  --cdp-url <url>        dev/list/doctor: attach to an already running browser
+  --profile-directory <dir> child profile in that root, such as Default or Profile 1;
+                         with --cdp-url, the open profile of the attached browser to use
+  --cdp-url <url|channel> dev/list/doctor: attach to an already running browser by its debugging
+                         endpoint, or by channel (msedge, chrome) when its remote debugging switch is on
 
 Other
   --path <urlpath>  dev: optional first tab only; verify: page to test
+  --verify-path <urlpath>
+                    verify: add a page to the verification matrix (repeatable)
   --headless        dev/verify: no browser window
   --headed          dev/verify: show the browser window
   --signed-in       verify: use the signed-in profile of "dev" instead of an anonymous one
@@ -76,10 +83,12 @@ Other
   --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
-  --all             doctor/analyze/audit: check every configured site's default environment offline
+  --all             doctor/analyze: check the default environment of each site
+                    audit: check every configured environment of each site offline
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --fail-on <none|error|warning|hint> doctor/analyze: static analysis threshold
+  --analysis-limit <ceiling>=<n> doctor/analyze: raise or lower one static analysis ceiling (repeatable)
                     doctor defaults to none (advisory); analyze defaults to error
   --json            list/map/status/doctor/analyze/audit/resources/verify/agent: machine readable output;
                     mirage (except dev) and model-driven inspect too
@@ -106,6 +115,8 @@ Agent session access
   --width <n>       agent viewport: viewport width
   --height <n>      agent viewport: viewport height
   --styles <list>  agent snapshot: comma-separated computed CSS properties
+  --pierce          agent snapshot: also read closed shadow roots and cross-origin frames
+  --samples <n>    agent coverage: how many unidentified elements to list (0-200, default 40)
   --sign-in-timeout <ms> verify: sign-in deadline
   --project <file>  mirage: Mirage multi-source project configuration
                     (default: the site's catalogued mirage.project, when configured)
@@ -132,7 +143,7 @@ Agent session access
   --out <file>      mirage init: project file to write (default: the site's catalogued
                     mirage.project, else .paqvilo/mirage/<site>.project.yml)
   --force           mirage init: replace an existing project file
-  --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
+  --strict          verify: fail on new diagnostics; audit: fail on incomplete coverage
 `;
 
 let values, positionals;
@@ -216,7 +227,34 @@ if (!Object.hasOwn(commands, command)) {
   process.exit(1);
 }
 
+/**
+ * An option the command, or its named action, does not take is refused beside --help as without it (docs/cli.md,
+ * argument errors): only whether each option belongs is checked here, not its value.
+ */
+function refuseOptionsOfOtherActions(action) {
+  const given = Object.keys(values).filter((option) => option !== 'help');
+  const refuse = (option, owner) => {
+    throw Object.assign(new Error(`--${option} is not supported by ${owner}`), { code: 'unsupported_option' });
+  };
+  for (const option of given) if (!allowed[command].includes(option)) refuse(option, command);
+  let actionOptions = null;
+  if (command === 'mirage' && Object.hasOwn(MIRAGE_ACTION_OPTIONS, action ?? 'status'))
+    actionOptions = new Set(MIRAGE_ACTION_OPTIONS[action ?? 'status']);
+  else if (command === 'agent') actionOptions = agentActionOptions(action ?? 'sessions');
+  else if (command === 'model-driven' && action === 'inspect') actionOptions = MODEL_DRIVEN_INSPECT_OPTIONS;
+  const owner = `${command} ${action ?? (command === 'agent' ? 'sessions' : 'status')}`;
+  if (actionOptions) for (const option of given) if (!actionOptions.has(option)) refuse(option, owner);
+}
+
 if (values.help) {
+  try {
+    refuseOptionsOfOtherActions(positionals[1]);
+  } catch (error) {
+    if (values.json || command === 'agent')
+      console.log(JSON.stringify(failureDocument(error, { command, phase: 'arguments' })));
+    else console.error(`paqvilo: ${error.message}`);
+    process.exit(1);
+  }
   const usage = lenseCommandHelp(command, positionals[1], HELP);
   if (values.json || command === 'agent')
     console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage }));
@@ -277,6 +315,8 @@ try {
 
   if (values.pick && values.json)
     throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
+  if (values.path !== undefined && values['verify-path'] !== undefined)
+    throw new Error('--path cannot be combined with --verify-path');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env))
     throw new Error(`${command} --all cannot be combined with --site or --env`);

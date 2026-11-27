@@ -1,8 +1,10 @@
+// @test-kind unproven: local model of the Power Pages list markup on Bootstrap 5 and Bootstrap 3 sites; tests citing a capture override it
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';
 import { gridRecord, buildLayout, actionLinks } from '../lib/native-services.mjs';
 import { nativePageRegions } from '../lib/platform-manifest.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A "widget" table and list on a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
 // contrast, a Bootstrap 3 site.
@@ -109,7 +111,7 @@ const layouts = (html) =>
 
 test('a Bootstrap 5 list renders the platform grid attributes, messages and div dialogs', async () => {
   const { html } = await render(true);
-  const grid = /<div class="entity-grid entitylist [^>]*>/.exec(html)[0];
+  const grid = /<div class="entity-grid entitylist" [^>]*>/.exec(boundedMarkup(html))[0];
   for (const attribute of [
     'data-id="',
     'data-grid-class=""',
@@ -166,13 +168,24 @@ test('a Bootstrap 5 list renders the platform grid attributes, messages and div 
   );
 });
 
-test('a Bootstrap 3 list keeps its section dialogs and striped grid', async () => {
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (lists-bs3.json, runs a and b, 2026-11-26): a Bootstrap 3 list renders the list template of a Bootstrap 5 list with Bootstrap 3 tokens: the same grid attributes and div dialogs, the close button (class close, data-dismiss, sr-only) before the title, and its own create and delete icons
+test('a Bootstrap 3 list renders the list template with Bootstrap 3 tokens', async () => {
   const { html } = await render(false);
-  assert.match(html, /data-grid-class="table-striped"/);
   assert.match(
     html,
-    /<section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert widget-dialog"/,
+    /^<div class="entitylist"><div class="entity-grid entitylist" data-id="[^"]+" data-column-width-style="" data-defer-loading="false" data-enable-actions="true" data-get-url="\/_services\/entity-grid-data\.json\/[^"]+" data-get-ai-insights-url="\/_services\/entity-grid-ai-summary\.json\/[^"]+" data-update-url="\/_services\/entity-grid-update-entity\/[^"]+" data-grid-class="table-striped" data-select-mode="None" data-selected-view="[^"]+" data-view-layouts="[^"]+" data-user-isauthenticated="true" data-user-parent-account-name="" data-mobile-view-enabled="false" data-ai-insights-enabled="false" data-enable-streaming="true" data-ai-insights-expanded="true" data-is-nl-search-enabled="false" data-ai-insights-position="top" data-nl-search-filter="">/,
   );
+  assert.ok(
+    html.includes(
+      '<div aria-hidden="true" class="modal fade modal-form modal-form-insert widget-dialog" role="dialog" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><button class="close" data-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button><h4 class="modal-title widget-title"><span class=\'fa fa-pencil-square-o\' aria-hidden=\'true\'></span> Create</h4></div>',
+    ),
+  );
+  assert.match(html, /<h4 class="modal-title "><span class='fa fa-trash-o' aria-hidden='true'><\/span> Delete<\/h4>/);
+  assert.match(
+    html,
+    /<div class="modal-header"><button class="form-close" data-dismiss="modal" tabindex="0" type="button"><span aria-hidden="true">&times;<\/span><span class="sr-only">Close<\/span><\/button><h4 class="modal-title "> Resolve case<\/h4><\/div><div class="form-horizontal modal-body"><div class="form-group"><label class="required control-label col-sm-3">/,
+  );
+  assert.doesNotMatch(html, /<section|data-bs-|visually-hidden/);
   assert.equal(layouts(html)[0].Configuration.InsertActionLink.Enabled, false);
 });
 
@@ -323,7 +336,7 @@ test('without the create privilege the list keeps its create links disabled; a p
   assert.equal(layouts(html)[0].Configuration.InsertActionLink.Enabled, false);
 });
 
-test('section grid dialogs follow their dialog settings: class, size, title, loading text, dismiss text and delete confirmation', async () => {
+test('section grid dialogs of a Bootstrap 3 page control follow their dialog settings: class, size, title, loading text, dismiss text and delete confirmation', async () => {
   const text = (value) => [{ LCID: 1033, Value: value }];
   const configured = {
     ...settings,
@@ -352,11 +365,12 @@ test('section grid dialogs follow their dialog settings: class, size, title, loa
   };
   const base = portal(false);
   base.lists[0].metadata.adx_settings = JSON.stringify(configured);
+  // A page control keeps the legacy grid with its section dialogs.
   const { html } = await renderComponent(
     'entitylist',
     'Widgets',
     { user: { id: 'current' }, request: { url: 'http://localhost/widgets/' }, key: 'Widgets' },
-    { portal: base, metadata, store, schemas: {}, args: { key: 'Widgets' } },
+    { portal: base, metadata, store, schemas: {}, args: { key: 'Widgets', pp_page_control: true } },
   );
   assert.match(
     html,
@@ -369,6 +383,12 @@ test('section grid dialogs follow their dialog settings: class, size, title, loa
   assert.match(
     html,
     /aria-label="Delete widget" class="modal fade modal-delete widget-dialog" [^>]*>[^]*?<div class="modal-body">Delete this widget\?<\/div><div class="modal-footer"><button aria-label="OK" class="primary btn btn-primary" tabindex="0" title="OK" type="button">OK<\/button><button aria-label="Close" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Close" type="button">Close<\/button>/,
+  );
+  // The page control's workflow dialog shows the list's default text with its body HTML-escaped, as every list does
+  // (hosted-f2 summary-F2 LIST-01d).
+  assert.match(
+    html,
+    /class="modal fade modal-run-workflow"[^>]*>[^]*?<div class="modal-body">&lt;p&gt;Are you sure you want to run this workflow\?&lt;\/p&gt;<\/div>/,
   );
 });
 
@@ -436,4 +456,86 @@ test("a list's own messages and its activate, deactivate and error dialogs come 
     html,
     /class="modal fade modal-error widget-dialog"[^]*?<div class="modal-body">Widget error\.<\/div><div class="modal-footer"><button class="cancel btn btn-default btn btn-default" data-bs-dismiss="modal" type="button">Close<\/button>/,
   );
+});
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01d (map.json, runs a and b): a map list included as modern renders the modern grid of its view, so its render provenance names the modern layout
+test('a map list included as modern reports the modern layout to render provenance', async () => {
+  const base = portal(true);
+  base.lists[0].metadata.adx_map_enabled = true;
+  const rendered = [];
+  await renderComponent(
+    'entitylist',
+    'Widgets',
+    { user: { id: 'current' }, request: { url: 'http://localhost/widgets/' }, key: 'Widgets', isModern: 'true' },
+    {
+      portal: base,
+      metadata,
+      store,
+      schemas: {},
+      args: { key: 'Widgets', isModern: 'true' },
+      onComponentRendered: (component) => rendered.push(component.layout),
+    },
+  );
+  assert.deepEqual(rendered, ['modern']);
+});
+
+// A calendar list (start and summary columns) and a dataset code component list whose table names a grid control.
+function variantPortal(column) {
+  const base = portal(true);
+  Object.assign(
+    base.lists[0].metadata,
+    column === 'calendar'
+      ? { adx_calendar_enabled: true, adx_calendar_startdatefieldname: 'stamp', adx_calendar_summaryfieldname: 'name' }
+      : { adx_iscodecomponent: true },
+  );
+  return base;
+}
+const gridControl = { ...metadata, entities: { widget: { fields, grid: { control: 'x_Invented.Grid' } } } };
+async function renderVariant(column, modern) {
+  const rendered = [],
+    diagnostics = [],
+    mounted = [];
+  const isModern = modern ? { isModern: 'true' } : {};
+  const { html } = await renderComponent(
+    'entitylist',
+    'Widgets',
+    { user: { id: 'current' }, request: { url: 'http://localhost/widgets/' }, key: 'Widgets', ...isModern },
+    {
+      portal: variantPortal(column),
+      metadata: gridControl,
+      store,
+      schemas: {},
+      args: { key: 'Widgets', ...isModern },
+      onComponentRendered: (component) => rendered.push(component.layout),
+      diagnostic: (entry) => diagnostics.push(entry.code),
+      codeComponent: async (spec) => {
+        mounted.push(spec.name);
+        return `<div data-invented-pcf>__paqviloPcf.mount(${JSON.stringify(spec.name)})</div>`;
+      },
+    },
+  );
+  return { html, rendered, diagnostics, mounted };
+}
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01f (modernlists.json, runs a and b, 2026-11-27): a calendar list and a dataset code component list included as modern render pages-native-container with pages-grid and read GetListViewConfiguration and entity-grid-data; the page carries no calendar host or calendar scripts and no code component
+test('a calendar or dataset code component list included as modern renders the modern grid of its view', async () => {
+  for (const column of ['calendar', 'codecomponent']) {
+    const { html, rendered, diagnostics, mounted } = await renderVariant(column, true);
+    assert.deepEqual(rendered, ['modern'], column);
+    assert.match(html, /^<pages-native-container><div id="list_[^"]+" class="pp-modern-list"/, column);
+    assert.ok(html.includes(`<pages-grid list-id="${LIST}" `), column);
+    assert.doesNotMatch(html, /data-view="calendar"|class="entitylist|class="entity-grid|data-invented-pcf/, column);
+    assert.deepEqual(mounted, [], column);
+    assert.ok(!diagnostics.includes('MODERN_LIST_RENDERED_CLASSIC'), column);
+  }
+});
+
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01f (modernlists.json, runs a and b): the same lists included without isModern render the calendar host (data-view="calendar") and the dataset code component, as before
+test('a calendar or dataset code component list included without isModern keeps its classic layout', async () => {
+  const calendar = await renderVariant('calendar', false);
+  assert.deepEqual(calendar.rendered, ['calendar']);
+  assert.match(calendar.html, /data-view="calendar"/);
+  const component = await renderVariant('codecomponent', false);
+  assert.deepEqual(component.mounted, ['x_Invented.Grid']);
+  assert.match(component.html, /data-invented-pcf/);
 });

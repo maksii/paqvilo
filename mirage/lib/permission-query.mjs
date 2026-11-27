@@ -1,6 +1,7 @@
 import { DataError } from './data-error.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
 import { createHash } from 'node:crypto';
+import { customTablePermissionFilter } from './custom-table-permission.mjs';
 
 const key = (value) =>
   String(value?.id ?? value ?? '')
@@ -87,6 +88,7 @@ export function permissionOrderGraphFingerprint(permissions) {
       relationship: permission.relationship ?? null,
       identityRelationship: permission.identityRelationship ?? null,
       observedOrphanParent: permission.observedOrphanParent ?? null,
+      ...(permission.scope === 'custom' && { permissionFetchXml: permission.permissionFetchXml ?? null }),
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
   return createHash('sha256')
@@ -315,6 +317,11 @@ function compileLinkedPermission(context, ordinal, orderedGrants) {
 }
 
 function linkedAlternative(context, link, grant) {
+  if (grant.scope === 'custom')
+    return {
+      alternative: customTablePermissionFilter(grant.permissionFetchXml, grant.entity),
+      grantPaths: [{ ...describeGrantPath(grant, []), authoredTable: link.attrs.name }],
+    };
   let firstSelection = true;
   const single = compilePermissionFetchXml(`<fetch><entity name="${xmlEscapeAttribute(link.attrs.name)}" /></fetch>`, {
     permissions: context.permissions,
@@ -435,6 +442,16 @@ function compileScopedPermissionPaths(context, grants, rank) {
 }
 
 function addScopedGrantPath(context, state, grant) {
+  if (grant.scope === 'custom') {
+    const filter = customTablePermissionFilter(grant.permissionFetchXml, grant.entity);
+    const signature = JSON.stringify(filter);
+    if (state.seenPaths.has(signature)) return;
+    state.seenPaths.add(signature);
+    state.accepted.push(grant);
+    context.grantPaths.push(describeGrantPath(grant, []));
+    state.conditions.push(filter);
+    return;
+  }
   const path = permissionGrantPath(context, state, grant);
   if (!path) return;
   const signature = JSON.stringify(path);
@@ -534,6 +551,21 @@ function defaultIdentityPermissionField(context, current, scope) {
 
 function primaryPermissionKey(context, entity) {
   return context.mappings[entity]?.idColumn ?? `${entity}id`;
+}
+
+/**
+ * Tables that one grant's own path step reads besides its table and its parent grant's table, as the generated joins
+ * (permissionJoin, permissionIntersectJoin) and the local evaluator follow them: the intersect of a many-to-many Parent
+ * relationship, and the identity table of an identity relationship with its intersect. Global, Custom Access and
+ * observed-orphan grants follow no relationship.
+ */
+export function permissionPathTables(grant) {
+  const scope = grant?.scope ?? 'global';
+  if (scope === 'global' || scope === 'custom' || grant.observedOrphanParent?.field) return [];
+  const identity = grant.identityRelationship;
+  if (identity) return [identity.entity, identity.intersect?.entity].filter(Boolean);
+  if (scope !== 'parent') return [];
+  return [grant.relationship?.intersect?.entity].filter(Boolean);
 }
 
 function describeGrantPath(grant, descriptors) {

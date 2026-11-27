@@ -260,31 +260,26 @@ test('one invented create stores the same row through the Web API, the SDK, the 
   );
 });
 
-test('a calculated-column value and a duplicate alternate key answer the same error on every surface', async (t) => {
-  const { webApi, portal, sdk, clr, connector, formWrites } = await organization(t);
-  const web = await webApi('POST', '/x_items', { x_name: 'calc', x_total: 5 });
-  assert.equal(web.status, 400);
-  assert.equal(web.body.error.code, '0x80048d19');
-  const refusals = [
-    await errorOf(() => sdk.create('x_item', { x_name: 'calc', x_total: 5 })),
-    await errorOf(() =>
-      clr('Create', {
-        $type: 'Entity',
-        logicalName: 'x_item',
-        attributes: { x_name: 'calc', x_total: { $type: 'Decimal', value: '5' } },
-      }),
-    ),
-    await errorOf(() => connector('CreateRecord', { entityName: 'x_item', 'item/x_name': 'calc', 'item/x_total': 5 })),
-    await errorOf(() =>
-      formWrites((writes) => writes.create('x_item', { x_name: 'calc', x_total: 5 }, { id: CONTACT })),
-    ),
-  ];
-  for (const refusal of refusals)
-    assert.deepEqual(refusal, { status: 400, innerCode: '0x80048d19', message: web.body.error.message });
+test('a calculated-column value is ignored and a duplicate alternate key answers the same error on every surface', async (t) => {
+  const { webApi, portal, sdk, clr, connector, formWrites, sim } = await organization(t);
+  // Each surface creates the row and ignores the calculated value, as natively (dataverse-calculated.mjs).
+  assert.equal((await webApi('POST', '/x_items', { x_name: 'calc', x_total: 5 })).status, 201);
+  sdk.create('x_item', { x_name: 'calc', x_total: 5 });
+  await clr('Create', {
+    $type: 'Entity',
+    logicalName: 'x_item',
+    attributes: { x_name: 'calc', x_total: { $type: 'Decimal', value: '5' } },
+  });
+  await connector('CreateRecord', { entityName: 'x_item', 'item/x_name': 'calc', 'item/x_total': 5 });
+  await formWrites((writes) => writes.create('x_item', { x_name: 'calc', x_total: 5 }, { id: CONTACT }));
   const portalCalc = await portal('POST', '/x_items', { x_name: 'calc', x_total: 5 });
-  assert.equal(portalCalc.status, 400);
-  // The portal wraps a Dataverse error in its CDS envelope (9004010D) with the organization's code and message inside.
-  assert.deepEqual(portalCalc.body.error.innererror, { code: '0x80048d19', message: web.body.error.message });
+  assert.ok(portalCalc.status < 300, JSON.stringify(portalCalc.body));
+  const created = sim.store.tableRows('x_item').filter((row) => row.x_name === 'calc');
+  assert.equal(created.length, 6, 'every surface created its row');
+  assert.ok(
+    created.every((row) => !Object.hasOwn(row, 'x_total')),
+    'no surface stored the calculated value',
+  );
 
   assert.equal((await webApi('POST', '/x_items', { x_name: 'first', x_code: 'DUP' })).status, 201);
   const duplicate = await webApi('POST', '/x_items', { x_name: 'again', x_code: 'DUP' });
@@ -319,11 +314,14 @@ test('updates run through SDK, connector and form paths; deletion runs through t
   sdk.update('x_item', created, { x_amount: 2 });
   const afterSdk = stored('row');
   assert.ok(afterSdk.versionnumber > before, 'an SDK update takes the next row version');
-  assert.deepEqual(await errorOf(() => sdk.update('x_item', created, { x_total: 1 })), {
-    status: 400,
-    innerCode: '0x80048d19',
-    message: "The attribute 'x_total' of entity 'x_item' is a calculated field and cannot be set.",
-  });
+  // A calculated column in an update is ignored, as natively (dataverse-calculated.mjs): the update takes the next row
+  // version and stores nothing for the column.
+  sdk.update('x_item', created, { x_total: 1 });
+  assert.ok(
+    stored('row').versionnumber > afterSdk.versionnumber,
+    'a calculated-only update takes the next row version',
+  );
+  assert.equal(Object.hasOwn(stored('row'), 'x_total'), false);
   await connector('UpdateRecord', { entityName: 'x_item', recordId: created, 'item/x_amount': 4 });
   assert.ok(stored('row').versionnumber > afterSdk.versionnumber, 'a connector update takes the next row version');
   await formWrites((writes) => writes.update('x_item', created, { x_amount: 5 }, { id: CONTACT }));

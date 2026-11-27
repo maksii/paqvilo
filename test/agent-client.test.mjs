@@ -368,3 +368,23 @@ test('agent viewport sends its --timeout as the browser deadline and guards its 
   t.mock.timers.tick(40_000);
   await assert.rejects(run, (error) => error.code === 'request_timeout' && error.status === 504);
 });
+
+test('agent snapshot sends pierce only when --pierce is given', async (t) => {
+  const bodies = [];
+  const fx = await fixture(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      bodies.push(JSON.parse(body));
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ url: 'http://127.0.0.1/', title: '', total: 0, truncated: false, elements: [] }));
+    });
+  });
+  await agent(null, { session: fx.file, 'page-id': '1', selector: 'p', pierce: true }, ['snapshot']);
+  await agent(null, { session: fx.file, 'page-id': '1', selector: 'p' }, ['snapshot']);
+  assert.deepEqual(
+    bodies.map((body) => body.pierce),
+    [true, undefined],
+  );
+});

@@ -1038,6 +1038,11 @@ test('detailed inspection publishes progress while matching the DOM and clears i
     release();
     const answer = await request;
     assert.equal(answer.ok, true, 'unavailable DOM evidence can fall back to local source evidence');
+    assert.equal(
+      answer.report.inputLimits.renderedReadFailed,
+      fail,
+      'the report says whether the page itself was read',
+    );
     assert.equal(answer.loadingId, loadingId, 'the completed response identifies its loading operation');
     assert.equal(panel.stateFor(tab.page).inspection.loading, false);
     assert.equal(panel.stateFor(tab.page).inspection.phase, null);

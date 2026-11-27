@@ -8,6 +8,7 @@ import net from 'node:net';
 import { chromium } from 'playwright-core';
 import {
   openBrowser,
+  openAttachedProfilePage,
   refreshPages,
   keepSessionCookies,
   sessionFileFor,
@@ -94,6 +95,191 @@ test('ordinary CDP attachment and an explicit disabled launch port retain user-o
   }
   assert.deepEqual(endpoints, [cdpUrl, cdpUrl]);
   assert.equal(detached, 2, 'closing only disconnects the toolkit transport');
+});
+
+// An attached browser with several open profiles, as the debugging protocol presents it: one shared context, a new tab
+// in the profile whose tab was activated last, and a profile path on the version page of each tab.
+function attachedProfiles(directories, { versionPage = true } = {}) {
+  const root = path.join(path.sep, 'invented', 'User Data');
+  const state = { current: directories[0], activated: [], opened: [], detached: 0 };
+  const context = {
+    newPage: async () => {
+      const page = {
+        directory: state.current,
+        url: null,
+        closed: false,
+        goto: async (url) => {
+          if (!versionPage) throw new Error('net::ERR_INVALID_URL at chrome://version');
+          page.url = url;
+        },
+        locator: (selector) => ({
+          innerText: async () => {
+            assert.equal(selector, '#profile_path');
+            assert.equal(page.url, 'chrome://version');
+            return ` ${path.join(root, page.directory)}\n`;
+          },
+        }),
+        close: async () => {
+          page.closed = true;
+        },
+      };
+      state.opened.push(page);
+      return page;
+    },
+    newCDPSession: async (page) => ({
+      send: async (method) => {
+        assert.equal(method, 'Target.getTargetInfo');
+        return { targetInfo: { browserContextId: `context-${page.directory}` } };
+      },
+      detach: async () => {},
+    }),
+  };
+  const browser = {
+    contexts: () => [context],
+    newBrowserCDPSession: async () => ({
+      send: async (method, params) => {
+        if (method === 'Target.getTargets')
+          return {
+            targetInfos: [
+              { type: 'service_worker', targetId: 'worker', browserContextId: 'context-worker' },
+              ...directories.flatMap((directory) =>
+                [1, 2].map((tab) => ({
+                  type: 'page',
+                  targetId: `${directory}#${tab}`,
+                  browserContextId: `context-${directory}`,
+                })),
+              ),
+            ],
+          };
+        assert.equal(method, 'Target.activateTarget');
+        state.activated.push(params.targetId);
+        state.current = params.targetId.split('#')[0];
+        return {};
+      },
+      detach: async () => {
+        state.detached++;
+      },
+    }),
+    close: async () => {
+      state.closed = true;
+    },
+  };
+  return { browser, context, state };
+}
+
+test('an attached session opens its tab in the named profile directory of a browser with several open profiles', async () => {
+  // The profile whose window was active last already is the named one: nothing is activated.
+  const current = attachedProfiles(['Profile 5', 'Default']);
+  const first = await openAttachedProfilePage(current.browser, current.context, 'Profile 5', 1000);
+  assert.equal(first.directory, 'Profile 5');
+  assert.deepEqual(current.state.activated, []);
+  assert.deepEqual(
+    current.state.opened.map((page) => page.closed),
+    [false],
+  );
+  assert.equal(current.state.detached, 1);
+
+  // Another profile is current: one tab of each other open profile is activated until the tab lands in the named one.
+  const other = attachedProfiles(['Default', 'Profile 1', 'Profile 5']);
+  const page = await openAttachedProfilePage(other.browser, other.context, 'Profile 5', 1000);
+  assert.equal(page.directory, 'Profile 5');
+  assert.deepEqual(other.state.activated, ['Profile 1#1', 'Profile 5#1']);
+  assert.deepEqual(
+    other.state.opened.map((probe) => [probe.directory, probe.closed]),
+    [
+      ['Default', true],
+      ['Profile 1', true],
+      ['Profile 5', false],
+    ],
+    'only the tab in the named profile stays open',
+  );
+});
+
+test('an attached session refuses a profile directory that has no open window and leaves no tab behind', async (t) => {
+  const { browser, context, state } = attachedProfiles(['Default', 'Profile 1']);
+  await assert.rejects(openAttachedProfilePage(browser, context, 'Profile 5', 1000), (error) => {
+    assert.match(error.message, /no open window of the profile directory "Profile 5" \(open: Default, Profile 1\)/);
+    return true;
+  });
+  assert.equal(
+    state.opened.every((page) => page.closed),
+    true,
+  );
+  assert.equal(state.detached, 1);
+
+  // Through openBrowser the failed selection detaches from the user's browser, which keeps running.
+  t.mock.method(chromium, 'connectOverCDP', async () => browser);
+  await assert.rejects(
+    openBrowser({ browser: { cdpUrl: 'msedge', profileDirectory: 'Profile 5', debugPort: null } }),
+    /no open window of the profile directory "Profile 5"/,
+  );
+  assert.equal(state.closed, true);
+
+  const unreadable = attachedProfiles(['Default'], { versionPage: false });
+  await assert.rejects(
+    openAttachedProfilePage(unreadable.browser, unreadable.context, 'Default', 1000),
+    /Cannot read which profile the attached browser opens tabs in \(net::ERR_INVALID_URL/,
+  );
+  assert.equal(
+    unreadable.state.opened.every((page) => page.closed),
+    true,
+  );
+});
+
+test('a channel name attaches to the running everyday browser and the selected profile tab is handed to the session', async (t) => {
+  const { browser, state } = attachedProfiles(['Default', 'Profile 5']);
+  const endpoints = [];
+  t.mock.method(chromium, 'connectOverCDP', async (endpoint) => {
+    endpoints.push(endpoint);
+    return browser;
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  const opened = await openBrowser({ browser: { cdpUrl: 'msedge', profileDirectory: 'Profile 5', debugPort: null } });
+  assert.deepEqual(endpoints, ['msedge']);
+  assert.equal(opened.attached, true);
+  assert.equal(opened.profile.kind, 'attached');
+  assert.equal(opened.profile.profileDirectory, 'Profile 5');
+  assert.equal(opened.page.directory, 'Profile 5');
+  assert.equal(opened.page.closed, false);
+  assert.equal(state.closed, undefined, 'the selected browser stays attached');
+  // Without a profile directory no tab is opened: the session opens its own in the last active profile.
+  const plain = attachedProfiles(['Default']);
+  t.mock.method(chromium, 'connectOverCDP', async () => plain.browser);
+  const unselected = await openBrowser({ browser: { cdpUrl: 'http://127.0.0.1:9222', debugPort: null } });
+  assert.equal(unselected.page, undefined);
+  assert.deepEqual(plain.state.opened, []);
+});
+
+test('a channel whose browser has no remote debugging endpoint fails with the switch to turn on', async (t) => {
+  t.mock.method(chromium, 'connectOverCDP', async () => {
+    throw new Error(
+      'browserType.connectOverCDP: Could not connect to msedge: DevToolsActivePort file not found at /invented/DevToolsActivePort.\nMake sure msedge is running',
+    );
+  });
+  await assert.rejects(openBrowser({ browser: { cdpUrl: 'msedge', debugPort: null } }), (error) => {
+    assert.match(
+      error.message,
+      /^Cannot attach to the running msedge named by --cdp-url \(Could not connect to msedge: DevToolsActivePort file not found at \/invented\/DevToolsActivePort\)\. That browser has not served a remote debugging endpoint: start it, tick "Allow remote debugging for this browser instance" at edge:\/\/inspect\/#remote-debugging/,
+    );
+    assert.match(error.message, /"Server running at:".*edge-devtools-wdp-remote-debugging/);
+    assert.doesNotMatch(error.message, /\n|browserType\./);
+    return true;
+  });
+});
+
+test('a channel whose endpoint refuses the connection names the closed browser, the setting and the cancelled prompt', async (t) => {
+  // The endpoint file is still there after the browser closed, the setting was turned off or the prompt was cancelled.
+  t.mock.method(chromium, 'connectOverCDP', async () => {
+    throw new Error('browserType.connectOverCDP: Could not connect to msedge.\nMake sure msedge is running');
+  });
+  await assert.rejects(openBrowser({ browser: { cdpUrl: 'msedge', debugPort: null } }), (error) => {
+    assert.match(
+      error.message,
+      /^Cannot attach to the running msedge named by --cdp-url \(Could not connect to msedge\)\. The browser is closed, its setting "Allow remote debugging for this browser instance" .* is off, or its "Allow remote debugging\?" prompt was answered with Cancel\./,
+    );
+    assert.doesNotMatch(error.message, /\n|browserType\.|has not served/);
+    return true;
+  });
 });
 
 test('Edge normal storage fails early with actionable attachment options without reading profile data', () => {

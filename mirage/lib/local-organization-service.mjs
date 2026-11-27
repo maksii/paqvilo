@@ -1014,6 +1014,10 @@ export function sdkValueToRecord(value) {
       };
     case 'AliasedValue':
       return sdkValueToRecord(value.value);
+    // A party list in a plug-in Target (an Entity[] of activityparty entities) returns as its row objects.
+    case 'SdkArray':
+      if (value.elementType !== 'Entity') fail('Unsupported SDK array element type: ' + value.elementType);
+      return (value.values ?? []).map(sdkValueToRecord);
     case 'Entity':
       return Object.fromEntries(Object.entries(value.attributes ?? {}).map(([k, v]) => [k, sdkValueToRecord(v)]));
     default:

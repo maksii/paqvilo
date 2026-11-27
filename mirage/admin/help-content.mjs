@@ -712,6 +712,11 @@ const HELP = {
     intro:
       'Replaces the web roles of this browser’s sign-in with role names you type, for quick role tests. It needs a real sign-in first and ends when you sign out or in again.',
   },
+  'access.publishing-preview': {
+    intro:
+      'Turns the classic publishing preview of this browser on or off: the adxPreviewUnpublishedEntities cookie that Enable and Disable preview set on the portal. Only a contact whose web role has the Preview Unpublished Entities website access permission gets it; without the cookie preview is on.',
+    doc: SIM,
+  },
   'access.manual-identity': {
     intro:
       'The identity scripts and tests use when they send no browser cookie, and the default person the sign-in page offers. Saving it overrides contact memberships with the role names entered here for that identity.',

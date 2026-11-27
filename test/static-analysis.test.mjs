@@ -6,6 +6,7 @@ import test from 'node:test';
 import { tempDirSync } from './fixture.mjs';
 import { analyzeProject, analysisRules, validateAnalysisPolicy } from '../lense/analysis/index.mjs';
 import { ANALYSIS_LIMITS, analysisLabelPath, collectAnalysisInputs } from '../lense/analysis/inventory.mjs';
+import { ANALYSIS_LIMIT_MAXIMUMS } from '../lense/analysis/limits.mjs';
 
 function project(t, files = {}) {
   const root = tempDirSync('paq-analysis-');
@@ -38,11 +39,11 @@ test('analysis exposes stable rule identities and validates every failure thresh
   assert.ok(sources.some((source) => source.repository === 'microsoft/power-platform-skills'));
 });
 
-test('analysis limits reject unbounded, unknown and invalid caller values', (t) => {
+test('analysis limits reject values past their maximum, unknown and invalid caller values', (t) => {
   const root = project(t, { 'body.html': '<p>review</p>' });
   assert.deepEqual(analyzeProject(root).coverage.limits, ANALYSIS_LIMITS);
   for (const key of Object.keys(ANALYSIS_LIMITS)) {
-    for (const value of [0, -1, 0.5, NaN, Infinity, '1', null, ANALYSIS_LIMITS[key] + 1]) {
+    for (const value of [0, -1, 0.5, NaN, Infinity, '1', null, ANALYSIS_LIMIT_MAXIMUMS[key] + 1]) {
       assert.throws(() => analyzeProject(root, { limits: { [key]: value } }), /Invalid static analysis limit/);
     }
     assert.equal(analyzeProject(root, { limits: { [key]: 1 } }).coverage.limits[key], 1);
@@ -146,6 +147,27 @@ test('temporary source projects are analyzed while nested temporary and output f
   );
   fs.writeFileSync(path.join(root, 'tmp/ignored.html'), 'different invented temporary content');
   assert.deepEqual(analyzeProject(root), report);
+});
+
+test('.NET build outputs and restored NuGet packages are excluded while an authored packages folder is inventoried', (t) => {
+  const root = project(t, {
+    'plugins/Plugin.cs': 'class Plugin {}',
+    'plugins/bin/Release/Plugin.deps.json': '{}',
+    'plugins/obj/project.assets.json': '{}',
+    'packages/Some.Lib.1.0.0/Some.Lib.1.0.0.nupkg': 'invented package archive',
+    ...Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`packages/Some.Lib.1.0.0/lib/net462/f${index}.xml`, '<doc/>']),
+    ),
+    'packages/web/body.html': '<img>',
+  });
+  const report = analyzeProject(root);
+  assert.equal(report.complete, true);
+  assert.equal(report.coverage.files, 2, 'the plug-in source and the authored packages/web page');
+  assert.deepEqual(report.coverage.skipped, []);
+  assert.deepEqual(
+    report.findings.map(({ file }) => file),
+    ['packages/web/body.html'],
+  );
 });
 
 test('portal content under output-named folders is inventoried while root output folders stay excluded', (t) => {

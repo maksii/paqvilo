@@ -284,7 +284,7 @@ test('Power Pages: a /_api POST is http → webapi; follow-ups with the audit pa
   assert.notEqual(fresh.headers.get('x-trace-id'), traceId);
 });
 
-// @test-kind contract+security+unproven: trace behavior is local; the portal or service result has no native capture.
+// @test-kind contract+security+observation: trace behavior is local; the token refusals' 401 is hosted session F4 (paqvilo-developer hosted-f4 swap runs a and b), the other portal results have no native capture.
 test('Power Pages: a Web API request refused before routing has no webapi span; its http root records the status and code', async () => {
   const sim = await powerPages();
   const post = (headers) => ({
@@ -294,7 +294,7 @@ test('Power Pages: a Web API request refused before routing has no webapi span; 
   });
   const refusals = [
     [post({}), '/_api/x_items', 401, 'denied', 'MissingPortalRequestVerificationToken'],
-    [post({ __requestverificationtoken: 'wrong' }), '/_api/x_items', 403, 'denied', 'HttpAntiForgeryException'],
+    [post({ __requestverificationtoken: 'wrong' }), '/_api/x_items', 401, 'denied', 'HttpAntiForgeryException'],
     [{}, '/_api/x_unknowns', 400, 'error', 'UnknownEntitySet'],
     [{}, '/_api/x_items?$top=1&$top=2', 400, 'error', 'DuplicateQueryOption'],
   ];

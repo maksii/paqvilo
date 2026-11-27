@@ -1,3 +1,4 @@
+// @test-kind contract: the operations catalogue (lib/operation-catalogue.mjs) and its /_sim/api/operations administration are Paqvilo design; tests that assert the hosted flow API carry their own kind
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -58,6 +59,7 @@ test('enhanced solution-only server logic is discovered for the selected website
   assert.deepEqual(JSON.parse((await (await fetch(app.url + selected[0].path)).json()).data), { reloaded: true });
 });
 
+// @test-kind contract+observation+security: catalogue modes and mocks are Paqvilo design and a caller without the role is refused; the flow API answers (eventData input, the declared schema enforced by default, IncorrectFlowId for a workflow without a consumer) follow hosted session F8 envelope and roles groups (paqvilo-developer hosted-f8 summary-F8.md)
 test('discovered placeholders, automatic declarative flows and editable responses stay local and role guarded', async (t) => {
   const { app } = await operationFixture(t);
   const csrf = app.csrf;
@@ -77,13 +79,19 @@ test('discovered placeholders, automatic declarative flows and editable response
   const trigger = (body) =>
     fetch(app.url + echo.path, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', __RequestVerificationToken: csrf },
-      body: JSON.stringify(body),
+      headers: {
+        'content-type': 'application/json',
+        __RequestVerificationToken: csrf,
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({ eventData: JSON.stringify(body) }),
     });
-  assert.deepEqual(await (await trigger({ eventData: JSON.stringify({ Message: 'Local' }) })).json(), {
-    Message: 'Local',
-  });
-  assert.equal((await trigger({ Message: 12 })).status, 400);
+  assert.deepEqual(await (await trigger({ Message: 'Local' })).json(), { Message: 'Local' });
+  // The declared trigger schema is enforced by default (hosted does not enforce it: observed.powerPagesFlowTriggerSchema
+  // not-enforced, covered in exported-operations.test.mjs).
+  const refused = await trigger({ Message: 12 });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).ErrorCode, 'IncorrectPayload');
   const route = '/operations/' + encodeURIComponent(logic.key);
   assert.equal(
     (
@@ -108,14 +116,18 @@ test('discovered placeholders, automatic declarative flows and editable response
   const unlinked = (await (await admin('/operations')).json()).items.find((item) => item.processId === standalone);
   assert.equal(unlinked.mode, 'mock');
   assert.equal(unlinked.path, null);
-  // A mocked flow without a Request trigger still has no route: the trigger answers the local not-implemented error.
+  // A mocked flow without a consumer still has no route: its process id is not a consumer's, so IncorrectFlowId.
   const unrouted = await fetch(app.url + '/_api/cloudflow/v1.0/trigger/' + standalone, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', __RequestVerificationToken: csrf },
-    body: '{}',
+    headers: {
+      'content-type': 'application/json',
+      __RequestVerificationToken: csrf,
+      'x-requested-with': 'XMLHttpRequest',
+    },
+    body: JSON.stringify({ eventData: '{}' }),
   });
-  assert.equal(unrouted.status, 501);
-  assert.equal((await unrouted.json()).error.code, 'NotImplemented');
+  assert.equal(unrouted.status, 404);
+  assert.deepEqual(await unrouted.json(), { ErrorCode: '00000005', Message: 'IncorrectFlowId' });
   assert.equal((await admin(route, 'PATCH', { mode: 'handler' })).status, 409);
   assert.equal(
     (await admin('/config', 'PATCH', { identity: { id: 'person', roles: [], roleSource: 'override' } })).status,

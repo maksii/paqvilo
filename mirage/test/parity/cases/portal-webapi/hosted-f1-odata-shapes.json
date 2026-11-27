@@ -1,0 +1,1311 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-odata-shapes",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages site, 2026-11-26",
+    "scope": "OData read shapes of the portal Web API on hosted session F1's invented three-table schema (contact-scoped items, parent-scoped children), signed in as a contact with the F1 role: keyed and collection reads with and without $select, $filter, $orderby, $top, $count, $expand with nested options, navigation and lambda filters, column, $value, navigation and $ref routes, $count and $apply, $skip, $search, $compute, odata.maxpagesize and following its nextLink. Projection: status, OData-Version, x-ms-request-id presence and Server-Timing, the error object, or the context, counts, nextLink presence and rows. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-odata-shapes",
+      "sha256": "e1596acb17bcc425debcf5995b40f43b109b82225624dfb6f601fba086e697c6",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-odata-shapes",
+      "sha256": "a161323c77a4eaea1dd07c02d1c6db84809a1bcc970ed4ded2ef7d7d20d6f75b",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "collection-select-less",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "collection-select",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/rows"]
+    },
+    {
+      "id": "keyed-select",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-select-less",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-filter",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name&$filter=pqf1_amount gt 0"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-orderby",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name&$orderby=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-top",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name&$top=1"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-expand-single",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name&$expand=pqf1_parentitem($select=pqf1_name)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_parentitem(pqf1_name))/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root",
+              "pqf1_parentitem": null
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-expand-collection",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)?$select=pqf1_name&$expand=pqf1_item_pqf1_item_pqf1_child($select=pqf1_name)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_item_pqf1_item_pqf1_child(pqf1_name))/$entity",
+          "rows": [
+            {
+              "pqf1_item_pqf1_item_pqf1_child": [
+                {
+                  "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001101",
+                  "pqf1_name": "C1 of A root"
+                },
+                {
+                  "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001102",
+                  "pqf1_name": "C2 of A root"
+                }
+              ],
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-hidden-row",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001006)?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040120",
+          "message": "You don't have permission to read the pqf1_item table."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "keyed-missing-row",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000009999)?$select=pqf1_name"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "property",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "property-value",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_name/$value"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": null
+        },
+        "text": "A root"
+      },
+      "volatile": []
+    },
+    {
+      "id": "property-number",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_amount"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-single",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001002)/pqf1_parentitem"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-single-select",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001002)/pqf1_parentitem?$select=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)/$entity",
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-contact",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_contact?$select=fullname"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-collection",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_item_pqf1_item_pqf1_child?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-collection-self",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_parentitem_pqf1_item_pqf1_item?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute pqf1_parentitem_pqf1_item_pqf1_item in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "navigation-ref",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items(f1f1f1f1-0000-4000-8000-000000001001)/pqf1_item_pqf1_item_pqf1_child/$ref"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010A",
+          "message": "An unexpected error occurred while processing the request"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "expand-single",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$expand=pqf1_parentitem($select=pqf1_name)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_parentitem(pqf1_name))",
+          "total": -1,
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/rows"]
+    },
+    {
+      "id": "expand-collection",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$expand=pqf1_item_pqf1_item_pqf1_child($select=pqf1_name)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_item_pqf1_item_pqf1_child(pqf1_name))",
+          "total": -1,
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/rows"]
+    },
+    {
+      "id": "expand-contact",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$expand=pqf1_contact($select=fullname)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_contact(fullname))",
+          "total": -1,
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/rows"]
+    },
+    {
+      "id": "expand-nested-options",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$expand=pqf1_item_pqf1_item_pqf1_child($select=pqf1_name;$filter=pqf1_tag eq 'x';$orderby=pqf1_name;$top=1)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name,pqf1_item_pqf1_item_pqf1_child(pqf1_name))",
+          "total": -1,
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/rows"]
+    },
+    {
+      "id": "filter-navigation",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=pqf1_parentitem%2Fpqf1_name%20eq%20'A%20root'"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+              "pqf1_name": "A child 1"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001003",
+              "pqf1_name": "A child 2"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-navigation-2-levels",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=pqf1_parentitem%2Fpqf1_parentitem%2Fpqf1_name%20eq%20'A%20root'"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001004",
+              "pqf1_name": "A grandchild"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-lambda-any",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=pqf1_item_pqf1_item_pqf1_child%2Fany(c%3Ac%2Fpqf1_tag%20eq%20'x')"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+              "pqf1_name": "A child 1"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-lambda-all",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=pqf1_item_pqf1_item_pqf1_child%2Fall(c%3Ac%2Fpqf1_tag%20eq%20'x')"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+              "pqf1_name": "A child 1"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-lookup-value",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=_pqf1_parentitem_value eq f1f1f1f1-0000-4000-8000-000000001001"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_parentitem_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-function",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=contains(pqf1_name%2C'root')"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001005",
+              "pqf1_name": "B root"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-not-declared-column",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$filter=pqf1_secret eq 'x'"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute pqf1_secret in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "select-lookup-value",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name,_pqf1_parentitem_value"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_parentitem_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "select-not-declared-column",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_secret"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute pqf1_secret in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "orderby-lookup",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$orderby=_pqf1_parentitem_value"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_parentitem_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "top",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$top=2"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+              "pqf1_name": "A root"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+              "pqf1_name": "A child 1"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "skip",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$skip=1"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The $skip query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "count-true",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$count=true"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "count": "<volatile>",
+          "total": "<volatile>",
+          "nextLink": false,
+          "rows": "<volatile>"
+        }
+      },
+      "volatile": ["/body/count", "/body/rows", "/body/total"]
+    },
+    {
+      "id": "count-segment",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items/$count"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "apply-groupby",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$apply=groupby((pqf1_amount))"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "apply-aggregate-count",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$apply=aggregate($count as n)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "apply-filter-aggregate",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$apply=filter(pqf1_amount gt 10)/aggregate(pqf1_amount with sum as total)"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "search",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$search=root"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The $search query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "compute",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_items?$select=pqf1_name&$compute=pqf1_amount mul 2 as twice"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010B",
+          "message": "The $compute query parameter is not supported"
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "children-parent-scope",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_children?$select=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_children(pqf1_name)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001101",
+              "pqf1_name": "C1 of A root"
+            },
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001102",
+              "pqf1_name": "C2 of A root"
+            },
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001103",
+              "pqf1_name": "C3 of A child 1"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "children-expand-item",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_children?$select=pqf1_name&$expand=pqf1_item($select=pqf1_name)"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_children(pqf1_name,pqf1_item(pqf1_name))",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001101",
+              "pqf1_item": {
+                "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+                "pqf1_name": "A root"
+              },
+              "pqf1_name": "C1 of A root"
+            },
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001102",
+              "pqf1_item": {
+                "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001001",
+                "pqf1_name": "A root"
+              },
+              "pqf1_name": "C2 of A root"
+            },
+            {
+              "pqf1_childid": "f1f1f1f1-0000-4000-8000-000000001103",
+              "pqf1_item": {
+                "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+                "pqf1_name": "A child 1"
+              },
+              "pqf1_name": "C3 of A child 1"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "children-keyed-hidden-parent",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_children(f1f1f1f1-0000-4000-8000-000000001104)?$select=pqf1_name"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040120",
+          "message": "You don't have permission to read the pqf1_child table."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "children-filter-item-lookup",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_children?$select=pqf1_name&$filter=_pqf1_item_value eq f1f1f1f1-0000-4000-8000-000000001001"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_item_value in table pqf1_child is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "maxpagesize-3",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {
+          "Prefer": "odata.maxpagesize=3"
+        },
+        "path": "/_api/pqf1_items?$select=pqf1_name&$orderby=pqf1_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_items(pqf1_name)",
+          "total": -1,
+          "nextLink": true,
+          "rows": [
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001002",
+              "pqf1_name": "A child 1"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001003",
+              "pqf1_name": "A child 2"
+            },
+            {
+              "pqf1_itemid": "f1f1f1f1-0000-4000-8000-000000001004",
+              "pqf1_name": "A grandchild"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "maxpagesize-3-next",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {
+          "Prefer": "odata.maxpagesize=3"
+        },
+        "follow": {
+          "path": "/_api/pqf1_items?$select=pqf1_name&$orderby=pqf1_name",
+          "headers": {
+            "Prefer": "odata.maxpagesize=3"
+          }
+        }
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "maxpagesize-next-without-prefer",
+      "input": {
+        "method": "GET",
+        "settings": {},
+        "headers": {},
+        "follow": {
+          "path": "/_api/pqf1_items?$select=pqf1_name&$orderby=pqf1_name",
+          "headers": {
+            "Prefer": "odata.maxpagesize=3"
+          }
+        }
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _pqf1_contact_value in table pqf1_item is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

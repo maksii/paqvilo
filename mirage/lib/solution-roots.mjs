@@ -123,6 +123,11 @@ const RELEVANT_TREE_NAMES = new Set([
 const RELEVANT_TREE_DIRS = { test: (name) => RELEVANT_TREE_NAMES.has(String(name).toLowerCase()) };
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
+// Code component files: manifests, bundles and every file a control serves (styles, strings, images, fonts, maps).
+const CONTROL_CODE_FILE = /\.(?:xml|json|map|m?js|css|resx|html?)$/i;
+const CONTROL_MEDIA_FILE = /\.(?:png|jpe?g|gif|svg|webp|ico|bmp|woff2?|ttf|otf|eot)$/i;
+const CONTROL_FILE = { test: (file) => CONTROL_CODE_FILE.test(file) || CONTROL_MEDIA_FILE.test(file) };
+
 function ignoreTreeCandidate(full, tree, stats, sep) {
   if (full === tree) return false;
   if (SKIPPED.test(full.slice(tree.length))) return true;
@@ -130,8 +135,7 @@ function ignoreTreeCandidate(full, tree, stats, sep) {
   if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
   if (!stats?.isFile()) return false;
   let relevantFile;
-  if (/^(?:controls|webresources)$/i.test(segments[0]))
-    relevantFile = /\.(?:xml|json|map|js|css|resx|png|jpe?g|svg|woff2?)$/i;
+  if (/^(?:controls|webresources)$/i.test(segments[0])) relevantFile = CONTROL_FILE;
   else if (/^(?:powerpagecomponents)$/i.test(segments[0])) relevantFile = /\.(?:xml|js|sl)$/i;
   else relevantFile = /\.(?:xml|json|ya?ml)$/i;
   return !relevantFile.test(full);
@@ -148,9 +152,11 @@ function ignoreRootCandidate(full, root, stats, sep) {
 }
 
 function solutionWatchDecision(candidate, stats, context) {
-  const { key, within, excluded, sources, treeKeys, rootKeys, sep, skipped } = context;
+  const { key, within, excluded, sources, treeKeys, rootKeys, controlKeys, sep, skipped } = context;
   const full = key(candidate);
   if (excluded.some((dir) => within(full, dir))) return true;
+  const controls = controlKeys.find((dir) => within(full, dir));
+  if (controls) return skipped(full, controls) || (Boolean(stats?.isFile()) && !CONTROL_FILE.test(full));
   const source = sources.find((dir) => within(full, dir));
   if (source) return skipped(full, source);
   const tree = treeKeys.filter((dir) => within(full, dir)).sort((a, b) => b.length - a.length)[0];
@@ -166,7 +172,7 @@ function solutionWatchDecision(candidate, stats, context) {
  * Controls and Workflows; elsewhere under a root only
  * candidate solution directories and their Other/Solution.xml (new layers).
  */
-export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclude = [] }) {
+export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclude = [], controlTrees = [] }) {
   const sep = path.sep;
   const key = (value) => path.resolve(value).toLowerCase();
   // chokidar reports paths in the spelling a root was given (for example a Windows
@@ -192,12 +198,14 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
   }
   const sources = sourceDir ? spellings(sourceDir) : [];
   const rootKeys = roots.flatMap(spellings);
+  // pcf.sources: a build output (or its project folder) where only code component files change the sources.
+  const controlKeys = controlTrees.flatMap(spellings);
   // Runtime output (state, caches) never triggers a source reload.
   const excluded = exclude.filter(Boolean).flatMap(spellings);
   const within = (full, dir) => full === dir || full.startsWith(dir + sep);
   const skipped = (full, base) => SKIPPED.test(full.slice(base.length));
   // Tool and build directories are skipped below a watched base, never because an
   // ancestor of the base carries such a name (for example a checkout under .paqvilo).
-  const context = { key, within, excluded, sources, treeKeys, rootKeys, sep, skipped };
+  const context = { key, within, excluded, sources, treeKeys, rootKeys, controlKeys, sep, skipped };
   return (candidate, stats) => solutionWatchDecision(candidate, stats, context);
 }

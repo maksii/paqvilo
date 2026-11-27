@@ -1090,7 +1090,7 @@ test('a snippet record without a value is nil and its editable wrapper is marked
     'xrm-attribute',
     'xrm-editable-text',
   ]);
-  assert.ok(html.endsWith(' data-languageContext="English"><div class="xrm-attribute-value"></div></div>'), html);
+  assert.ok(html.endsWith(' data-languagecontext="English"><div class="xrm-attribute-value"></div></div>'), html);
   // Dataverse stores empty text as null: the value is nil for output, conditions and default.
   assert.equal(
     (
@@ -1603,7 +1603,7 @@ test('website languages follow the import and the request: the wet-boew bilingua
   // Editable snippets carry the request language's display name.
   assert.match(
     await view("{% editable snippets 'GCWeb/App/Name' type: 'text' %}", '/fr/overview/'),
-    /data-languageContext="Fran&#231;ais"><div class="xrm-attribute-value">Nom de l'application<\/div>/,
+    /data-languagecontext="Fran&#231;ais"><div class="xrm-attribute-value">Nom de l'application<\/div>/,
   );
   // The page shell: html language attributes, the localized title and copy, and the export's
   // header language toggle (GCWeb/App/Header) pointing at the other language.
@@ -1772,6 +1772,8 @@ test('request.params carries cookies below form and query values and never the r
     `${sessionName}=session-secret-7f3a`,
     `${visitorName}=${visitor}`,
     '__RequestVerificationToken=antiforgery-secret-91c2',
+    ...Array.from({ length: 4 }, (_, slot) => `${sessionName}-request-binding-${slot}=binding-fixture-${slot}`),
+    'paqvilo-mirage-auth-4-request-binding-2=different-runtime-binding-fixture',
   ].join('; ');
   const cookieOnly = await (await fetch(`${app.url}/`, { headers: { cookie: 'theme=dark' } })).text();
   assert.match(cookieOnly, /<p id="theme">dark<\/p>/);
@@ -1786,6 +1788,9 @@ test('request.params carries cookies below form and query values and never the r
     visitor,
     '[__RequestVerificationToken=',
     'antiforgery-secret-91c2',
+    '-request-binding-',
+    'binding-fixture-',
+    'different-runtime-binding-fixture',
   ]) {
     assert.equal(page.includes(secret), false, `request.params exposed ${secret}`);
   }

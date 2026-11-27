@@ -8,6 +8,7 @@ import { observedPage } from './shared-browser.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
 import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// @test-kind unproven+observation: local model of RESX selection on loopback sources; the bound DisplayName follows the live Liquid-host capture of 2026-11-26 (paqvilo-developer pcf-parity capture r1 lq-typed)
 test('PCF localized instances keep languages, missing keys and empty labels across updates and teardown', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-localization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
@@ -112,7 +113,9 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
   );
   assert.equal(state.french.caption, ' Bonjour β ');
   assert.equal(state.french.empty, '');
-  assert.equal(state.french.displayName, '');
+  // A Liquid-tag bound property reports its property name as DisplayName; display-name-key is not applied
+  // (live capture, paqvilo-developer pcf-parity capture r1 lq-typed).
+  assert.equal(state.french.displayName, 'value');
   assert.equal(state.french.englishOnly, 'EnglishOnly');
   assert.equal(state.english.caption, 'Hello');
   assert.equal(state.english.empty, 'Empty');
@@ -130,7 +133,7 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
   }, state.french.id);
   assert.equal(updated.raw, 'Changed β');
   assert.equal(updated.caption, ' Bonjour β ');
-  assert.equal(updated.displayName, '');
+  assert.equal(updated.displayName, 'value');
   await page.locator('#french').evaluate((node) => node.remove());
   await page.waitForFunction((id) => window.destroyed.includes(id), state.french.id);
   assert.equal(

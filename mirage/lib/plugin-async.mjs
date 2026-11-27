@@ -415,6 +415,8 @@ export function createAsyncPluginRunner({
           record: structuredClone(event.row),
           previous: structuredClone(event.previous ?? null),
           identity: structuredClone(event.identity ?? {}),
+          // The operation's portal caller (exported-plugins.mjs), as the synchronous web hook context reports it.
+          portalCaller: event.frame?.portalCallerUserId ?? null,
           changedAttributes: event.submittedAttributes,
           customApi: event.customApi,
           bypassStepIds: event.bypassStepIds,

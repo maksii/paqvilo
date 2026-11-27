@@ -3,34 +3,50 @@ import path from 'node:path';
 
 /**
  * The layout ("dialect") of a portal source folder, from cheap evidence on disk. The
- * Mirage imports four of them; the others are named so that a source the importer
+ * Mirage imports five of them; the others are named so that a source the importer
  * cannot read fails loudly instead of importing as an empty portal.
  *
- * - "standard-yaml": PAC YAML with adx_ keys (website.yml adx_websiteid). Standard data
- *   model downloads, and enhanced data model downloads that keep adx_ keys.
+ * - "standard-yaml": PAC YAML with adx_ keys (website.yml adx_websiteid). PAC 2.13.1
+ *   pac pages download writes adx_ keys for both data models: an enhanced data model site
+ *   (--modelVersion 2 or Enhanced) also downloads with adx_ keys, and its website.yml can
+ *   carry adx_enhancedauthorization (hosted session F5).
  * - "enhanced-solution": an unpacked Solution with powerpagecomponents/<id>/powerpagecomponent.xml.
  * - "short-key-yaml": .powerpages-site YAML with unprefixed keys (id:, isroot, parentpageid),
  *   written by code sites (pac pages download-code-site) and, per Microsoft's Power Pages
  *   plugin, by current pac pages download. Imported like standard YAML: IDs from id:,
  *   content-pages/<language>/, one folder per web file and language codes from
  *   .portalconfig/*.portallanguage.yml.
- * - "code-site-project": a code-site project folder; its .powerpages-site/ folder holds the
- *   site as short-key YAML and is what the importer reads.
- * - "enhanced-yaml": PAC YAML with mspp_ keys (not imported).
+ * - "code-site-project": a code-site project folder with its .powerpages-site/ records,
+ *   or a project with powerpages.config.json that can be served from its compiled output.
+ * - "enhanced-yaml": YAML records with mspp_ keys, read as the enhanced data model. PAC 2.13.1
+ *   does not write this layout (its enhanced data model downloads keep adx_ keys); the reader
+ *   stays for existing sources in it.
  * - "solution-without-site": an unpacked Solution (Other/Solution.xml) without site components.
  * - "unknown": none of the above.
  */
-const IMPORTED_DIALECTS = Object.freeze(['standard-yaml', 'enhanced-solution', 'short-key-yaml', 'code-site-project']);
+const IMPORTED_DIALECTS = Object.freeze([
+  'standard-yaml',
+  'enhanced-yaml',
+  'enhanced-solution',
+  'short-key-yaml',
+  'code-site-project',
+]);
 
 const LABELS = {
   'standard-yaml': 'PAC YAML with adx_ keys',
   'enhanced-solution': 'an unpacked Solution with powerpagecomponents/ (enhanced data model)',
-  'enhanced-yaml': 'PAC YAML with mspp_ keys',
+  'enhanced-yaml': 'portal YAML with mspp_ keys (a layout PAC 2.13.1 does not write)',
   'short-key-yaml':
     '.powerpages-site short-key YAML (keys such as id:, isroot and parentpageid, written by code sites and current pac pages download)',
-  'code-site-project': 'a code-site project folder whose .powerpages-site/ folder holds short-key YAML',
+  'code-site-project': 'a Power Pages code-site project',
   'solution-without-site': 'an unpacked Solution without Power Pages site components (no powerpagecomponents/)',
   unknown: 'no recognized portal layout (no website.yml, web-pages/, web-files/ or powerpagecomponents/)',
+};
+
+const YAML_STYLES = {
+  adx: { dialect: 'standard-yaml', keys: 'adx_ keys' },
+  mspp: { dialect: 'enhanced-yaml', keys: 'mspp_ keys' },
+  short: { dialect: 'short-key-yaml', keys: 'id: and unprefixed keys' },
 };
 
 const isDirectory = (file) => {
@@ -112,18 +128,14 @@ export function detectSourceDialect(dir) {
   if (isDirectory(path.join(dir, 'powerpagecomponents'))) return result('enhanced-solution', 'powerpagecomponents/');
   const website = ['website.yml', 'website.yaml'].map((name) => path.join(dir, name)).find(isFile);
   const style = keyStyle(website ? yamlKeys(website) : sampleRecords(dir).flatMap(yamlKeys));
-  if (style === 'adx')
-    return result('standard-yaml', website ? 'website.yml with adx_ keys' : 'records with adx_ keys');
-  if (style === 'mspp')
-    return result('enhanced-yaml', website ? 'website.yml with mspp_ keys' : 'records with mspp_ keys');
-  if (style === 'short')
-    return result(
-      'short-key-yaml',
-      website ? 'website.yml with id: and unprefixed keys' : 'records with id: and unprefixed keys',
-    );
+  if (style) {
+    const { dialect, keys } = YAML_STYLES[style];
+    return result(dialect, `${website ? 'website.yml' : 'records'} with ${keys}`);
+  }
   if (path.basename(dir).toLowerCase() === '.powerpages-site')
     return result('short-key-yaml', 'a .powerpages-site folder');
   if (isDirectory(path.join(dir, '.powerpages-site'))) return result('code-site-project', '.powerpages-site/');
+  if (isFile(path.join(dir, 'powerpages.config.json'))) return result('code-site-project', 'powerpages.config.json');
   if (isFile(path.join(dir, 'Other', 'Solution.xml')))
     return result('solution-without-site', 'Other/Solution.xml without powerpagecomponents/');
   return result('unknown', 'no website.yml, portal records or powerpagecomponents/');
@@ -146,10 +158,7 @@ export function unrecognisedSourceMessage(sourceDir, dialect, { pageRecords = 0 
     if (pageRecords)
       advice = `It has ${pageRecords} web page record${pageRecords === 1 ? '' : 's'}, but none could be identified as a page.`;
     else advice = 'It has no web pages.';
-  } else if (dialect.dialect === 'enhanced-yaml')
-    advice =
-      "The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/).";
-  else
+  } else
     advice =
       'Point it at the folder that contains website.yml (a PAC YAML or .powerpages-site export), or at an unpacked Solution with powerpagecomponents/.';
   return `No portal pages were recognized in ${sourceDir}. Detected layout: ${dialect.label}. ${advice}`;
@@ -176,5 +185,6 @@ export function assertPortalSource(portal) {
  */
 export function portalSourceDir(dir) {
   if (!dir) return dir;
-  return detectSourceDialect(dir).dialect === 'code-site-project' ? path.join(dir, '.powerpages-site') : dir;
+  const nested = path.join(dir, '.powerpages-site');
+  return detectSourceDialect(dir).dialect === 'code-site-project' && isDirectory(nested) ? nested : dir;
 }

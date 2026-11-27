@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { authCookieName } from '../lib/auth-session.mjs';
+import { rememberedBrowserCookieName } from '../lib/local-accounts.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const WEBSITE = '5b1c2d3e-0000-4000-8000-00000000d00d';
@@ -94,14 +95,22 @@ async function portalFixture(t) {
   return app;
 }
 
+// @test-kind security+contract: rendered request parameters exclude application and remembered MFA cookie credentials.
 test('the account page request.params carries the request cookies and not the runtime session cookie', async (t) => {
   const app = await portalFixture(t);
   const sessionName = authCookieName(new URL(app.url).port);
   const cookie = `theme=dark; ${sessionName}=session-secret-4c2e`;
-  const page = await (await fetch(app.url + '/SignIn', { headers: { cookie } })).text();
+  const marker = rememberedBrowserCookieName(sessionName);
+  const page = await (
+    await fetch(app.url + '/SignIn', {
+      headers: { cookie: cookie + '; ' + marker + '=fixture-mfa-marker' },
+    })
+  ).text();
   assert.match(page, /\[theme=dark\]/);
   assert.equal(page.includes(sessionName), false, 'the runtime session cookie is not a parameter');
   assert.equal(page.includes('session-secret-4c2e'), false, 'the runtime session value is not a parameter');
+  assert.equal(page.includes(marker), false, 'the remembered MFA browser cookie is not a parameter');
+  assert.equal(page.includes('fixture-mfa-marker'), false, 'the remembered MFA browser value is not a parameter');
 });
 
 test('the quick view document layout carries the request cookies and not the runtime session cookie', async (t) => {

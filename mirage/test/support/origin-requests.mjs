@@ -39,13 +39,15 @@ export function emptyLocalState() {
 }
 
 // Starts a local simulator on dir with the initial state, closed after t. Resolves to the simulator.
-export async function startLocalSimulator(t, dir, initial) {
+export async function startLocalSimulator(t, dir, initial, { clock, identityProvider } = {}) {
   const app = await createSimulator({
     sourceDir: dir,
     stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,
+    ...(clock ? { clock } : {}),
+    ...(identityProvider ? { identityProvider } : {}),
   });
   ownedFixture(t).add(() => app.close());
   return app;

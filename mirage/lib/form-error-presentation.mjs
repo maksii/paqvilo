@@ -21,10 +21,15 @@ const customPluginErrors = (portal) =>
  * malformed/forged control failures keep their original error response. */
 export function formWriteError(error, observed, kind = 'entityform', portal = null) {
   // Advanced forms keep their own failure path; Basic Form.aspx documents use the error MessagePanel postback.
-  if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
+  if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true || error.details?.validationErrors?.length)
+    return null;
   const markup = observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {};
   // A plug-in's InvalidPluginExecutionException (observed natively, basic-form create and update): the generic text with
   // an Error ID that is the response's x-ms-request-id, or the plug-in's message when Site/EnableCustomPluginError is true.
+  // A Dataverse validation refusal of a column value (0x8004431a, a choice outside the column's options) shows the
+  // Dataverse message as it is, whatever Site/EnableCustomPluginError says (hosted F2, both runs).
+  if (error.code === 'PicklistValueOutOfRange' || String(error.details?.innerCode).toLowerCase() === '0x8004431a')
+    return { type: 'error', ...markup, message: String(error.message) };
   if (pluginRefusal(error)) {
     const requestId = randomUUID();
     return {
@@ -55,6 +60,9 @@ const escapeHtml = (value) =>
  */
 export function formErrorPanel(outcome, { v5 = false, closeButton = '' } = {}) {
   const message = escapeHtml(outcome?.message);
+  // Request validation's panel carries the error classes the page's not-found panel uses (hosted F2 class list).
+  if (outcome?.panel === 'request-validation')
+    return `<div id="MessagePanel" class="message alert error alert alert-danger" role="alert">${v5 ? closeButton : ''}<span id="MessageLabel">${message}</span></div>`;
   if (v5 && !outcome?.markup)
     return `<div id="MessagePanel" class="message alert alert-danger" role="alert">${closeButton}<span id="MessageLabel" aria-live="polite" aria-atomic="true"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${message}</p></span></div>`;
   const markup = outcome?.markup === 'paragraph' ? `<p>${message}</p>` : message;

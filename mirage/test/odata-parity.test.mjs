@@ -17,12 +17,13 @@ const settingsYaml = (settings) =>
   Object.entries(settings)
     .map(([name, value]) => `- adx_name: ${name}\n  adx_value: '${String(value).replace(/'/g, "''")}'`)
     .join('\n');
+// A lookup's _x_value is listed next to its logical name, as a hosted site needs (hosted session F1 summary-F1 API-02c).
 const SETTINGS = {
   'Webapi/account/enabled': 'true',
   'Webapi/account/fields':
-    'name,revenue,industrycode,primarycontactid,statecode,statuscode,createdon,modifiedon,accountnumber,description,employees,account_tags,contact_customer_accounts,openedon',
+    'name,revenue,industrycode,primarycontactid,_primarycontactid_value,statecode,statuscode,createdon,modifiedon,accountnumber,description,employees,account_tags,contact_customer_accounts,openedon',
   'Webapi/contact/enabled': 'true',
-  'Webapi/contact/fields': 'fullname,parentcustomerid,birthdate,emailaddress1',
+  'Webapi/contact/fields': 'fullname,parentcustomerid,_parentcustomerid_value,birthdate,emailaddress1',
   'Webapi/tag/enabled': 'true',
   'Webapi/tag/fields': 'name',
   'Webapi/validationconfiguration/enabled': 'true',
@@ -265,15 +266,17 @@ test('route, Prefer and annotation helpers follow the OData conventions', () => 
   assert.equal(annotationMatcher('*')('anything'), true);
 });
 
-// @test-kind contract: the module's own error envelope rules: every envelope carries a non-empty code
+// @test-kind contract+observation: the module's own error envelope rules: every envelope carries a non-empty code; the token failures answer 401 "Request validation failed : …" as hosted session F4 did (paqvilo-developer hosted-f4 swap runs a and b)
 test('error envelope uses the local Power Pages error-code contract and optional innererror', () => {
   const cds = webApiErrorResponse(new DataError('Too long', 400, 'StringLengthExceeded', { innerCode: '0x80044331' }), {
     innerError: true,
   });
+  // The default text and cdscode follow the hosted captures (hosted session F1 summary-F1 API-02c).
   assert.deepEqual(cds.body, {
     error: {
       code: '9004010D',
-      message: 'CDS error occurred.',
+      message: 'Common Data Service error occurred.',
+      cdscode: '0x80044331',
       innererror: { code: '0x80044331', message: 'Too long' },
     },
   });
@@ -350,9 +353,19 @@ test('error envelope uses the local Power Pages error-code contract and optional
       '90040105',
       "You don't have permission to associate or disassociate table account with tag.",
     ],
-    // Token failures: a missing token 401, a mismatched one 403 (docs: "Token failures").
-    [new DataError('token', 401, 'MissingPortalRequestVerificationToken'), 401, '90040107', 'token'],
-    [new DataError('token', 403, 'HttpAntiForgeryException'), 403, '90040107', 'token'],
+    // Token failures: 401 with the validation text (docs: "Token failures").
+    [
+      new DataError('token', 401, 'MissingPortalRequestVerificationToken'),
+      401,
+      '90040107',
+      'Request validation failed : token',
+    ],
+    [
+      new DataError('token', 403, 'HttpAntiForgeryException', { antiForgery: 'mismatch' }),
+      401,
+      '90040107',
+      'Request validation failed : The anti-forgery cookie token and form field token do not match.',
+    ],
     [
       new DataError('x', 401, 'MissingPortalSessionCookie'),
       401,
@@ -466,9 +479,10 @@ test('$filter grammar: logical, string, lambda and Dataverse functions; unknown 
   assert.deepEqual(await names("startswith(name,'fab') and endswith(name,'KAM')"), ['Fabrikam']);
   assert.deepEqual(await names("contains(name,'%wind')"), ['Northwind'], 'contains supports SQL wildcards');
   assert.deepEqual(await names("account_tags/any(t:t/name eq 'Gold')"), ['Contoso']);
+  // The portal's all is false over no related rows (hosted session F1 summary-F1 API-02b, two runs).
   assert.deepEqual(
     await names("contact_customer_accounts/all(c:startswith(c/fullname,'A') or startswith(c/fullname,'B'))"),
-    ['Contoso', 'Fabrikam', 'Northwind'],
+    ['Contoso'],
   );
   assert.deepEqual(await names("Microsoft.Dynamics.CRM.Between(PropertyName='employees',PropertyValues=['3','12'])"), [
     'Contoso',
@@ -517,7 +531,10 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
   const state = fixture();
   state.tables.tag = Array.from({ length: 5002 }, (_, index) => ({ tagid: G(1000 + index), name: `Tag ${index}` }));
   const { json } = await start(t, { state });
-  const counted = await json('/_api/tags?$select=name&$count=true', { headers: { Prefer: 'odata.maxpagesize=2' } });
+  // odata.maxpagesize pages only a query with $top (see the observation test below).
+  const counted = await json('/_api/tags?$select=name&$count=true&$top=10', {
+    headers: { Prefer: 'odata.maxpagesize=2' },
+  });
   assert.equal(counted.body['@odata.count'], 5000);
   assert.equal(counted.body.value.length, 2);
   assert.equal(counted.headers.get('preference-applied'), null, 'the local response omits Preference-Applied');
@@ -536,7 +553,8 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
   assert.equal(next.body.value.length, 2);
   const skip = await json('/_api/tags?$skip=1');
   assert.equal(skip.status, 400);
-  assert.equal(skip.body.error.innererror.code, '0x80060888');
+  // 400 9004010B, with no Dataverse inner error (hosted session F1 summary-F1 API-02c, two runs).
+  assert.deepEqual(skip.body.error, { code: '9004010B', message: 'The $skip query parameter is not supported' });
   const top = await json('/_api/tags?$select=name&$top=3');
   assert.equal(top.body.value.length, 3);
   assert.equal(top.body['@odata.nextLink'], undefined);
@@ -544,6 +562,57 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
     await fetch(counted.body['@odata.nextLink'].replace(/\/_api\/tags\?.*/, '/_api/tags/$count'))
   ).text();
   assert.equal(count, '5000');
+});
+
+const nineTags = async (t) => {
+  const state = fixture();
+  state.tables.tag = Array.from({ length: 9 }, (_, index) => ({ tagid: G(2000 + index), name: `Tag ${index}` }));
+  return start(t, { state });
+};
+
+// @test-kind observation: live captures paqvilo-developer pcf-parity summary-F section 1 (runs fa and fb, wa-field-ny and wa-dataset-ny direct reads set.list.maxpagesize, set.list.maxpagesize.top, set.list.count and logical.pcfheader.maxpagesize over nine rows, paqvilo3 2026-11-26), replayed on an invented loopback portal
+test('odata.maxpagesize pages only a query with $top; the absolute next link keeps $top', async (t) => {
+  const { json } = await nineTags(t);
+  const prefer = { Prefer: 'odata.maxpagesize=2' };
+  const ignored = await json('/_api/tags?$select=name&$orderby=name', { headers: prefer });
+  assert.equal(ignored.status, 200);
+  assert.equal(ignored.body.value.length, 9);
+  assert.equal(ignored.body['@odata.nextLink'], undefined);
+  const logical = await json('/_api/tag?$select=name&$orderby=name', {
+    headers: { ...prefer, 'pcf-entity-logical-name': 'tag', 'X-Requested-With': 'XMLHttpRequest' },
+  });
+  assert.equal(logical.status, 200);
+  assert.equal(logical.body.value.length, 9);
+  assert.equal(logical.body['@odata.nextLink'], undefined);
+  const paged = await json('/_api/tags?$select=name&$orderby=name&$top=5', { headers: prefer });
+  assert.equal(paged.status, 200);
+  assert.deepEqual(
+    paged.body.value.map((row) => row.name),
+    ['Tag 0', 'Tag 1'],
+  );
+  const link = paged.body['@odata.nextLink'];
+  assert.ok(link.startsWith(`${paged.url}/_api/tags?$select=name&$orderby=name&$top=5&$skiptoken=`), link);
+  const counted = await json('/_api/tags?$select=name&$count=true&$top=2');
+  assert.equal(counted.body.value.length, 2);
+  assert.equal(counted.body['@odata.count'], 9);
+  assert.equal(counted.body['@odata.nextLink'], undefined);
+});
+
+// @test-kind unproven: OData model of the pages after the first under $top and odata.maxpagesize; the live captures (summary-F section 1) record the first page and its next link only
+test('next links under $top and odata.maxpagesize stop at $top over all pages', async (t) => {
+  const { json } = await nineTags(t);
+  const prefer = { Prefer: 'odata.maxpagesize=2' };
+  const pages = [];
+  let route = '/_api/tags?$select=name&$orderby=name&$top=5';
+  while (route) {
+    const page = await json(route, { headers: prefer });
+    assert.equal(page.status, 200);
+    pages.push(page.body.value.map((row) => row.name));
+    const link = page.body['@odata.nextLink'];
+    if (link) assert.match(link, /&\$top=5&\$skiptoken=/);
+    route = link ? new URL(link).pathname + new URL(link).search : null;
+  }
+  assert.deepEqual(pages, [['Tag 0', 'Tag 1'], ['Tag 2', 'Tag 3'], ['Tag 4']]);
 });
 
 test('$expand of single- and collection-valued navigation properties with nested options', async () => {
@@ -570,25 +639,29 @@ test('$apply groupby and aggregate', async () => {
   ]);
 });
 
+// @test-kind observation+unproven: the column and navigation route answers are hosted session F1 captures (paqvilo-developer hosted-f1 summary-F1 API-02c, runs/a and runs/b odata-shapes property, property-value, navigation-contact, navigation-collection); the navigation $count answer is the follow-up capture (summary-F1 Follow-up 2026-11-27, runs/a and runs/b nav-followup navcount-*); the alternate key, table /$count and ETag reads stay local models
 test('single property, $value, navigation and $count routes', async () => {
   const { json, call } = shared;
-  assert.deepEqual((await json(`/_api/accounts(${G(1)})/name`)).body, { value: 'Contoso' });
+  const allColumns = (table) => ({
+    code: '90040101',
+    message: `Attribute All Columns in table ${table} is not enabled for Web Api.`,
+  });
+  assert.deepEqual((await json(`/_api/accounts(${G(1)})/name`)).body.error, allColumns('account'));
   assert.equal(await (await call(`/_api/accounts(${G(1)})/name/$value`)).text(), 'Contoso');
-  assert.equal((await call(`/_api/accounts(${G(3)})/revenue`)).status, 204, 'null properties answer 204');
+  assert.equal((await call(`/_api/accounts(${G(3)})/revenue/$value`)).status, 204, 'a null value answers 204');
   const related = await json(`/_api/accounts(${G(1)})/contact_customer_accounts?$select=fullname&$orderby=fullname`);
-  assert.deepEqual(
-    related.body.value.map((row) => row.fullname),
-    ['Ada Lovelace', 'Bob Stone'],
-  );
+  assert.deepEqual(related.body.error, allColumns('account'));
   const single = await json(`/_api/contacts(${G(11)})/parentcustomerid?$select=name`);
-  assert.equal(single.body.name, 'Contoso');
-  assert.equal(await (await call(`/_api/accounts(${G(1)})/contact_customer_accounts/$count`)).text(), '2');
+  assert.deepEqual(single.body.error, allColumns('contact'));
+  // A navigation $count answers 400 9004010A (hosted session F1 follow-up 2026-11-27, runs/a and runs/b nav-followup).
+  assert.equal((await call(`/_api/accounts(${G(1)})/contact_customer_accounts/$count`)).status, 400);
   assert.equal(await (await call('/_api/accounts/$count')).text(), '3');
   const alternate = await json("/_api/accounts(accountnumber='ACC-0002')?$select=name");
   assert.equal(alternate.body.name, 'Fabrikam');
   const missing = await json(`/_api/accounts(${G(9)})`);
   assert.equal(missing.status, 404);
-  assert.equal(missing.body.error.innererror.code, '0x80040217');
+  // No cdscode and no inner error, also with Webapi/error/innererror (hosted session F1 summary-F1 API-02c).
+  assert.deepEqual(missing.body.error, { code: '9004010D', message: 'Common Data Service error occurred.' });
   const etag = (await json(`/_api/accounts(${G(1)})?$select=name`)).body['@odata.etag'];
   assert.equal(
     (await call(`/_api/accounts(${G(1)})?$select=name`, { headers: { 'If-None-Match': etag } })).status,
@@ -707,7 +780,7 @@ test('write validation follows Dataverse types inside the CDSError envelope', as
     const response = await json(`/_api/accounts(${G(1)})`, { method: 'PATCH', body });
     assert.equal(response.status, 400, JSON.stringify(body));
     assert.equal(response.body.error.code, '9004010D');
-    assert.equal(response.body.error.message, 'CDS error occurred.');
+    assert.equal(response.body.error.message, 'Common Data Service error occurred.');
     assert.equal(response.body.error.innererror.code, innerCode);
     if (message) assert.equal(response.body.error.innererror.message, message);
   }
@@ -732,7 +805,8 @@ test('innererror is omitted unless Webapi/error/innererror is true', async (t) =
   const { json } = await start(t, { settings: { ...SETTINGS, 'Webapi/error/innererror': 'false' } });
   const response = await json(`/_api/accounts(${G(1)})`, { method: 'PATCH', body: { name: 5 } });
   assert.equal(response.status, 400);
-  assert.deepEqual(Object.keys(response.body.error).sort(), ['code', 'message']);
+  // cdscode is sent without the inner error setting (hosted session F1 summary-F1 API-02c, two runs).
+  assert.deepEqual(Object.keys(response.body.error).sort(), ['cdscode', 'code', 'message']);
 });
 
 const ALL_ERRORS = { webApiInnerError: 'all-errors', evidence: 'synthetic: every error carries innererror' };
@@ -767,7 +841,8 @@ test('observed webApiInnerError all-errors adds innererror to every error envelo
   const cds = await json(`/_api/accounts(${G(1)})`, { method: 'PATCH', body: { name: 5 } });
   assert.deepEqual(cds.body.error, {
     code: '9004010D',
-    message: 'CDS error occurred.',
+    message: 'Common Data Service error occurred.',
+    cdscode: '0x80048d19',
     innererror: {
       code: '0x80048d19',
       message: "Cannot convert the literal '5' to the expected type 'Edm.String'.",
@@ -1073,6 +1148,7 @@ test('alternate keys are unique and duplicate primary keys are rejected', async 
   assert.equal(duplicateId.status, 412);
 });
 
+// @test-kind unproven+observation+security: local model of the portal Web API refusals (file kind), which refuse writes without the anti-forgery token; the token refusals are hosted session F4's 401 90040107 (paqvilo-developer hosted-f4 swap runs a and b); the cloud-flow answer for an id no consumer has is hosted session F8's 404 IncorrectFlowId (roles group, paqvilo-developer hosted-f8 summary-F8.md)
 test('anti-forgery tokens, disabled tables, configuration tables, entity set names and cloud flows', async () => {
   const { json, call } = shared;
   const missing = await json('/_api/accounts', { method: 'POST', body: { name: 'No token' }, token: false });
@@ -1084,10 +1160,13 @@ test('anti-forgery tokens, disabled tables, configuration tables, entity set nam
     token: false,
     headers: { __RequestVerificationToken: 'wrong' },
   });
-  // A token that doesn't match is 403 90040107, which Microsoft's clients refresh and retry on.
-  assert.equal(mismatch.status, 403);
+  // A token the runtime did not issue is 401 90040107.
+  assert.equal(mismatch.status, 401);
   assert.equal(mismatch.body.error.code, '90040107');
-  assert.equal(mismatch.body.error.message, 'The anti-forgery cookie token and form field token do not match.');
+  assert.match(
+    mismatch.body.error.message,
+    /^Request validation failed : The anti-forgery token could not be decrypted\./,
+  );
   assert.equal((await call('/_api/accounts?$select=name')).status, 200, 'reads need no token');
   const snippet = await json('/_api/adx_contentsnippets');
   assert.equal(snippet.status, 404);
@@ -1123,9 +1202,11 @@ test('anti-forgery tokens, disabled tables, configuration tables, entity set nam
   );
   const flow = await json('/_api/cloudflow/v1.0/trigger/7f2a2b2c-1111-2222-3333-444455556666', {
     method: 'POST',
-    body: {},
+    body: { eventData: '{}' },
+    headers: { 'x-requested-with': 'XMLHttpRequest' },
   });
-  assert.equal(flow.status, 501);
+  assert.equal(flow.status, 404);
+  assert.deepEqual(flow.body, { ErrorCode: '00000005', Message: 'IncorrectFlowId' });
   const duplicate = await json('/_api/accounts?$select=name&$select=revenue');
   assert.equal(duplicate.status, 400);
 });
@@ -1193,6 +1274,7 @@ test("FetchXML link-entity tables need read permission; lookup names don't depen
   assert.equal(own.status, 200);
 });
 
+// @test-kind observation+unproven: the navigation-route refusal of an unreadable related table is hosted session F1 AUTH-03c (summary-F1, runs/a and runs/b refs read-contact-roles-nav, replayed by portal-webrole-refs/hosted-f1-without-settings); the $expand refusals and the readable expansion stay local models
 test('$expand and navigation reads need read permission on the related table', async (t) => {
   const state = fixture();
   state.settings = { permissionMode: 'enforce' };
@@ -1204,6 +1286,8 @@ test('$expand and navigation reads need read permission on the related table', a
     '/_api/accounts?$select=name&$expand=primarycontactid($select=fullname)',
     '/_api/accounts?$select=name&$expand=contact_customer_accounts($select=fullname)',
     `/_api/accounts(${G(1)})?$select=name&$expand=primarycontactid($select=fullname)`,
+    // A navigation route to an unreadable table names that table first (hosted session F1 AUTH-03c,
+    // portal-webrole-refs/hosted-f1-without-settings#read-contact-roles-nav); to a readable one it answers All Columns.
     `/_api/accounts(${G(1)})/primarycontactid?$select=fullname`,
     `/_api/accounts(${G(1)})/contact_customer_accounts?$select=fullname`,
   ]) {
@@ -1342,7 +1426,7 @@ test('$filter follows three-valued logic: not, and/or and functions over null ar
 
 test("paging links bind to the store's data revision, not a digest of the state", async (t) => {
   const { prepareODataPage } = await import('../lib/odata-paging.mjs');
-  const url = new URL('http://127.0.0.1/_api/accounts?$select=name');
+  const url = new URL('http://127.0.0.1/_api/accounts?$select=name&$top=10');
   assert.throws(() => prepareODataPage({ url, identity: {}, secret: 's' }), /data revision/);
   const first = prepareODataPage({ url, prefer: 'odata.maxpagesize=1', identity: {}, revision: '4.1', secret: 's' });
   const next = new URL(first.nextLink(1));
@@ -1357,7 +1441,7 @@ test("paging links bind to the store's data revision, not a digest of the state"
   // Over HTTP: a committed change invalidates an outstanding link.
   const { json, app } = await start(t);
   const revision = app.store.dataRevision();
-  const page = await json('/_api/accounts?$select=name', { headers: { Prefer: 'odata.maxpagesize=1' } });
+  const page = await json('/_api/accounts?$select=name&$top=10', { headers: { Prefer: 'odata.maxpagesize=1' } });
   const link = new URL(page.body['@odata.nextLink']);
   assert.equal((await json(link.pathname + link.search, { headers: { Prefer: 'odata.maxpagesize=1' } })).status, 200);
   await json(`/_api/accounts(${G(2)})`, { method: 'PATCH', body: { name: 'Fabrikam 2' } });

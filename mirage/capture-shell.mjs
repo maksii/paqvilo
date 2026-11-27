@@ -1,9 +1,9 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { fileURLToPath } from 'node:url';
 import { assertToolPaths, parseToolArgs } from './tool-options.mjs';
 import { chromium } from 'playwright-core';
 import { captureLaunchOptions } from './lib/browser-launch.mjs';
@@ -375,6 +375,6 @@ export async function runCaptureShellCommand(args, { stdout = process.stdout, st
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = await runCaptureShellCommand(process.argv.slice(2));
 }

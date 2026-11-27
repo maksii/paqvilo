@@ -257,14 +257,53 @@ export function logHits(
   };
   const onFault = (err, url) =>
     log(`${time()}  ${label}  ERROR  overlay could not apply to ${url}: ${err.message.split('\n')[0]}`);
+  // The portal serves another version of some files than the baseline: said once per set of files, when Git has
+  // been asked which version it is.
+  let servedSaid = '';
+  const onServed = (snapshot) => {
+    const text = servedVersionLine(snapshot);
+    if (!text || text === servedSaid) return;
+    servedSaid = text;
+    log(`${time()}  ${label}  NOTE   ${text}`);
+  };
   session.on('hit', onHit);
   session.on('fault', onFault);
+  session.on('served', onServed);
   return () => {
     session.off('hit', onHit);
     session.off('fault', onFault);
+    session.off('served', onServed);
     for (const tally of tallies.values()) clearTimeout(tally.timer);
     tallies.clear();
   };
+}
+
+/**
+ * One line for the terminal about files the portal serves in another version than the baseline (served-version.mjs
+ * snapshot); empty while Git is still being asked, and when nothing differs.
+ */
+export function servedVersionLine(snapshot) {
+  const differing = (snapshot?.files ?? []).filter((file) => file.state === 'differs');
+  if (!differing.length || snapshot.search?.state === 'searching' || !snapshot.search) return '';
+  // The files Git explains, when there are any: a file no version explains does not speak for a ref.
+  const explained = differing.filter((file) => file.versions?.fits?.length);
+  const files = explained.length ? explained : differing;
+  const names = files
+    .slice(0, 3)
+    .map((file) => file.rel.split('/').pop())
+    .join(', ');
+  const what = `${files.length} file${files.length === 1 ? ' is' : 's are'} served in another version than the baseline ${snapshot.baseline?.spec ?? 'HEAD'} holds (${names}${files.length > 3 ? ', …' : ''})`;
+  if (snapshot.search.state === 'unavailable') return `${what}: Git could not be asked which version that is`;
+  const it = files.length === 1 ? 'it' : 'them';
+  const ref = snapshot.search.refs?.[0];
+  if (ref) {
+    // A ref name is printed as a command only when no shell reads anything into it; the panel offers the others.
+    const target = ref.ambiguous ? (ref.ref ?? ref.name) : ref.name;
+    const how = /^[\w./-]+$/.test(target) ? `use --baseline ${target} (or the panel)` : 'use the panel';
+    return `${what}: the pages opened show ${it} as ${/^[\w./-]+$/.test(ref.name) ? ref.name : 'a ref'} ${ref.commit.slice(0, 7)} has ${it}; ${how} to lay this checkout over the version served`;
+  }
+  const scope = snapshot.search.limited ? ' among the newest versions and refs compared' : ' of this repository';
+  return `${what}: no branch or tag${scope} holds what the portal serves`;
 }
 
 export function printSummary(session, log = console.log) {
@@ -334,6 +373,13 @@ export function watchSources(
   let busy = false;
   let closed = false;
   let flight = null;
+  // Solution folders whose files answer portal addresses (code component bundles, Solution web resources) are found
+  // page by page (session 'watch'): they are watched from then on, so a saved bundle refreshes like any source.
+  const watchMore = (folders) => {
+    if (!closed) watcher.add(folders);
+  };
+  if (session.watchPaths?.length) watcher.add(session.watchPaths);
+  session.on?.('watch', watchMore);
   let baselineChanged = false;
   let baselineFlight = null;
   const refreshAbort = new AbortController();
@@ -541,6 +587,7 @@ export function watchSources(
   watcher.close = () => {
     if (closing) return closing;
     closed = true;
+    session.off?.('watch', watchMore);
     resolveReady(); // a watcher closed before it is ready ends its ready wait
     refreshAbort.abort();
     for (const waiter of idleWaiters) waiter.finish();
@@ -749,7 +796,7 @@ export async function develop(args, setup, { open = openBrowser, source = proces
     devStop,
   );
   if (!opened) return devExitCode(undefined, args);
-  const { context, attached, close, debugPort, profile } = opened;
+  const { context, attached, close, debugPort, profile, page: profilePage } = opened;
   logBrowserProfile(attached, config, profile);
   const browser = watchBrowserEnd(context, stop);
   let runtime;
@@ -759,7 +806,9 @@ export async function develop(args, setup, { open = openBrowser, source = proces
     runtime = await startDevSessions(context, selection, { args, attached, stop, debugPort });
     logDevPanel(runtime, config);
     const startUrl = devStartUrl(config);
-    const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
+    // An attached session with a selected profile already holds its tab in that profile.
+    const page =
+      profilePage ?? (attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage())));
     console.log(`\nopening ${startUrl}`);
     try {
       const loaded = await waitForStartupPage(
@@ -880,8 +929,10 @@ export function logBrowserProfile(attached, cfg, profile) {
   const profileName = profile.name ? ` profile ${profile.name}` : '';
   const profileDirectory =
     profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : '';
+  // Without a selected profile directory an attached browser opens the tab in the profile whose window was active last.
+  const unselected = attached && !profile.profileDirectory ? ' (last active profile)' : '';
   console.log(
-    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profileName}${profileDirectory}`,
+    `browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profileName}${profileDirectory}${unselected}`,
   );
 }
 

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { runtimeStartupEvent } from './startup-progress.mjs';
+import { unixSocketFolder } from '../mirage/lib/socket-path.mjs';
 
 /** The environment variable that names the command's endpoint to the runtime it starts. */
 export const START_CHANNEL_ENV = 'MIRAGE_START_CHANNEL';
@@ -21,13 +22,15 @@ export const START_CHANNEL_ENV = 'MIRAGE_START_CHANNEL';
  * removes the endpoint; announcements a runtime still makes are then dropped on its side.
  * @returns {Promise<{address: string, next: () => Promise<{phase: string, elapsedMs: number}>, close: () => Promise<void>}>}
  */
-export async function openStartChannel({ platform = process.platform } = {}) {
+export async function openStartChannel({ platform = process.platform, tmpdir = os.tmpdir() } = {}) {
   let directory = null,
     address;
   if (platform === 'win32') address = String.raw`\\.\pipe\paqvilo-start-${randomBytes(16).toString('hex')}`;
   else {
-    // mkdtemp creates the folder for this user only, so no other account can reach the socket in it.
-    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-start-'));
+    // mkdtemp creates the folder for this user only, so no other account can reach the socket in it. The folder and
+    // socket name must fit sun_path: a long TMPDIR falls back to /tmp.
+    const tail = 'paqvilo-start-XXXXXX/channel.sock'.length;
+    directory = await fs.mkdtemp(path.join(unixSocketFolder(tail, { platform, tmpdir }), 'paqvilo-start-'));
     address = path.join(directory, 'channel.sock');
   }
   const queue = [];

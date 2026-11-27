@@ -35,10 +35,13 @@ import { preserveDataOwnedTables, preserveOrganizationPresetSections } from './l
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
+import { ATTACHMENT_COLUMNS } from './lib/dataverse-files.mjs';
+import { DataError } from './lib/data-error.mjs';
 import { runtimeSettings } from './lib/runtime-config.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { isDeepStrictEqual } from 'node:util';
+import { gzipSync } from 'node:zlib';
 import {
   validatePersonaCatalog,
   mergePersonaCatalogs,
@@ -48,6 +51,8 @@ import {
   publicPersonaReport,
 } from './lib/persona-catalog.mjs';
 import { identityProviderSettings, identityProviderAssets } from './lib/identity-provider-settings.mjs';
+import { createLocalAccounts, rememberedBrowserCookieName } from './lib/local-accounts.mjs';
+import { createLocalCaptcha } from './lib/local-captcha.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
 import { createPersonaContexts } from './lib/persona-contexts.mjs';
 import { personaContextSettings } from './lib/persona-context-settings.mjs';
@@ -68,6 +73,7 @@ import { readLocalFile } from '../lense/local-file.mjs';
 import { readWebFileSource, webFileSourcePaths } from './lib/web-file-source.mjs';
 import { onProjectCodeFault } from './lib/project-code-watch.mjs';
 import { packHandlerAnswer } from './lib/pack-handler-answer.mjs';
+import { collectPackExport } from './lib/pack-exports.mjs';
 import { portalSourceLoss } from './lib/portal-source-loss.mjs';
 import { packChangeNotice, watchPackFiles } from './lib/pack-change-notice.mjs';
 import { deferredStateClaim, STATE_CLAIM } from './lib/state-file-claim.mjs';
@@ -90,17 +96,41 @@ import {
   normalizeMockLiquidRecord,
   normalizeMockLiquidFetchXml,
 } from './lib/data.mjs';
-import { DATA_MODELS, importPortal, normalizePortalPath } from './lib/importer.mjs';
-import { choiceColumnsOf, choiceTextRow, createPortalRenderer, renderShellResource } from './lib/liquid.mjs';
+import { DATA_MODELS, importPortal, normalizePortalPath, portalField } from './lib/importer.mjs';
+import {
+  choiceColumnsOf,
+  choiceTextRow,
+  createPortalRenderer,
+  renderShellResource,
+  accountPageEdits,
+  applyMarkupEdits,
+  platformDocumentFragment,
+  platformDocumentTags,
+  shellComponent,
+  shellTags,
+  headStartFragment,
+} from './lib/liquid.mjs';
 import { formContentStyles } from './lib/form-head.mjs';
 import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from './lib/liquid-missing-data.mjs';
 import { observedPageQueryValidation } from './lib/page-query-validation.mjs';
-import { observedPageErrorResponse } from './lib/page-error-presentation.mjs';
+import { observedPageErrorResponse, platformErrorDocument } from './lib/page-error-presentation.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { contentPolicyDefaults as resolvePolicyDefaults } from './lib/content-policy-defaults.mjs';
 import { withFileSourceMap, identityMapUrl } from '../lense/source-map.mjs';
 import { runWithSourceDebugging } from './lib/source-debug.mjs';
-import { refreshScriptProofLocations, scriptLineStarts } from './lib/render-provenance.mjs';
+import {
+  refreshScriptProofLocations,
+  scriptLineStarts,
+  finalizePortalProvenance,
+  platformFragment,
+  joinRenderFragments,
+  applyRenderEdits,
+  nonceInjectedScripts,
+  scriptNoncePendingAttribute,
+  scriptNonceInjectedAttribute,
+  applyScriptNonces,
+  withPlatformTags,
+} from './lib/render-provenance.mjs';
 import { assetKind } from './lib/asset-type.mjs';
 import { listPresets } from './lib/presets.mjs';
 import {
@@ -127,6 +157,7 @@ import {
   injectRuntimeDependencies,
   injectRuntimeCompatibility,
   isHtmlDocument,
+  runtimeCompatibilityEdits,
 } from './lib/source-dependencies.mjs';
 import { resolveLocalOverrides, injectLocalHead } from './lib/local-overrides.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from './lib/platform-styles.mjs';
@@ -139,27 +170,59 @@ import {
   assertServerLogicEnabled,
   assertServerLogicTimeout,
   runExportedServerLogic,
+  awaitPortalFlowResponse,
   runExportedCloudFlow,
   importOperationWorkflows,
   organizationCustomApi,
+  powerPagesFlowAnswer,
+  powerPagesFlowPayload,
+  workflowAnswers,
 } from './lib/exported-operations.mjs';
 import { createPortalAuthorization, portalAuthorizationModel } from './lib/portal-authorization.mjs';
 import { changeOperationOverride, checkOperationOverrides } from './lib/operation-override-route.mjs';
 import { createPortalDocumentService } from './lib/sharepoint-documents.mjs';
 import { renderPortalSearchPage } from './lib/portal-search.mjs';
+import { knowledgeArticleAccess } from './lib/content-access-levels.mjs';
+import { NATIVE_STATE_ACTIONS } from './lib/native-form-actions.mjs';
+import {
+  PORTAL_SEARCH_SUMMARY,
+  PORTAL_SEARCH_SUMMARY_STREAM,
+  readSummaryQuery,
+  summaryStreamEvents,
+  unansweredSummary,
+  searchSummarySources,
+  summarizeSearch,
+} from './lib/portal-search-summary.mjs';
+import { CHART_BUILDER_PATH, chartBuilderAnswer } from './lib/portal-chart-builder.mjs';
 import {
   validateOperationOverrides,
   operationPlaceholder,
   importSolutionOperationSources,
   withSolutionOperations,
 } from './lib/operation-catalogue.mjs';
-import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
+import {
+  importCodeComponents,
+  pcfPlatformScripts,
+  pcfWebResourceAsset,
+  renderCodeComponent,
+} from './lib/code-components.mjs';
+import { pcfBuildLayers, pcfImportOptions, pcfPlatformLibraries } from './lib/pcf-sources.mjs';
+import { componentRenderResult, serverFormFragment } from './lib/component-provenance.mjs';
+import { signInPartTags } from './lib/sign-in-provenance.mjs';
 import { mergeShellProfile } from './lib/shell-profile.mjs';
 import { captureRichTextAssets } from './lib/richtext-assets.mjs';
 import { captureObservedSnippetComposition } from './lib/observed-snippet-composition.mjs';
 import { captureObservedStylesheets, resolveObservedStylesheet } from './lib/observed-stylesheets.mjs';
 import { resolveRichTextConfiguration, richTextConfigurationStatus } from './lib/richtext-config.mjs';
 import { pageAccess } from './lib/page-access.mjs';
+import { answerPageCors } from './lib/page-cors.mjs';
+import {
+  CODE_SITE_MISSING_FILE_DOCUMENT,
+  codeSiteMissingFile,
+  codeSiteNavigation,
+  resolveCompiledCodeSiteFile,
+} from './lib/code-site.mjs';
+import { CONTEXT_LANGUAGE_COOKIE, localizedPortalPage } from './lib/portal-languages.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
@@ -180,6 +243,7 @@ import { solutionContentFingerprint, solutionSideFileHashes } from './lib/soluti
 import { SolutionFileCache, sourceDirectoryDigest } from './lib/solution-cache.mjs';
 import {
   resolveUnmatchedRoute,
+  platformRobotsResponse,
   deniedPageRoute,
   languageRoute,
   siteMarkerRoute,
@@ -195,12 +259,17 @@ import {
   authCookieName,
   createAuthSessions,
   authRoute,
+  chunkedCookieValue,
+  cookieRequestHeader,
+  isCookieChunk,
   parseCookies,
   safeReturnUrl,
   returnUrlParameter,
+  securityStampDigest,
   signInContent,
 } from './lib/auth-session.mjs';
 import { createExternalSignIn } from './lib/sign-in-flow.mjs';
+import { createPortalRequestTokens, isPortalBindingCookie } from './lib/portal-request-tokens.mjs';
 import {
   composeOrganizationHost,
   providerDescriptors,
@@ -227,12 +296,18 @@ import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.m
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
 import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
 import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
-import { recordHttpError, statusFromHttp, TRACE_HOSTS } from './lib/trace-store.mjs';
+import { recordHttpError, redactPayload, statusFromHttp, TRACE_HOSTS } from './lib/trace-store.mjs';
 import { browserProbe, setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
-import { authenticationSettings } from './lib/external-login.mjs';
+import {
+  admissionLifetimeDiagnostic,
+  admissionSessionLifetime,
+  applicationSessionLifetime,
+  authenticationSettings,
+  securityStampInterval,
+} from './lib/external-login.mjs';
 import { dataverseHostStatus, dataverseSettings, managedIdentityStatusReader } from './lib/dataverse-settings.mjs';
 import { uuidV5, createApplicationUser } from './lib/dataverse-security.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
@@ -309,6 +384,9 @@ function postbackRedirect(res, response, portal) {
 }
 import {
   siteHeaders,
+  siteHttpPolicyDiagnostics,
+  siteUsesScriptNonce,
+  cspNonce,
   webFileHeaders,
   webFileDisposition,
   tokenHtmlHeaders,
@@ -316,9 +394,12 @@ import {
   PAGE_CACHE_CONTROL,
   PAGE_HEADERS,
   platformResourceHeaders,
+  everyResponseHeaders,
+  codeSiteFileHeaders,
 } from './lib/response-headers.mjs';
 import { solutionWatchFilter } from './lib/solution-roots.mjs';
 import { observedConfig } from './lib/project-config.mjs';
+import { createEdgeAccess, edgeDiagnostics } from './lib/edge-access.mjs';
 import { runtimePort } from './lib/runtime-port.mjs';
 import { createFrameReadiness } from './lib/frame-readiness.mjs';
 import { formWriteError } from './lib/form-error-presentation.mjs';
@@ -327,6 +408,7 @@ import { collectWebApiErrorTemplates } from './lib/webapi-error-templates.mjs';
 import { collectDataverseErrorTemplates } from './lib/dataverse-error-templates.mjs';
 import {
   injectRuntime,
+  listViewConfiguration,
   renderComponent,
   renderQuickForm,
   captchaRefreshDelta,
@@ -338,6 +420,11 @@ import {
   createWebFormSessions,
   webFormSessionOwner,
   portalRecordWrites,
+  formAttachmentCount,
+  formAttachmentLimit,
+  formAttachmentScope,
+  formAttachmentFileProblem,
+  stagedAttachmentNote,
 } from './lib/form-service.mjs';
 import {
   resolveNativeFormSubmission,
@@ -352,14 +439,25 @@ import {
 } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from './lib/visitor-session.mjs';
 import { handleNativeService, antiForgeryCookie, portalNotes } from './lib/native-services.mjs';
+import { handlePublishingPreview } from './lib/publishing-preview.mjs';
+import { organizationPrincipalContext } from './lib/dataverse-principal-context.mjs';
 import {
   antiForgeryHolder,
   isAspNetScript,
   webFormsForm,
   platformShell,
   bootstrapVariant,
+  pwaFeatureStatus,
+  LOCAL_SERVICE_WORKER,
 } from './lib/platform-manifest.mjs';
 import { packEndpoints } from './lib/extensions.mjs';
+import {
+  dataSummaryBody,
+  dataSummarySource,
+  PORTAL_DATA_SUMMARY,
+  registerDataSummaryProvider,
+  summarizeData,
+} from './lib/portal-data-summary.mjs';
 import { keepIdleConnections } from './lib/idle-connections.mjs';
 import { invokePackMutation } from './lib/pack-endpoint-writes.mjs';
 import { externalFrameOrigins, portalContentSecurityPolicy } from './lib/content-policy.mjs';
@@ -370,7 +468,14 @@ import {
   portalDocumentAccess,
 } from './lib/permissions.mjs';
 import { handleWebApi } from './lib/webapi-handler.mjs';
-import { buildSiteTables } from './lib/site-tables.mjs';
+import { handlePortalFileApi } from './lib/portal-file-api.mjs';
+import { handlePortalFileDownload, isPortalFileDownload } from './lib/portal-file-download.mjs';
+import {
+  buildSiteTables,
+  configureContactRoles,
+  contactRoleIntersection,
+  grantContactRoles,
+} from './lib/site-tables.mjs';
 import {
   adminServes,
   answerVerdict,
@@ -477,7 +582,9 @@ const mime = (file) =>
     '.mjs': 'application/javascript',
     '.css': 'text/css',
     '.html': 'text/html',
+    '.wasm': 'application/wasm',
     '.json': 'application/json',
+    '.webmanifest': 'application/manifest+json',
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
@@ -601,12 +708,16 @@ function guardStalledBody(req, idleMs) {
   arm();
   return stop;
 }
-async function rawBody(req) {
+const MAX_RAW_BODY = 8 * 1024 * 1024;
+async function rawBody(req, limit = MAX_RAW_BODY) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 8 * 1024 * 1024) throw error('Request body exceeds 8 MiB.', 413);
+    if (size > limit) {
+      const limitLabel = limit === MAX_RAW_BODY ? '8 MiB' : limit / 1024 + ' KiB';
+      throw error(`Request body exceeds ${limitLabel}.`, 413);
+    }
     chunks.push(chunk);
   }
   req[requestBody] = Buffer.concat(chunks);
@@ -682,6 +793,9 @@ const ANTI_FORGERY_COOKIE = '__RequestVerificationToken';
 // /__sim/api/ paths that are not sim roots: the trace routes, the run-starting flow routes (sim-flow-routes.mjs opens
 // their roots) and the portal ticket.
 const SIM_API_PREFIX = '/__sim/api/';
+// The administration surface on the portal listener: the console page, its assets, its evidence images and the admin
+// API. The hosted edge model (lib/edge-access.mjs) does not apply to it; every other /__sim route is portal-facing.
+const ADMINISTRATION_PATH = /^\/__sim(?:\/?$|\/api(?:\/|$)|\/[^/]+\.(?:mjs|css|js)$|\/evidence\/)/;
 const SIM_ROOT_EXEMPT = [
   /^trace(?:\/|$)/,
   /^(?:flow-runs|session\/portal-ticket)$/,
@@ -698,6 +812,65 @@ function recordListenerErrorOnce(record, name) {
     if (reported) return;
     reported = true;
     record({ code: 'LISTENER_ERROR', severity: 'error', listener: name, message: error.message });
+  };
+}
+
+const RENDER_SPAN_SCAN = 50,
+  RENDER_TREE_LIMIT = 4000;
+
+/** The newest retained render span of this session whose request is `GET <requested>`, else null. */
+function latestPageRender(traces, sessionKey, requested) {
+  for (const span of traces.spans({ kind: 'render', sessionKey, order: 'desc', pageSize: RENDER_SPAN_SCAN }).items) {
+    const root = traces.ancestry(span.spanId)[0];
+    if (root?.kind === 'http' && root.name.toLowerCase() === `get ${requested.toLowerCase()}`) return span;
+  }
+  return null;
+}
+
+/** The render span and, breadth first, the template spans below it (bounded by RENDER_TREE_LIMIT). */
+function renderTemplateSpans(traces, render) {
+  const tree = traces.tree(render.traceId);
+  const children = new Map();
+  for (const span of tree?.spans ?? []) {
+    if (!children.has(span.parentSpanId)) children.set(span.parentSpanId, []);
+    children.get(span.parentSpanId).push(span);
+  }
+  const spans = [render];
+  for (let index = 0; index < spans.length && spans.length < RENDER_TREE_LIMIT; index++)
+    for (const child of children.get(spans[index].spanId) ?? [])
+      if (child.kind === 'render-template') spans.push(child);
+  return spans;
+}
+
+/** The exported sources the render spans ran from, the template slots without one and the component events. */
+function renderedSources(spans, index, fallback) {
+  const sources = [],
+    slots = [],
+    components = [];
+  for (const span of spans) {
+    const refId = span.attributes?.sourceRefId;
+    const source = refId ? (index.sources.get(refId) ?? fallback.sources.get(refId)) : null;
+    if (source) sources.push(source);
+    else if (span.kind === 'render-template')
+      slots.push({ name: span.name, origin: span.attributes?.sourceOrigin ?? 'built-in' });
+    for (const event of span.events ?? [])
+      if (event.type === 'platform-component' && components.length < 200) components.push(event.attributes ?? {});
+  }
+  return { sources, slots, components };
+}
+
+// The SOURCES_RELOADED notice of one reload pass: a code-component-only pass keeps the portal and Solution metadata.
+function sourcesReloadedDiagnostic(revision, changed, controlsOnly) {
+  const notice = { code: 'SOURCES_RELOADED', severity: 'info', revision, changed: changed.slice(0, 20) };
+  if (controlsOnly)
+    return {
+      ...notice,
+      scope: 'code-components',
+      message: `Reloaded code component sources (${changed.length} changed path(s)); portal and Solution metadata were kept.`,
+    };
+  return {
+    ...notice,
+    message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
   };
 }
 
@@ -925,6 +1098,8 @@ export async function createSimulator(options) {
   // read running against the source directory.
   const observed = observedConfig(observedOption);
   const frameReadiness = createFrameReadiness({ diagnostic: (entry) => recordDiagnostic(entry) });
+  // The hosted edge in front of the site (observed IP restriction and WAF custom rules; lib/edge-access.mjs).
+  const edgeAccess = createEdgeAccess({ observed: () => portal?.observed ?? null, now: () => store.clock.now() });
   const setupHandler = await createSetupHandler({
     directory: projectRoot,
     ...(setup ?? (project?.configFile ? { project: project.configFile } : {})),
@@ -994,6 +1169,10 @@ export async function createSimulator(options) {
   let operationWorkflows = new Map();
   let solutionOperations = { serverLogics: [], cloudFlows: [] };
   let codeComponents = { controls: new Map(), assets: new Map(), diagnostics: [] };
+  // pcf.sources build outputs (lib/pcf-sources.mjs): layered after the Solutions, so a local build supersedes its export.
+  let pcfLayers = [];
+  // pcf.platformLibraries: the project's React, ReactDOM and Fluent UI files the Power Pages host loads (lib/pcf-sources.mjs).
+  let pcfPlatform = { libraries: [], assets: new Map() };
   const modelDrivenSettingsValue = modelDrivenSettings(modelDrivenOption);
   let clientResources = { resources: [], assets: new Map(), pcf: { controls: [] } };
   // Source import diagnostics arrive before recordDiagnostic exists; they are buffered and replayed into it.
@@ -1001,8 +1180,70 @@ export async function createSimulator(options) {
   let sourceDiagnostic = (entry) => earlySourceDiagnostics.push(entry);
   let solutionInventory = [],
     solutionScan = null;
+  // The code component catalogue of a scan and the pcf.sources build outputs layered after it.
+  async function loadCodeComponents(scan) {
+    pcfLayers = await pcfBuildLayers(settingOptionsRest.pcf, { diagnostic: (entry) => sourceDiagnostic(entry) });
+    pcfPlatform = await pcfPlatformLibraries(settingOptionsRest.pcf, {
+      diagnostic: (entry) => sourceDiagnostic(entry),
+    });
+    codeComponents = await importCodeComponents([...scan.layers, ...pcfLayers], {
+      retainBytes: true,
+      ...pcfImportOptions(settingOptionsRest.pcf),
+    });
+  }
+  const loadClientResources = (scan) =>
+    importModelDrivenResources(scan.layers, {
+      codeComponents,
+      clientSources: modelDrivenSettingsValue.clientSources,
+      projectRoot,
+      diagnostic: (entry) => sourceDiagnostic(entry),
+    });
+  // A change set inside control folders only (a Solution layer's Controls folder or a pcf.sources build output) reloads the
+  // code components alone; anything else, or a path spelled differently from its layer, takes the full reload.
+  // A manifest or identity file of a Solution layer is part of the Solution inventory (scan): its change takes the full
+  // reload. pcf.sources build outputs are not in the inventory, so a rebuild (which rewrites its manifest) stays here.
+  const controlSourcesOnly = (changed) => {
+    if (!changed.length || !solutionScan) return false;
+    const key = (value) => path.resolve(value).toLowerCase();
+    const within = (file, tree) => key(file).startsWith(tree + path.sep);
+    const solutionTrees = solutionScan.layers
+      .filter((layer) => layer.type === 'directory')
+      .map((layer) => key(path.join(layer.dir, 'controls')));
+    const buildTrees = [
+      ...(settingOptionsRest.pcf?.sources ?? []).map((source) => key(source.path)),
+      ...pcfLayers.map((layer) => key(layer.dir)),
+    ];
+    const inventoried = /^controlmanifest\.xml(?:\.data\.xml)?$/i;
+    return changed.every(
+      (file) =>
+        buildTrees.some((tree) => within(file, tree)) ||
+        (solutionTrees.some((tree) => within(file, tree)) && !inventoried.test(path.basename(file))),
+    );
+  };
+  // The whole reload of a change set inside control folders: the code component catalogue and the model-driven client
+  // resources are imported again; the PCF findings of the previous catalogue are replaced, never accumulated.
+  async function reloadCodeComponentSources() {
+    const stale = new Set(diagnostics.filter((entry) => /^(?:MODEL_)?PCF_/.test(entry.code ?? '')));
+    await loadCodeComponents(solutionScan);
+    clientResources = await loadClientResources(solutionScan);
+    solutionMetadata = {
+      ...solutionMetadata,
+      modelDrivenRibbonDocuments: clientResources.ribbonDocuments,
+      modelDrivenAppActions: clientResources.appActions,
+    };
+    fingerprint = await calculateFingerprint();
+    renderer = buildRenderer();
+    for (let index = diagnostics.length - 1; index >= 0; index--)
+      if (stale.has(diagnostics[index])) diagnostics.splice(index, 1);
+  }
   async function loadSolutions({ reuseImported = false } = {}) {
-    if (!solutionRoots.length && !modelDrivenSettingsValue.clientSources?.length) return;
+    if (
+      !solutionRoots.length &&
+      !modelDrivenSettingsValue.clientSources?.length &&
+      !settingOptionsRest.pcf?.sources?.length &&
+      !settingOptionsRest.pcf?.platformLibraries?.length
+    )
+      return;
     startupPhase('solution-import');
     const started = performance.now();
     const cache = await SolutionFileCache.open(solutionCacheFile);
@@ -1030,7 +1271,7 @@ export async function createSimulator(options) {
     bootstrapTimings.solutionReuse = { scan: scan === previous, schema: reuse };
     operationWorkflows = await importOperationWorkflows(scan.layers);
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
-    codeComponents = await importCodeComponents(scan.layers, { retainBytes: true });
+    await loadCodeComponents(scan);
     [solutionMetadata, solutionData] = await Promise.all([
       importSolutionMetadata(solutionRoots, {
         portal,
@@ -1046,12 +1287,7 @@ export async function createSimulator(options) {
         : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid, projectRoot });
-    clientResources = await importModelDrivenResources(scan.layers, {
-      codeComponents,
-      clientSources: modelDrivenSettingsValue.clientSources,
-      projectRoot,
-      diagnostic: (entry) => sourceDiagnostic(entry),
-    });
+    clientResources = await loadClientResources(scan);
     solutionInventory = scan.inventory ?? [];
     solutionScan = scan;
     solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
@@ -1087,6 +1323,7 @@ export async function createSimulator(options) {
     metadata: solutionData,
   });
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
+  const summaryProvider = collectPackExport(projectPacks ?? [], 'portalSearchSummary').get('provider')?.value;
   const matchPackEndpoint = (endpoint, pathname) => {
     endpoint.pattern.lastIndex = 0;
     return endpoint.pattern.exec(pathname);
@@ -1150,7 +1387,7 @@ export async function createSimulator(options) {
   // Every replacement keeps solution-derived mappings, column metadata and seeded rows current.
   const replaceCompiledState = async (
     state,
-    { expectedRevision = store.snapshotRevision(state) ?? store.revision } = {},
+    { expectedRevision = store.snapshotRevision(state) ?? store.revision, nested = false } = {},
   ) => {
     const candidate = compilePermissions(
       applySolutions(state, {
@@ -1166,6 +1403,7 @@ export async function createSimulator(options) {
       returnSnapshot: false,
       cloneInput: false,
       skipSaveIfUnchanged: true,
+      nested,
     });
     appliedPermissionModel = candidate.model;
   };
@@ -1257,6 +1495,7 @@ export async function createSimulator(options) {
     codeApps: () => codeAppRecords,
     projectRoot,
     config: {
+      uploadedAssemblies: settingOptionsRest.uploadedAssemblies ?? 'clr',
       connections: settingOptionsRest.connections,
       secrets: settingOptionsRest.secrets,
       providers: settingOptionsRest.providers,
@@ -1508,11 +1747,15 @@ export async function createSimulator(options) {
   const adminToken = randomBytes(32).toString('hex');
   // The apps listener's token (32 random bytes, hex): the app pages send it; the administration token is normalized to it.
   const appsToken = randomBytes(32).toString('hex');
-  const pageToken = (value) => sameToken(value, csrf) || sameToken(value, adminToken);
   // Attach-file uploads (/_api/file/*/note): the platform's file API stages each file under an
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
   // the postback takes them.
+  // An upload that names its form and a regarding record the visitor can read also creates its note row at once, as the
+  // hosted portal does (session F2, attach and attachdel runs): the row takes an attach-file slot from then on (also when
+  // the upload fails or the form is never saved), UploadFileBlock needs annotation Write on it, DELETE
+  // /_api/file/delete/note removes it with annotation Delete. The last block writes the file into it (Dataverse storage), and the form
+  // save writes it again with the form's own checks.
   // Staging is process-local, bounded to 50 files and one hour; a restart discards pending uploads. The bytes are provider
   // blocks of the annotations storage route under staged/<id>, committed by the last block and read when the form saves.
   // ponytail: an upload abandoned before its last block leaves its uncommitted blocks in the provider's staging area until
@@ -1574,7 +1817,13 @@ export async function createSimulator(options) {
       return {
         id: String(id).toLowerCase(),
         entry,
-        attachment: { field: field.replace(/_HiddenField_AnnotationIds$/, ''), name: entry.name, type: entry.type },
+        attachment: {
+          field: field.replace(/_HiddenField_AnnotationIds$/, ''),
+          name: entry.name,
+          type: entry.type,
+          // A staged note row (InitializeFileUpload on a regarding record) receives the file instead of a new note.
+          ...(entry.note ? { noteId: String(id).toLowerCase(), regarding: entry.regarding } : {}),
+        },
       };
     });
   };
@@ -1606,6 +1855,14 @@ export async function createSimulator(options) {
       staged = [];
     }
     state.stagedAttachments = staged.map(({ id, entry }) => ({ id, name: entry.name, size: entry.size }));
+    // The re-rendered page keeps the posted MaxFile, as an ASP.NET hidden field does (hosted session F2, attach runs k
+    // and l, max1-none:one-file: MaxFile 1 after the save while the hint states 0 files).
+    const controls = new URLSearchParams(entries);
+    const field = prefix
+      ? `${prefix}AttachFile_HiddenField_MaxFile`
+      : [...controls.keys()].find((key) => key.endsWith('AttachFile_HiddenField_MaxFile'));
+    const posted = field ? controls.getAll(field) : [];
+    if (posted.length === 1 && /^\d{1,9}$/.test(posted[0])) state.postedMaxFile = posted[0];
   };
   const verificationRuntimeId = randomUUID();
   let revision = 1,
@@ -1621,6 +1878,21 @@ export async function createSimulator(options) {
     externalSignIn = null,
     // Stops the model-driven handler's warm metadata compiler thread, set once the handler exists.
     closeModelDriven = null;
+  let portalSourceEpoch = 0,
+    portalSourcePublications = 0;
+  const publishPortalSource = async (work) => {
+    portalSourceEpoch++;
+    portalSourcePublications++;
+    try {
+      return await work();
+    } finally {
+      portalSourcePublications--;
+    }
+  };
+  const requirePortalSourceEpoch = (epoch) => {
+    if (portalSourcePublications || epoch !== portalSourceEpoch)
+      throw error('Portal sources changed while resolving this page.', 409, 'SourceRefreshConflict');
+  };
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
   const activeRequests = new Map();
@@ -1787,12 +2059,70 @@ export async function createSimulator(options) {
   // "all-requests" is accepted) gives cookie-less portal requests the configured identity.
   // The cookie is named after the listening port (paqvilo-mirage-auth-<port>): browsers share
   // cookies across ports, and every local runtime keeps its own session.
+  const localApplicationSessions = () => {
+    const { mode, pageMode } = store.state.simulator ?? {};
+    return (mode ?? 'local') === 'local' && (pageMode ?? 'local') === 'local';
+  };
+  /**
+   * A contact's state for the security stamp validator: { active, stamp } (adx_identity_securitystamp), null when the
+   * local data has no such contact, undefined when it has no contact data to validate against.
+   */
+  const contactSecurity = (contactId) => {
+    const mapping = store.state.mappings?.contact;
+    const rows = store.state.tables?.contact;
+    if (!mapping || !Array.isArray(rows)) return undefined;
+    const row = rows.find((item) => personaKey(item[mapping.idColumn ?? 'contactid']) === personaKey(contactId));
+    if (!row) return null;
+    const stamp = row.adx_identity_securitystamp;
+    return {
+      active: Number(row.statecode?.value ?? row.statecode ?? 0) === 0,
+      stamp: typeof stamp === 'string' && stamp ? stamp : null,
+    };
+  };
   const authSessions = createAuthSessions({
     name: () => authCookieName(localOrigin ? new URL(localOrigin).port : null),
+    clock: () => store.clock.now(),
+    lifetime: () => {
+      const policy = applicationSessionLifetime(portal);
+      return policy?.sliding && !localApplicationSessions() ? null : policy;
+    },
+    identifyIssuedSessions: true,
+    securityStamp: (contactId) => contactSecurity(contactId)?.stamp ?? null,
   });
+  // The private-site admission is a browser session of its own, apart from portal sign-in, with a fixed deadline
+  // (lib/external-login.mjs admissionSessionLifetime).
+  const privateSiteSessions = createAuthSessions({
+    name: () => `${authSessions.name}-site-access`,
+    clock: () => store.clock.now(),
+    lifetime: () => admissionSessionLifetime(portal),
+  });
+  const privateSiteContacts = new Set(providerSettings.privateSiteContactIds?.map((id) => id.toLowerCase()));
+  const privateSiteAdmission = () =>
+    portal.observed?.siteVisibility === 'private' && providerSettings.privateSiteContactIds !== undefined;
+  const allowedPrivateSiteIdentity = (contactId) => {
+    if (!privateSiteAdmission() || !privateSiteContacts.has(personaKey(contactId))) return false;
+    const mapping = store.state.mappings.contact;
+    return (store.state.tables.contact ?? []).some(
+      (row) =>
+        personaKey(row[mapping?.idColumn ?? 'contactid']) === personaKey(contactId) &&
+        Number(row.statecode?.value ?? row.statecode ?? 0) === 0,
+    );
+  };
+  const hasPrivateSiteSession = (req) =>
+    allowedPrivateSiteIdentity(privateSiteSessions.read(req.headers.cookie)?.contactId);
+  const refusePrivateSite = (
+    res,
+    status = 401,
+    code = 'PRIVATE_SITE_ACCESS_REQUIRED',
+    message = 'Private site admission is required.',
+  ) => {
+    const routed = trace.getStore();
+    if (routed) routed.httpError = { code, message };
+    return json(res, status, { error: { code, message } }, { 'cache-control': 'no-store' });
+  };
   // Advanced form sessions of this runtime (lib/form-service.mjs) and the anonymous visitor
   // cookie that keeps an anonymous visitor's sessions to its browser session.
-  const webFormSessions = createWebFormSessions();
+  const webFormSessions = createWebFormSessions({ store });
   const visitorName = () => visitorCookieName(localOrigin ? new URL(localOrigin).port : null);
   const ANONYMOUS_VISITOR = Object.freeze({ id: null, contactId: null, roles: [], roleSource: 'memberships' });
   const sessionIdentity = (session) => {
@@ -1802,18 +2132,95 @@ export async function createSimulator(options) {
     return { id: session.contactId, contactId: session.contactId, roles: [], roleSource: 'memberships' };
   };
   const requestAuth = (req, url) => {
-    const session = authSessions.read(req.headers.cookie);
+    const session = readPortalSession(req);
     if (url.pathname.startsWith('/__sim/api')) return { session };
     if (session) return { session, identity: sessionIdentity(session) };
     if (['configured', 'all-requests'].includes(config().identityScope)) return { session };
     return { session, identity: ANONYMOUS_VISITOR };
   };
+  const readPortalSession = (req) => {
+    const session = authSessions.read(req.headers.cookie);
+    if (session?.credentialStamp) return localAccounts.validSession(session) ? session : { contactId: null };
+    return validatedSecurityStamp(session);
+  };
+  /**
+   * The security stamp validator (ASP.NET Identity SecurityStampValidator, Learn ValidateInterval): once the interval
+   * has passed since a contact session was last validated, the contact must still exist, be active and carry the
+   * security stamp the session was issued with; otherwise the session is anonymous. No cookie is issued for a passed
+   * validation (only a sliding renewal carries the new validation time), so a session validates on each request
+   * once its interval has passed.
+   */
+  const validatedSecurityStamp = (session) => {
+    if (!session?.contactId || typeof session.securityStamp !== 'string' || !Number.isSafeInteger(session.validatedAt))
+      return session;
+    if (!localApplicationSessions()) return session;
+    const now = store.clock.now();
+    if (now - session.validatedAt < securityStampInterval(portal)) return session;
+    const contact = contactSecurity(session.contactId);
+    if (contact === undefined) return session;
+    if (!contact?.active || securityStampDigest(contact.stamp) !== session.securityStamp) return { contactId: null };
+    return { ...session, validatedAt: now };
+  };
+  // A portal Web API response renews whatever its caching (hosted session F4, paqvilo-developer hosted-f4 renewal runs a
+  // and b: a background /_api read alone re-issued the application cookie, as a page load did).
+  const appendApplicationSessionRenewal = (req, res, headers, { anyCaching = false } = {}) => {
+    if (req.method === 'HEAD' || !browserRequest(req) || onAdmin(req) || onApps(req)) return;
+    if (
+      !anyCaching &&
+      !String(headers['cache-control'] ?? '')
+        .split(',')
+        .some((part) => part.trim().toLowerCase() === 'no-store')
+    )
+      return;
+    // A sliding renewal also carries the time of the latest security stamp validation.
+    const renewal = authSessions.renewalCookie(trace.getStore()?.auth?.session);
+    if (!renewal || !currentIdentity().contactId) return;
+    const explicitCookies = headers['set-cookie'];
+    const written = explicitCookies ?? res.getHeader('set-cookie') ?? [];
+    const cookies = Array.isArray(written) ? written : [written];
+    if (cookies.some((cookie) => String(cookie).startsWith(authSessions.name + '='))) return;
+    if (explicitCookies === undefined) res.appendHeader('set-cookie', renewal);
+    else headers['set-cookie'] = [...cookies, ...[renewal].flat()];
+  };
+  // Request tokens belong to one browser and its current sign-in unless the project turns pairing off (hosted session
+  // F4, paqvilo-developer hosted-f4 swap runs a and b: another browser's token, or one from before LogOff, is refused).
+  const pairedBrowserTokens = providerSettings.pairedBrowserTokens !== false;
+  const pairedPortalRequest = (req) => pairedBrowserTokens && !onAdmin(req) && !onApps(req) && browserRequest(req);
+  const requestTokenCookie = () => authSessions.name + '-request-binding';
+  const requestTokens = createPortalRequestTokens({
+    enabled: pairedBrowserTokens,
+    toolToken: csrf,
+    browser: pairedPortalRequest,
+    cookieName: requestTokenCookie,
+    session: () => trace.getStore()?.auth?.session,
+    clock: () => store.clock.now(),
+  });
+  const pageToken = (req, value) =>
+    sameToken(value, requestTokens.expected(req, value)) || sameToken(value, adminToken);
+  const headerToken = (req) => {
+    const supplied = req.headers.__requestverificationtoken;
+    return sameToken(supplied, adminToken) ? adminToken : requestTokens.expected(req, supplied);
+  };
+  // Why the request's header token is refused (the token refusals of portal-request-tokens.mjs), or null when it is accepted.
+  const headerTokenRefusal = (req) =>
+    sameToken(req.headers.__requestverificationtoken, adminToken)
+      ? null
+      : requestTokens.refusal(req, req.headers.__requestverificationtoken);
+  // The site's hosted portal id when observed (observed.portalId, hosted session F8 section 1), else null: Mirage then shows
+  // the exported website id as Microsoft.Dynamic365.Portal.id and sends it as a cloud flow's siteId.
+  const observedPortalId = () => (config().observed ?? portal.observed)?.portalId ?? null;
+  // injectRuntime with the observed portal id as the page client object's Portal.id.
+  const injectPageRuntime = (html, token, revision, identity, traceId, languages, options = {}) =>
+    injectRuntime(html, token, revision, identity, traceId, languages, {
+      ...options,
+      site: { ...options.site, ...(observedPortalId() ? { portalId: observedPortalId() } : {}) },
+    });
   const currentIdentity = () => {
     // Read without copying the contact table on every call: identity resolution copies what it returns (the
     // configured identity in live mode and the matched contact are copied here).
     const state = store.projectionOf({
       sections: ['simulator'],
-      tables: ['contact'],
+      tables: ['contact', contactRoleIntersection(portal).table],
       mappings: ['contact'],
     });
     const fromSession = state.simulator?.mode === 'live' ? undefined : trace.getStore()?.auth?.identity;
@@ -1894,16 +2301,49 @@ export async function createSimulator(options) {
   // Findings of the project file (an unknown key of a version-1 project is ignored and reported) at startup.
   for (const entry of project?.diagnostics ?? []) recordDiagnostic(entry);
   await organizationHost.createBackend();
+  const challengeFixture = organizationHost.providers.serviceFixtures.resolve('captcha', 'challenge');
+  const localCaptcha =
+    challengeFixture.level === 'fixture' && !allowLiveWrites && ['127.0.0.1', '::1'].includes(host)
+      ? createLocalCaptcha({ challenge: challengeFixture.run, now: () => store.clock.now() })
+      : null;
+  const useLocalCaptcha = () => localCaptcha && config().mode !== 'live' && config().pageMode !== 'live';
+  const issueFormCaptcha = (scope) => {
+    const request = trace.getStore();
+    if (!useLocalCaptcha() || request?.method === 'HEAD') return null;
+    return localCaptcha.issue({ ...scope, owner: webFormSessionOwner(currentIdentity(), request?.visitor) });
+  };
 
   // Column types come from the Solution's metadata first, then from the mapping's own fields, so a table that only
   // a mapping declares answers with the types it declares there.
-  const liveMapping = (entity) => {
+  const mappingWithFields = (entity, metadata) => {
     const mapping = store.resolveMapping(entity);
     return {
       ...mapping,
-      fields: solutionMetadata.entities?.[mapping.logicalName]?.fields ?? mapping.fields ?? mapping.fieldMetadata,
+      fields: metadata.entities?.[mapping.logicalName]?.fields ?? mapping.fields ?? mapping.fieldMetadata,
     };
   };
+  const liveMapping = (entity) => mappingWithFields(entity, solutionMetadata);
+  const liquidMappings = (metadata) => {
+    const mappings = new Map();
+    return (entity) => {
+      if (!mappings.has(entity)) {
+        const mapping = store.resolveMapping(entity);
+        const stored = mapping.fields ?? mapping.fieldMetadata;
+        const source = metadata.entities?.[mapping.logicalName]?.fields;
+        mappings.set(entity, { ...mapping, fields: source ? { ...stored, ...source } : stored });
+      }
+      return mappings.get(entity);
+    };
+  };
+  const portalGlobalChoices = () => {
+    const sets = new Map();
+    return (name) => {
+      const key = name.toLowerCase();
+      if (!sets.has(key)) sets.set(key, organization.metadata.globalOptionSet(name));
+      return sets.get(key);
+    };
+  };
+  const localPortalGlobalChoices = () => (config().mode === 'live' ? undefined : portalGlobalChoices());
   const liveJson = async (pathname) => {
     const response = await live.request(pathname, {
       prefer: 'odata.include-annotations="*"',
@@ -1970,50 +2410,92 @@ export async function createSimulator(options) {
       throw cause;
     }
   };
+  // Form quota and condition reads can run inside their record write. They share its open store transaction.
+  const requireRenderSource = ({ mutable = false } = {}) => {
+    const admitted = trace.getStore()?.admittedPortalRender;
+    if (!admitted) return;
+    if (mutable) admitted.usedMutableInputs = true;
+    try {
+      requirePortalSourceEpoch(admitted.epoch);
+    } catch (error_) {
+      admitted.sourceConflict = error_;
+      throw error_;
+    }
+  };
+  const readPortalData = (execute) => {
+    const read = () => {
+      // A queued read can start after a source publication; its permission model must still match admission.
+      requireRenderSource();
+      return execute();
+    };
+    return store.inTransaction() ? read() : store.readOperation(read);
+  };
+  const localPortalFetch = (xml, identity, fetchOptions = {}) => {
+    const metadata = solutionMetadata;
+    return readPortalData(async () =>
+      normalizeMockLiquidFetchXml(
+        await store.withPortalReadSources(identity, { fetchXml: xml, right: fetchOptions.right }, () =>
+          store.fetchXml(xml, identity, {
+            platformLanguageCode: fetchOptions.language?.code ?? 'en-US',
+            portalRequest: true,
+            right: fetchOptions.right,
+            fetchCache: fetchOptions.fetchCache,
+            diagnostic: fetchOptions.diagnostic,
+            liquidTag: fetchOptions.liquidTag,
+          }),
+        ),
+        xml,
+        liquidMappings(metadata),
+        { lcid: fetchOptions.language?.lcid, globalChoices: portalGlobalChoices() },
+      ),
+    );
+  };
   const rawReadProvider = {
     async fetchXml(xml, identity, fetchOptions = {}) {
-      if (config().mode !== 'live')
-        return normalizeMockLiquidFetchXml(
-          await store.readOperation(() =>
-            store.fetchXml(xml, identity, {
-              platformLanguageCode: 'en-US',
-              portalRequest: true,
-              right: fetchOptions.right,
-              fetchCache: fetchOptions.fetchCache,
-              diagnostic: fetchOptions.diagnostic,
-            }),
-          ),
-          xml,
-          liveMapping,
-        );
+      if (config().mode !== 'live') return localPortalFetch(xml, identity, fetchOptions);
+      requireRenderSource({ mutable: true });
       const entity = parseFetchXml(xml).children.find((n) => n.name === 'entity')?.attrs.name;
       if (!entity) throw error('FetchXML requires a root entity.');
       return live.fetchXml(xml, liveMapping(entity));
     },
-    async get(entity, id, identity) {
+    async get(entity, id, identity, readOptions = {}) {
       if (config().mode !== 'live')
-        return normalizeMockLiquidRecord(
-          await store.readOperation(() => store.get(entity, id, identity, { portalRequest: true })),
-          liveMapping(entity),
-          { mappings: liveMapping },
-        );
+        return readPortalData(async () => {
+          const mappings = liquidMappings(solutionMetadata);
+          return normalizeMockLiquidRecord(
+            await store.withPortalReadSources(identity, { table: entity, id }, () =>
+              store.get(entity, id, identity, {
+                portalRequest: true,
+                // A read the hosted form does not send to Dataverse (its values travel with the page) runs no read steps.
+                ...(readOptions.skipPluginRead === true ? { skipPluginRead: true } : {}),
+              }),
+            ),
+            mappings(entity),
+            { mappings, lcid: readOptions.language?.lcid, globalChoices: portalGlobalChoices() },
+          );
+        });
       const mapping = liveMapping(entity);
       return normalizeLiveRecord(await liveJson(`/_api/${mapping.entitySet}(${encodeURIComponent(id)})`), mapping);
     },
     async query(entity, params, identity) {
-      if (config().mode !== 'live') {
-        const result = await store.readOperation(() =>
-          store.query(entity, params, identity, undefined, { portalRequest: true }),
-        );
-        const aggregate = Boolean(params instanceof URLSearchParams ? params.get('$apply') : params?.$apply);
-        return {
-          ...result,
-          value: normalizeMockLiquidRecord(result.value, liveMapping(entity), {
-            aggregate,
-            mappings: liveMapping,
-          }),
-        };
-      }
+      if (config().mode !== 'live')
+        return readPortalData(async () => {
+          const queryValue = (name) => (params instanceof URLSearchParams ? params.get(name) : params?.[name]);
+          const result = await store.withPortalReadSources(
+            identity,
+            { table: entity, expand: queryValue('$expand') },
+            () => store.query(entity, params, identity, undefined, { portalRequest: true }),
+          );
+          const mappings = liquidMappings(solutionMetadata);
+          return {
+            ...result,
+            value: normalizeMockLiquidRecord(result.value, mappings(entity), {
+              aggregate: Boolean(queryValue('$apply')),
+              mappings,
+              globalChoices: portalGlobalChoices(),
+            }),
+          };
+        });
       const mapping = liveMapping(entity);
       const query = new URLSearchParams(params ?? {});
       const result = await liveJson(`/_api/${mapping.entitySet}${query.size ? '?' + query : ''}`);
@@ -2026,12 +2508,17 @@ export async function createSimulator(options) {
     },
   };
   const readProvider = {
+    // The runtime's portal reads run the read pipeline: forms send the hosted form's reads through it
+    // (form-read-messages.mjs). Live mode reads the real portal, which already sends them: no extra reads.
+    get sendsFormReadMessages() {
+      return config().mode !== 'live';
+    },
     fetchXml: (xml, identity, fetchOptions) =>
       auditRead('liquid-fetchxml', /<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(xml)?.[1], xml, identity, () =>
         rawReadProvider.fetchXml(xml, identity, fetchOptions),
       ),
-    get: (entity, id, identity) =>
-      auditRead('entity-read', entity, { id }, identity, () => rawReadProvider.get(entity, id, identity)),
+    get: (entity, id, identity, readOptions) =>
+      auditRead('entity-read', entity, { id }, identity, () => rawReadProvider.get(entity, id, identity, readOptions)),
     query: (entity, params, identity) =>
       auditRead('entity-query', entity, params, identity, () => rawReadProvider.query(entity, params, identity)),
   };
@@ -2099,6 +2586,46 @@ export async function createSimulator(options) {
     );
     return uuidV5(organization.organizationId, `systemuser:app:${appId}`);
   };
+  const applicationWorkflowPrincipal = async () => {
+    const id = await portalApplicationUser();
+    const user = store.tableRows('systemuser').find((row) => row.systemuserid === id);
+    return organizationPrincipalContext(store, user);
+  };
+  const portalWorkflowPrincipal = async (identity) => {
+    const mapped = store.portalAuthorization?.principal(identity);
+    if (mapped?.user) return organizationPrincipalContext(store, mapped.user, { caller: mapped.caller });
+    return applicationWorkflowPrincipal();
+  };
+  const runListWorkflow = (input) => {
+    const run = organization.api.executePortalListWorkflow;
+    if (!run) throw error('Classic workflow execution is unavailable.', 501, 'WorkflowUnsupported');
+    return run({ ...input, principal: portalWorkflowPrincipal });
+  };
+  const canRunFormWorkflow = (workflowId, entity) =>
+    config().mode !== 'live' &&
+    !store.recordPipeline?.virtualProviders?.status(entity)?.virtual &&
+    organization.api.hasPortalFormWorkflow?.(workflowId, entity) === true;
+  const runFormWorkflow = ({ verify, ...input }) => {
+    const run = organization.api.executePortalFormWorkflow;
+    const assertLocal = () => {
+      try {
+        verify?.();
+      } catch (cause) {
+        // Preserve the portal admission error through the classic workflow failure envelope.
+        throw new DataError(cause.message, cause.status, cause.code, cause.details);
+      }
+      if (!run || config().mode === 'live')
+        throw new DataError('Local Basic Form workflow execution is unavailable.', 501, 'WorkflowUnsupported');
+    };
+    assertLocal();
+    return run({ ...input, principal: portalWorkflowPrincipal, verify: assertLocal });
+  };
+  // A Basic Form record action's Dataverse messages run as the site's application user (the legacy portal service context).
+  const runFormMessage = (input) =>
+    organizationCustomApi(organization, {
+      principal: portalApplicationUser,
+      origin: dataverse?.origin ?? localOrigin,
+    })(input);
   // Server-object bridges of exported server logic (exported-operations.mjs runExportedServerLogic `services`).
   const serverLogicServices = () => ({
     // Enhanced authorization: the visitor's mapped Dataverse user (impersonation; portal-authorization.mjs), else the application user.
@@ -2106,8 +2633,9 @@ export async function createSimulator(options) {
       principal: async () => store.portalAuthorization?.principalId(currentIdentity()) ?? portalApplicationUser(),
       origin: dataverse?.origin ?? localOrigin,
     }),
-    triggerFlow: ({ flowId, payload, identity }) =>
-      runPortalFlow({
+    // The flow API's answer (portalFlowOutcome), as the server-object envelope's status and body.
+    triggerFlow: async ({ flowId, payload, identity }) => {
+      const outcome = await portalFlowOutcome({
         flow: operationPortal().cloudFlows.find(
           (record) =>
             String(record.processId ?? '')
@@ -2116,7 +2644,14 @@ export async function createSimulator(options) {
         ),
         input: payload,
         identity,
-      }),
+        requestedAt: +store.clock.now(),
+      });
+      return {
+        status: outcome.status,
+        body: outcome.error ? JSON.stringify(outcome.error) : (outcome.text ?? ''),
+        headers: {},
+      };
+    },
     httpRewrites: Object.assign(
       {},
       ...Object.values(settingOptionsRest.connections ?? {}).map((connection) => connection?.settings?.rewrites ?? {}),
@@ -2129,30 +2664,82 @@ export async function createSimulator(options) {
       }),
     diagnostic: (entry) => recordDiagnostic(entry),
   });
-  // The portal cloud-flow pipeline (/_api/cloudflow/v1.0/trigger/<guid> and Server.Connector.CloudFlow.TriggerAsync).
-  const runPortalFlow = async ({ flow, input, identity }) => {
+  // The portal cloud-flow pipeline (/_api/cloudflow/<version>/trigger/<guid> and Server.Connector.CloudFlow.TriggerAsync).
+  // A refusal answers { status, body, refusal }: refusal is the Power Pages flow API's code (powerPagesFlowAnswer). `onRun`
+  // receives a tracked exported run's id, `responseClosed` runs the flow without waiting for its Response and `requestedAt`
+  // (store clock) starts the 120-second Response limit.
+  // The refusal of a flow request the caller cannot make: no such flow, or a caller without the flow's web role.
+  const flowAccessRefusal = (flow, identity) => {
     if (!flow)
-      return { status: 404, body: { error: { code: 'NotFound', message: 'The site has no such cloud flow.' } } };
+      return {
+        status: 404,
+        refusal: 'IncorrectFlowId',
+        body: { error: { code: 'NotFound', message: 'The site has no such cloud flow.' } },
+      };
     try {
       assertOperationRole(flow, identity);
     } catch (cause) {
       return {
         status: cause.status ?? 403,
+        refusal: 'MissingPermissions',
         body: { error: { code: cause.code ?? 'Forbidden', message: cause.message } },
       };
     }
+    return null;
+  };
+  // Hosted session F8 (disabled group, two runs): a workflow that is not activated answers FlowDisabled at once, and a
+  // consumer whose workflow is gone answers FlowNotFound. Explicit local activation runs a Draft export. A mock or pack
+  // handler answers for the flow without reading its definition, so neither check applies to it.
+  const flowDefinitionRefusal = (item, workflow) => {
+    if (!['placeholder', 'exported'].includes(item.mode)) return null;
+    if (workflow?.active === false && item.configuration?.activation !== 'local-enabled')
+      return {
+        status: 400,
+        refusal: 'FlowDisabled',
+        body: { error: { code: 'FlowDisabled', message: 'The cloud flow is not activated in its exported source.' } },
+      };
+    if (!workflow) {
+      recordDiagnostic({
+        code: 'CLOUD_FLOW_DEFINITION_MISSING',
+        severity: 'warning',
+        operationKey: item.key,
+        message:
+          'The cloud-flow consumer names a flow that has no definition in the selected Solution sources; it answers FlowNotFound, as a deleted flow does. Select its Solution or configure a local response.',
+      });
+      return {
+        status: 404,
+        refusal: 'FlowNotFound',
+        body: { error: { code: 'FlowNotFound', message: 'The cloud flow has no definition in the selected sources.' } },
+      };
+    }
+    return null;
+  };
+  const runPortalFlow = async ({ flow, input, identity, onRun = null, responseClosed = false, requestedAt = null }) => {
+    const accessRefusal = flowAccessRefusal(flow, identity);
+    if (accessRefusal) return accessRefusal;
     const flowHandler = registeredOperations.cloudFlows.get(flow.name.toLowerCase());
     const item = operations().find((item) => item.kind === 'cloud-flow' && item.id === flow.id);
-    if (item.mode === 'placeholder') operationPlaceholder(item);
     if (item.mode === 'disabled') throw error('This cloud flow is explicitly disabled locally.', 503);
+    const workflow = workflowsView().get(
+      String(flow.processId ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase(),
+    );
+    const definitionRefusal = flowDefinitionRefusal(item, workflow);
+    if (definitionRefusal) return definitionRefusal;
+    if (item.mode === 'placeholder') operationPlaceholder(item);
     const correlationId = currentRequest()?.correlationId ?? null;
     const context = {
+      onRun,
+      responseClosed,
       record: flow,
       workflows: workflowsView(),
       input,
       identity,
       store,
       portal,
+      // The site's observations: powerPagesFlowTriggerSchema (runExportedCloudFlow).
+      observed: config().observed,
       serviceProfile: registeredOperations.flowIdentities.get(
         String(flow.processId ?? '')
           .replace(/[{}]/g, '')
@@ -2180,7 +2767,8 @@ export async function createSimulator(options) {
         }
       });
       if (failure) throw failure;
-      return value;
+      // A run that waited before its Response: the request waits for it outside the transaction.
+      return awaitPortalFlowResponse(store, value, { requestedAt });
     }
     return packHandlerAnswer(
       {
@@ -2192,7 +2780,153 @@ export async function createSimulator(options) {
       () => flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) }),
     );
   };
-  const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
+  // The Power Pages flow API's answer of one flow request (powerPagesFlowAnswer): the HTTP route and CloudFlow.TriggerAsync.
+  const portalFlowOutcome = async ({ flow, input, identity, responseClosed = false, requestedAt = null }) => {
+    const item = flow && operations().find((entry) => entry.kind === 'cloud-flow' && entry.id === flow.id);
+    const responds =
+      item?.mode === 'exported'
+        ? workflowAnswers(
+            workflowsView().get(
+              String(flow.processId ?? '')
+                .replace(/[{}]/g, '')
+                .toLowerCase(),
+            ),
+          )
+        : true;
+    let runId = null;
+    try {
+      const answer = await runPortalFlow({
+        flow,
+        input,
+        identity,
+        onRun: (started) => (runId = started),
+        responseClosed,
+        requestedAt,
+      });
+      return powerPagesFlowAnswer({ answer, runId, responds });
+    } catch (cause) {
+      return powerPagesFlowAnswer({ error: cause, runId, responds });
+    }
+  };
+  // POST /_api/cloudflow/<version>/trigger/<id> as the Power Pages flow API answers it (hosted session F8, two runs; the
+  // statuses and bodies are powerPagesFlowAnswer's). Another method answers 404 with no body. The request filters refuse
+  // before the flow is looked up: without this session's anti-forgery token or X-Requested-With, or with a body that does not
+  // parse, the platform's 500 error page. The id is the consumer's process id (no braces, any case); an unknown, malformed,
+  // braced, consumer or other site's id answers IncorrectFlowId, no id the Web API's 400 9004010A. An eventData string that is
+  // not JSON answers an empty 500; a body without an eventData string runs the flow without waiting for its Response.
+  // The cloud-flow request body: URL-encoded fields or JSON (an empty body is {}); undefined when it does not parse.
+  const cloudFlowBody = async (req) => {
+    const bytes = (await rawBody(req)).toString('utf8');
+    try {
+      if (/^application\/x-www-form-urlencoded\b/i.test(String(req.headers['content-type'] ?? '')))
+        return Object.fromEntries(new URLSearchParams(bytes));
+      return bytes.trim() ? JSON.parse(bytes) : {};
+    } catch {
+      return undefined;
+    }
+  };
+  // The flow input of a parsed body: { eventData, input }, the input parsed from an eventData string ({} without one), or
+  // null when eventData is a string that is not JSON.
+  const cloudFlowEvent = (parsed) => {
+    const eventData = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.eventData : undefined;
+    if (typeof eventData !== 'string') return { eventData, input: {} };
+    try {
+      return { eventData, input: JSON.parse(eventData) };
+    } catch {
+      return null;
+    }
+  };
+  // The cloud flow a request's id names: the consumer's process id (no braces, any case), or a flow record's path.
+  const cloudFlowForSegment = (segment, pathname) => {
+    const id = segment.toLowerCase();
+    return operationPortal().cloudFlows.find((record) =>
+      record.processId
+        ? String(record.processId).replace(/[{}]/g, '').toLowerCase() === id
+        : record.path?.replace(/\/$/, '').toLowerCase() === pathname.replace(/\/$/, '').toLowerCase(),
+    );
+  };
+  const cloudFlowRequest = async (req, res, pathname, segment) => {
+    const requestedAt = +store.clock.now();
+    const identity = currentIdentity();
+    const signedIn = Boolean(identity?.contactId ?? identity?.id);
+    const noStore = { 'cache-control': PAGE_CACHE_CONTROL, pragma: 'no-cache', expires: '-1' };
+    const write = (status, headers, body, failure = null) => {
+      if (failure) res[auditResponse] = { error: failure };
+      res.writeHead(status, { ...headers, 'x-sim-route': 'cloud-flow-local' });
+      res.end(body);
+    };
+    const errorPage = (code, message) =>
+      write(500, { 'content-type': 'text/html; charset=utf-8', ...noStore }, platformErrorDocument(), {
+        code,
+        message,
+      });
+    if (req.method !== 'POST') return write(404, noStore);
+    if (!sameToken(req.headers.__requestverificationtoken, headerToken(req)))
+      return errorPage(
+        'HttpAntiForgeryException',
+        req.headers.__requestverificationtoken
+          ? 'The portal verification token is not valid for this session.'
+          : 'Missing portal verification token.',
+      );
+    if (!String(req.headers['x-requested-with'] ?? '').trim())
+      return errorPage('AjaxRequestRequired', 'The cloud-flow API takes only requests with X-Requested-With.');
+    const parsed = await cloudFlowBody(req);
+    if (parsed === undefined) return errorPage('InvalidRequestBody', 'The cloud-flow request body is not valid JSON.');
+    const event = cloudFlowEvent(parsed);
+    if (!event)
+      return write(500, noStore, undefined, { code: 'InvalidEventData', message: 'eventData is not valid JSON.' });
+    const { eventData, input } = event;
+    if (!segment) {
+      const failure = { code: '9004010A', message: 'An unexpected error occurred while processing the request' };
+      return write(
+        400,
+        {
+          'content-type': 'application/json; charset=utf-8',
+          ...noStore,
+          ...(signedIn ? {} : { 'cache-control': 'no-cache' }),
+        },
+        JSON.stringify({ error: failure }),
+        failure,
+      );
+    }
+    const flow = cloudFlowForSegment(segment, pathname);
+    const outcome = await portalFlowOutcome({
+      flow,
+      input: powerPagesFlowPayload(input, {
+        portal,
+        portalId: observedPortalId(),
+        siteUrl: localOrigin,
+        identity,
+      }),
+      identity,
+      responseClosed: typeof eventData !== 'string',
+      requestedAt,
+    });
+    if (outcome.error)
+      // An anonymous caller's error answer is privately cacheable, as captured; a signed-in caller's is not stored.
+      return write(
+        outcome.status,
+        {
+          'content-type': 'application/json; charset=utf-8',
+          ...(signedIn ? noStore : { 'cache-control': 'private' }),
+        },
+        JSON.stringify(outcome.error),
+        { code: outcome.error.ErrorCode, message: outcome.error.Message },
+      );
+    if (outcome.text !== undefined)
+      return write(outcome.status, { 'content-type': 'text/html; charset=utf-8', ...noStore }, outcome.text);
+    return write(outcome.status, noStore);
+  };
+  const executeServerLogic = async ({
+    name,
+    method = 'GET',
+    operation,
+    body = '',
+    input = '',
+    query = {},
+    requestUrl,
+    requestHeaders,
+  }) => {
     const record = operationPortal().serverLogics.find(
       (record) => record.name.toLowerCase() === String(name).toLowerCase(),
     );
@@ -2223,6 +2957,10 @@ export async function createSimulator(options) {
       body,
       input,
       query,
+      requestUrl,
+      requestHeaders,
+      siteUrl: new URL(localOrigin).origin,
+      portalId: observedPortalId(),
       timeout: serverLogicTimeoutMs,
       environmentVariables: environmentVariablePayload(store.state),
       services: serverLogicServices(),
@@ -2255,11 +2993,20 @@ export async function createSimulator(options) {
       // FileStorage/CloudStorageAccount: attachment bytes go to storage route portalCloudAttachments (lib/form-service.mjs).
       cloudAttachments: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
       diagnostic: recordDiagnostic,
+      verifyCaptcha: useLocalCaptcha()
+        ? (scope, proof) =>
+            useLocalCaptcha() &&
+            localCaptcha.redeem({ ...scope, owner: webFormSessionOwner(formIdentity, visitor) }, proof)
+        : null,
+      issueCaptcha: useLocalCaptcha()
+        ? (scope) => localCaptcha.issue({ ...scope, owner: webFormSessionOwner(formIdentity, visitor) })
+        : null,
       schemas: {
         ...solutionMetadata.componentSchemas,
         ...config().componentSchemas,
       },
       metadata: modelMetadata(),
+      globalChoices: localPortalGlobalChoices(),
       readProvider,
       writeProvider: {
         create: (entity, values, identity) => writeFormRecord(entity, null, values, identity),
@@ -2268,6 +3015,11 @@ export async function createSimulator(options) {
           config().mode !== 'live'
             ? store.associate(entity, id, navigation, targetId, identity)
             : associateFormRecord(entity, id, navigation, targetId, identity),
+        // The live bridge writes through the portal Web API, which creates activity parties only as a deep insert of
+        // their activity (form-service.mjs, Is Activity Party).
+        get activityPartyDeepInsert() {
+          return config().mode === 'live';
+        },
         // A submission's record, associations and notes form one unit. Locally the
         // store transaction restores everything on failure; the live bridge has no
         // transaction, so the records the unit created are deleted again.
@@ -2276,7 +3028,8 @@ export async function createSimulator(options) {
             return store.transact(
               () =>
                 work({
-                  ...portalRecordWrites(store),
+                  // A form write is a portal call of the signed-in contact (IsPortalsClientCall, PortalsContactId).
+                  ...portalRecordWrites(store, { portalRequest: true }),
                   associate: (entity, id, navigation, targetId, identity) =>
                     store.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
                 }),
@@ -2315,6 +3068,12 @@ export async function createSimulator(options) {
       requestUrl: pageTarget.href,
       sessions: webFormSessions,
       owner: webFormSessionOwner(formIdentity, visitor),
+      // Locally a multistep session is also its adx_webformsession row; the live site keeps its own.
+      webFormSessionRows: config().mode !== 'live',
+      // An anonymous row needs the identification the browser already holds: a visitor this request started (a
+      // cookieless request) gets bounded session bookkeeping and no row.
+      anonymousIdentified: Boolean(visitor) && visitor === trace.getStore()?.cookieVisitor,
+      userHostAddress: trace.getStore()?.remoteAddress ?? null,
       language: {
         lcid: formLanguage.selected?.lcid ?? null,
         defaultLcid: formLanguage.languages.find((entry) => entry.isDefault)?.lcid ?? null,
@@ -2402,10 +3161,16 @@ export async function createSimulator(options) {
     const referenced = await relatedRows(reverse, referenceValue(source?.[relationship.to]));
     return { is_reflexive: true, referenced: referenced[0] ?? null, referencing: rows };
   };
+  const mutableRenderInput =
+    (read) =>
+    (...args) => {
+      requireRenderSource({ mutable: true });
+      return read(...args);
+    };
   const entityMembers = {
-    notes: async (_table, id) => entityNotes(id),
-    permissions: entityPermissions,
-    related: entityRelated,
+    notes: mutableRenderInput((_table, id) => entityNotes(id)),
+    permissions: mutableRenderInput(entityPermissions),
+    related: mutableRenderInput(entityRelated),
   };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
@@ -2416,7 +3181,7 @@ export async function createSimulator(options) {
       codeCatalogue: codeComponents,
       render,
       observed: config().observed ?? source.observed,
-      serverLogic: async ({ name, operation, input }) => {
+      serverLogic: mutableRenderInput(async ({ name, operation, input }) => {
         try {
           const raw = await executeServerLogic({ name, operation, input });
           if (raw === null) return null;
@@ -2431,10 +3196,11 @@ export async function createSimulator(options) {
           recordDiagnostic({ code: cause.code ?? 'SERVER_LOGIC_FAILED', name, message: cause.message });
           return { success: false, status_code: cause.status ?? 500, data: null, raw_result: '' };
         }
-      },
+      }),
       observationOrigin: live.origin,
       sourceDependencies,
       fetchXml: async (xml, _user, _request, fetchOptions) => {
+        requireRenderSource();
         const empty =
           config().mode === 'live'
             ? null
@@ -2450,7 +3216,17 @@ export async function createSimulator(options) {
           })
         );
       },
-      previewFetchXml: (xml, _user, _request, fetchOptions) => {
+      // knowledge.articles keeps the articles that share a content access level with the visitor when the site filters.
+      knowledgeArticleAccess: () =>
+        knowledgeArticleAccess({
+          portal: source,
+          store,
+          identity: currentIdentity(),
+          config: config(),
+          readProvider,
+          diagnostic: recordDiagnostic,
+        }),
+      previewFetchXml: mutableRenderInput((xml, _user, _request, fetchOptions) => {
         if (config().mode === 'live')
           throw error(
             'A local permission preview cannot qualify remote Liquid execution.',
@@ -2458,38 +3234,56 @@ export async function createSimulator(options) {
             'LocalFetchPreviewUnsupported',
           );
         return store.previewPermissionFetchXml(xml, currentIdentity(), fetchOptions);
-      },
+      }),
       entityMembers,
-      entity: async (entity, id) =>
+      entity: mutableRenderInput((entity, id, _user, readOptions) =>
         observedLiquidEntityRead(
-          () => readProvider.get(entity, id, currentIdentity()),
+          () => readProvider.get(entity, id, currentIdentity(), readOptions),
           config().observed ?? source.observed,
         ),
-      renderComponent: async (kind, args, context) => {
+      ),
+      renderComponent: mutableRenderInput(async (kind, args, context) => {
+        // Render provenance of the component's markup (lib/component-provenance.mjs): what the renderer reports it
+        // rendered (components) and the elements it bound by offset (bindings).
+        const components = [],
+          bindings = [];
+        const provenance = (result) =>
+          componentRenderResult(result, {
+            components,
+            explicit: bindings,
+            index: renderer.sourceIndex(context?.__language?.id),
+            tag: kind,
+            args,
+          });
+        // Dataset code components read through the portal Web API as this visitor, as handleWebApi below sees it.
+        const webApi = {
+          store,
+          portal: {
+            ...portal,
+            webApiViews: solutionMetadata.views,
+            webApiEntities: solutionMetadata.entities,
+            webApiIdentity: currentIdentity(),
+          },
+        };
         if (kind === 'codecomponent') {
-          const bindings = [];
           const html = renderCodeComponent({
             name: args?.name ?? args?.id,
             args,
+            liquidTag: true,
+            platformLibraries: pcfPlatform.libraries,
             portal,
             catalog: codeComponents,
             metadata: modelMetadata(),
             language: context?.__language ?? portal.language,
-            identity: currentIdentity(),
             mappings: store.snapshot({ sections: ['mappings'] }).mappings,
+            webApi,
+            // Local-only explicit dataset binding of the Liquid tag (packet 04; default "none", as Power Pages).
+            liquidDatasetBinding: settingOptionsRest.pcf?.liquidDatasetBinding,
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
             onRendered: (binding) => bindings.push(binding),
           });
-          const index = renderer.sourceIndex(context?.__language?.id);
-          return {
-            html,
-            renderProvenance: bindings.map((binding) => ({
-              ...binding,
-              sourceRefIds: index.metadataIndex.sourceRefsFor([binding.component.key]).map((ref) => ref.id),
-            })),
-          };
+          return provenance(html);
         }
-        const progressBindings = [];
         const renderedComponent = await renderComponent(
           kind,
           typeof args === 'string' ? args : (args?.name ?? args?.id ?? args?.key ?? ''),
@@ -2498,20 +3292,28 @@ export async function createSimulator(options) {
             portal,
             store,
             readProvider,
+            // The searchindex tag reads storage-backed note bodies as that visitor (lib/portal-search.mjs).
+            attachmentReader: (identity) => portalAttachmentReader(identity, organizationHost.attachmentBody),
+            canRunFormWorkflow,
             args: typeof args === 'string' ? { name: args } : (args ?? {}),
             serviceFixtures: organizationHost.providers.serviceFixtures,
             metadata: modelMetadata(),
+            globalChoices: localPortalGlobalChoices(),
             codeComponent: (spec) =>
               renderCodeComponent({
                 ...spec,
                 portal,
                 catalog: codeComponents,
+                platformLibraries: pcfPlatform.libraries,
                 metadata: modelMetadata(),
                 language: context?.__language ?? portal.language,
-                identity: currentIdentity(),
                 mappings: store.snapshot({ sections: ['mappings'] }).mappings,
                 diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
               }),
+            // Field hosts write the platform libraries before their first bundle, once per page render: the same page
+            // state the Liquid codecomponent tag uses (lib/code-components.mjs pcfPlatformScripts).
+            pcfPlatformScripts: (pageState) => pcfPlatformScripts(pcfPlatform.libraries, pageState),
+            pcfPageState: context?.state,
             config: config(),
             observed: config().observed ?? portal.observed,
             managedControls: config().managedControls ?? config().shellProfile?.managedControls,
@@ -2529,24 +3331,15 @@ export async function createSimulator(options) {
                 ? (item) => trace.getStore()?.nativePostbacks?.push(item)
                 : undefined,
             nativePostbackState: trace.getStore()?.nativePostbackState,
-            onProgressRendered: (binding) => progressBindings.push(binding),
+            issueCaptcha: issueFormCaptcha,
+            onProgressRendered: (binding) => bindings.push(binding),
+            onComponentRendered: (component) => components.push(component),
             // Component diagnostics name the page that rendered the component.
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: entry.path ?? context?.request?.path }),
           },
         );
-        if (!progressBindings.length) return renderedComponent;
-        const index = renderer.sourceIndex(context?.__language?.id);
-        const renderProvenance = progressBindings.map((binding) => ({
-          ...binding,
-          sourceRefIds: binding.sourceSelectors.flatMap((selector) => {
-            const source = index.source({ id: selector.recordId }, selector.field, selector);
-            return source && !source.ambiguous ? [source.id] : [];
-          }),
-        }));
-        return typeof renderedComponent === 'string'
-          ? { html: renderedComponent, renderProvenance }
-          : { ...renderedComponent, renderProvenance };
-      },
+        return provenance(renderedComponent);
+      }),
       user: currentIdentity(),
       shellProfile: config().shellProfile,
     });
@@ -2748,7 +3541,11 @@ export async function createSimulator(options) {
     mutation = next.catch(() => {});
     return next;
   };
-  const persistState = async (state, { reload = true } = {}) => {
+  // `rebase` (a configuration change) applies the change again to the live state at commit time: the configured state
+  // is taken, compiled and replaced in one store transaction, which asynchronous jobs queue with, so a job that commits
+  // while the change prepares keeps its rows and neither side conflicts. Without it the replacement expects the
+  // snapshot's revision and refuses (409) a state that changed meanwhile.
+  const persistStateCore = async (state, { reload = true, rebase = null } = {}) => {
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
@@ -2791,7 +3588,20 @@ export async function createSimulator(options) {
         store.presetLibrary = generatedPresets;
         fingerprint = await calculateFingerprint();
       }
-      await replaceCompiledState(state, { expectedRevision });
+      if (rebase)
+        await store.transact(
+          async () => {
+            const latest = store.snapshot(undefined, { forkTables: true });
+            rebase(latest);
+            portal = applyPortalOverrides(
+              await environmentBound(sourcePortal, latest),
+              latest.simulator?.portalOverrides,
+            );
+            await replaceCompiledState(latest, { expectedRevision: store.revision, nested: true });
+          },
+          { cloneResult: false, lazyReadSnapshot: true },
+        );
+      else await replaceCompiledState(state, { expectedRevision });
     } catch (cause) {
       ({
         portal,
@@ -2822,6 +3632,7 @@ export async function createSimulator(options) {
     }
     appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   };
+  const persistState = (state, options) => publishPortalSource(() => persistStateCore(state, options));
   // Every whole-state write that changes the operations map (configuration, import, reset, presets, scenarios) applies it
   // like PATCH /_sim/api/operations/<key>: CLR runtimes are prepared first and the trigger hosts re-synchronize after.
   const saveState = (state, options) =>
@@ -2831,7 +3642,7 @@ export async function createSimulator(options) {
   // Source import happens after the record transaction commits. The short
   // publication transaction checks its overlay snapshot again, so background
   // SDK writes during source I/O cannot be overwritten by rematerialization.
-  const refreshManagementSource = async () => {
+  const refreshManagementSourceCore = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const records = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
       if (isDeepStrictEqual(records, appliedManagementRecords)) return;
@@ -2870,14 +3681,15 @@ export async function createSimulator(options) {
       'SourceRefreshConflict',
     );
   };
+  const refreshManagementSource = () => publishPortalSource(refreshManagementSourceCore);
   const applyPresetSections = (state, preset, name) => {
     if (preset.personaCatalog !== undefined)
       state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
     if (preset.identity) state.simulator.identity = structuredClone(preset.identity);
     if (preset.endpoints) state.simulator.endpoints = structuredClone(preset.endpoints);
-    if (preset.contactRoles) state.simulator.contactRoles = structuredClone(preset.contactRoles);
+    if (preset.contactRoles) configureContactRoles(portal, state, structuredClone(preset.contactRoles));
     if (preset.personaRoles) {
-      state.simulator.contactRoles = membershipsForRoles(portal, preset.personaRoles);
+      configureContactRoles(portal, state, membershipsForRoles(portal, preset.personaRoles));
       state.simulator.identity = {
         ...state.simulator.identity,
         roleSource: 'memberships',
@@ -2935,6 +3747,16 @@ export async function createSimulator(options) {
     await (storageAdapter ? storageAdapter.presetApplication(() => saveState(state)) : saveState(state));
     return returnState ? exposedState() : undefined;
   };
+  const validateContactRoles = (roles) => {
+    if (
+      !Array.isArray(roles) ||
+      roles.some(
+        (assignment) =>
+          !assignment || typeof assignment.contactId !== 'string' || typeof assignment.roleId !== 'string',
+      )
+    )
+      throw error('contactRoles must contain contactId and roleId assignments.');
+  };
   const validateConfig = (cfg) => {
     profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
     validatePlatformOverrides(cfg.platformOverrides);
@@ -2959,15 +3781,7 @@ export async function createSimulator(options) {
       throw error('identity.roleSource must be memberships or override.');
     if (cfg.permissionSource && !['configured', 'exported', 'combined'].includes(cfg.permissionSource))
       throw error('permissionSource must be configured, exported or combined.');
-    if (
-      cfg.contactRoles &&
-      (!Array.isArray(cfg.contactRoles) ||
-        cfg.contactRoles.some(
-          (assignment) =>
-            !assignment || typeof assignment.contactId !== 'string' || typeof assignment.roleId !== 'string',
-        ))
-    )
-      throw error('contactRoles must contain contactId and roleId assignments.');
+    if (cfg.contactRoles != null) validateContactRoles(cfg.contactRoles);
     new LiveBridge(cfg.live ?? {}); // NOSONAR: constructor validates the pattern or has side effects
     if (!Array.isArray(cfg.endpoints)) throw error('endpoints must be an array.');
   };
@@ -3213,7 +4027,7 @@ export async function createSimulator(options) {
         preset,
       });
       try {
-        const signed = opened.runtime.signIn(persona.contactId);
+        const signed = opened.runtime.signIn(persona.contactId, { browserSession: true });
         const { runtime, ...description } = opened;
         return {
           ...description,
@@ -3222,6 +4036,7 @@ export async function createSimulator(options) {
           path: targetPath,
           url: opened.origin + targetPath,
           cookieHeader: signed.cookieHeader,
+          setCookie: signed.setCookie,
           identity: signed.identity,
         };
       } catch (cause) {
@@ -3229,7 +4044,10 @@ export async function createSimulator(options) {
         throw cause;
       }
     }
+    // A launched persona is a browser session: it is issued like a sign-in, with the site's lifetime and the contact's
+    // security stamp (authSessions.cookie), never as a programmatic signIn() value.
     const session = signInSession(persona.contactId);
+    const setCookie = authSessions.cookie(session);
     return {
       origin: localOrigin,
       url: localOrigin + targetPath,
@@ -3238,7 +4056,8 @@ export async function createSimulator(options) {
       contactId: persona.contactId,
       isolated: Boolean(personaInstance),
       browser: definition?.browser ?? {},
-      cookieHeader: authSessions.name + '=' + authSessions.value(session),
+      cookieHeader: cookieRequestHeader(setCookie),
+      setCookie,
       identity: describeSession(session),
     };
   };
@@ -3305,15 +4124,143 @@ export async function createSimulator(options) {
   };
   const inspectionCache = new Map();
   const renderProofs = new Map();
+  // Render provenance is established for documents a browser parses: top-level and framed navigations, never data
+  // callers (XHR fragments keep their original bytes).
+  const provenanceDestination = (req) => ['document', 'iframe', 'frame'].includes(req.headers['sec-fetch-dest']);
+  // The script nonce of a page response under a nonce policy (lib/response-headers.mjs siteUsesScriptNonce), with the
+  // marker that names the rendered scripts left without it and the marker the injectors put on the scripts they add
+  // afterwards (`injected`: the only scripts nonceInjectedScripts gives the nonce); null without such a policy.
+  // observed.scriptNonceScope "every-script" (hosted session F3): every script element gets the nonce and every inline
+  // handler its hash, also those that data writes (lib/render-provenance.mjs); the default keeps the proved decisions.
+  const pageScriptNonce = (site) =>
+    siteUsesScriptNonce(site)
+      ? {
+          nonce: cspNonce(),
+          pending: scriptNoncePendingAttribute(),
+          injected: scriptNonceInjectedAttribute(),
+          everyScript: (config().observed ?? site.observed)?.scriptNonceScope === 'every-script',
+        }
+      : null;
+  // Script elements and inline handlers that render provenance does not prove were written by the exported source or
+  // the platform keep no nonce (lib/render-provenance.mjs): one finding per path.
+  const recordWithheldScriptNonces = (scriptPolicy, pathname) => {
+    const withheld = scriptPolicy?.withheld ?? [];
+    if (!withheld.length) return;
+    if (diagnostics.some((entry) => entry.code === 'PORTAL_CSP_NONCE_WITHHELD' && entry.path === pathname)) return;
+    const scripts = withheld.filter((entry) => entry.kind === 'script').length;
+    recordDiagnostic({
+      code: 'PORTAL_CSP_NONCE_WITHHELD',
+      severity: 'warning',
+      path: pathname,
+      scripts,
+      handlers: withheld.length - scripts,
+      message:
+        'The page has script elements or inline event handlers that the exported source and the platform did not write ' +
+        '(data output, a script tag with Liquid inside it, or a part of a runtime-built document it cannot attribute): ' +
+        'the local nonce policy blocks them. Hosted sites give every script element the nonce and hash every inline ' +
+        'handler, also those that data writes (hosted session F3); a site observed doing so records ' +
+        'observed.scriptNonceScope: every-script.',
+    });
+  };
+  // The script nonces of a document the runtime builds outside the page layout (modal form, quick view, search page,
+  // custom error page) under a nonce policy. `proved` is what its builder bound (platformDocumentTags, component
+  // provenance, exported snippets) before any blanket platform pass; when it is not the document's text, nothing is
+  // proved and every script stays without the nonce. With `provenance` (the document's platform fragment) the proof is
+  // finalized in the same pass. Returns { html, provenance?, scriptPolicy }, or null without a nonce policy.
+  const builtDocumentNonces = (scriptNonce, { html, proved = null, provenance = null, index, pathname }) => {
+    if (!scriptNonce) return null;
+    const trust = proved?.text === html ? proved : { text: html, intervals: [] };
+    const decided = provenance
+      ? finalizePortalProvenance({ fragment: provenance, index, scriptNonce: { ...scriptNonce, trust } })
+      : applyScriptNonces({
+          fragment: trust,
+          index,
+          nonce: scriptNonce.nonce,
+          pending: scriptNonce.pending,
+          everyScript: scriptNonce.everyScript,
+        });
+    recordWithheldScriptNonces(decided.scriptPolicy, pathname);
+    return decided;
+  };
+  // The site policy headers of a built document whose scripts got the response's nonce (none without one).
+  const builtDocumentPolicyHeaders = (scriptNonce, scriptPolicy, options = {}) => {
+    if (!scriptNonce || !scriptPolicy) return {};
+    const headers = siteHeaders(portal, {
+      ...options,
+      nonce: scriptNonce.nonce,
+      handlerHashes: scriptPolicy.handlerHashGroups ?? scriptPolicy.handlerHashes,
+    });
+    return Object.fromEntries(
+      ['content-security-policy', 'content-security-policy-report-only']
+        .filter((name) => headers[name])
+        .map((name) => [name, headers[name]]),
+    );
+  };
+  // A built document whose final statement keeps its reviewed text (CodeQL dispositions match it) answers through this
+  // writer: the toolkit's scripts the statement adds get the nonce (nonceInjectedScripts) and the proof is refreshed on
+  // the body actually sent.
+  const answerWithScriptNonces = (res, scriptNonce, refreshProof) => {
+    if (!scriptNonce) return;
+    const end = res.end;
+    res.end = function (body, ...rest) {
+      res.end = end;
+      const sent = typeof body === 'string' ? refreshProof(nonceInjectedScripts(body, scriptNonce)) : body;
+      return end.call(this, sent, ...rest);
+    };
+  };
+  // A document's server form as its builder proves it: the form's own elements (outside its content range) are the
+  // builder's (`tags`), the content keeps the component provenance of the form it hosts (serverFormFragment), and the
+  // last `tail` characters of the content are markup the builder appended to it (a startup script).
+  const builtFormFragment = (form, content, range, tags, tail = 0) => {
+    const hosted = content && range ? serverFormFragment(form, content, range) : form;
+    const fragment = typeof hosted === 'string' ? { text: hosted, intervals: [] } : hosted;
+    if (!range) return fragment;
+    const contentEnd = range.offset + range.length;
+    return withPlatformTags(fragment, (tag) =>
+      tag.start >= range.offset && tag.start < contentEnd - tail ? null : tags(tag),
+    );
+  };
+  // Stores a document's provenance proof, names it in the response headers and returns a function that revalidates
+  // its script proofs against the final response body (after the toolkit's own injections).
+  const publishRenderProof = (headers, proof) => {
+    if (!proof) return (body) => body;
+    const access = randomBytes(32).toString('hex');
+    renderProofs.set(proof.proofId, { proof, access });
+    while (renderProofs.size > 64) renderProofs.delete(renderProofs.keys().next().value);
+    headers['x-paqvilo-provenance-access'] = access;
+    headers['x-paqvilo-provenance'] = proof.proofId;
+    return (body) => {
+      const entry = renderProofs.get(proof.proofId);
+      if (entry) entry.proof = refreshScriptProofLocations(body, proof);
+      return body;
+    };
+  };
+  // The provenance of a document the runtime generates outside the page layout (platform-shell:<part>).
+  // With `scriptNonce` (a nonce policy) the document is also decided, proving nothing: such a document has no builder
+  // proof, so no script in it gets the nonce (builtDocumentNonces).
+  const platformDocumentProof = (req, html, part, sourceRefIds = [], scriptNonce = null) => {
+    if (!provenanceDestination(req) || !isHtmlDocument(html)) return null;
+    const index = renderer.sourceIndex();
+    const fragment = platformDocumentFragment(html, { portal, index, part, sourceRefIds });
+    if (scriptNonce)
+      return builtDocumentNonces(scriptNonce, { html, provenance: fragment, index, pathname: req.url.split('?')[0] });
+    return finalizePortalProvenance({ fragment, index });
+  };
+  // A runtime-built document that its builder does not prove (the search page, a custom error page) under a nonce
+  // policy: its proof when it has one, else its decisions alone. Returns { html, provenance?, scriptPolicy? } or null.
+  const unprovedDocument = (req, html, part, sourceRefIds, scriptNonce) =>
+    platformDocumentProof(req, html, part, sourceRefIds, scriptNonce) ??
+    builtDocumentNonces(scriptNonce, { html, index: renderer.sourceIndex(), pathname: req.url.split('?')[0] });
   const scriptProofs = new Map();
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
-  const inspectionIdentity = (req, route) => {
-    const auth = requestAuth({ headers: req.headers }, new URL(route, 'http://mirage.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
+  const inspectionIdentity = (req, url) => {
+    const auth = requestAuth({ headers: req.headers }, url);
     return auth.identity ? trace.run({ auth }, currentIdentity) : currentIdentity();
   };
-  const inspectRoute = (route, identity = currentIdentity()) => {
+  const inspectRoute = (route, identity, { language, previewCookie }) => {
     const permissionMode = store.snapshot({ sections: ['settings'] }).settings?.permissionMode ?? 'enforce';
+    const languageId = language?.id ?? null;
     const key = JSON.stringify([
       revision,
       store.dataRevision(),
@@ -3324,22 +4271,30 @@ export async function createSimulator(options) {
       identity.roleIds ?? [],
       identity.roleSource ?? null,
       permissionMode,
+      previewCookie,
+      languageId,
     ]);
     if (inspectionCache.has(key)) return inspectionCache.get(key);
     const mappings = store.snapshot({ sections: ['mappings'] }).mappings ?? {};
     const report = inspectPage(portal, route, {
       solutionMetadata,
+      languageId,
       sourcePortal,
       overrides: config().portalOverrides ?? {},
       identity,
-      access: (page) => pageAccess(portal, page, identity, { now: store.clock.now() }),
+      access: (page) => pageAccess(portal, page, identity, { now: store.clock.now(), previewCookie, languageId }),
       mapping: (entity) => mappings[entity] ?? null,
       tablePermissions: (entity) => tablePermissionSummary(entity, identity, permissionMode),
     });
+    const index = renderer.sourceIndex(languageId);
     const value = {
       ...report,
-      sourceRevision: renderer.sourceIndex().sourceRevision,
-      portalSources: renderer.sourceIndex().snapshot(report),
+      // The address as requested (case, trailing slash and language prefix kept, query dropped): relative
+      // references in the page resolve against it.
+      requestPath: new URL(route, 'http://mirage.invalid').pathname, // NOSONAR: reserved or loopback placeholder host, not a real transport
+      ...(language ? { language: { id: language.id, code: language.code, lcid: language.lcid } } : {}),
+      sourceRevision: index.sourceRevision,
+      portalSources: index.snapshot(report),
       portalProfile: {
         deploymentProfile: portal.deploymentProfile ?? null,
         deploymentProfileFile: portal.deploymentProfileFile ?? null,
@@ -3362,11 +4317,143 @@ export async function createSimulator(options) {
     if (inspectionCache.size > 24) inspectionCache.delete(inspectionCache.keys().next().value);
     return value;
   };
+  /**
+   * What the last render of the inspected address for this session ran, from the trace store: the render span of the
+   * session's latest GET of that address and its render-template spans (each names its source) and platform-component
+   * events. Added to a copy of the static report; the static rows stay. Every web template, snippet, the page, form
+   * and list row gets `observed`: 'rendered' (that render ran it), 'not-rendered' (that render did not) or 'unknown'
+   * (no render of this address is retained for this session, or tracing is off). `observedRender` describes the
+   * render: the page actually rendered (404, access denied and site-marker routes render another page), its language,
+   * the rendered sources the static graph does not list (dynamic includes) and the built-in or missing templates.
+   */
+  const inspectedId = (value) =>
+    String(value?.id ?? value ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+  const observedPageRender = (req, report, identity) => {
+    const requested = String(report.requestPath ?? '/');
+    const unknown = (reason) => ({ state: 'unknown', reason });
+    if (!traces.enabled) return unknown('Tracing is off, so no render is retained.');
+    const visitor = readVisitor(req.headers.cookie, visitorName());
+    const sessionKey = traceSessionKey(identity?.contactId ?? identity?.id ?? null, visitor);
+    if (!sessionKey) return unknown('The request carries no session, so no render belongs to it.');
+    const render = latestPageRender(traces, sessionKey, requested);
+    if (!render) return unknown('No render of this address is retained for this session.');
+    const spans = renderTemplateSpans(traces, render);
+    const language = (portal.websiteLanguages ?? []).find(
+      (row) => String(row.code ?? '').toLowerCase() === String(render.attributes.language ?? '').toLowerCase(),
+    );
+    const index = renderer.sourceIndex(language?.id ?? null);
+    const fallback = renderer.sourceIndex();
+    const { sources, slots, components } = renderedSources(spans, index, fallback);
+    const ids = (kind) =>
+      new Set(sources.filter((source) => source.kind === kind).map((source) => inspectedId(source.recordId)));
+    const templates = ids('webtemplate'),
+      snippetIds = ids('contentsnippet'),
+      pageRecords = ids('webpage');
+    const slotNames = new Set(slots.map((slot) => slot.name.toLowerCase()));
+    const componentMatches = (row) =>
+      components.some((component) =>
+        [inspectedId(row.id ?? row.recordId), String(row.name ?? '').toLowerCase()].includes(
+          String(component.reference ?? '')
+            .replace(/[{}]/g, '')
+            .toLowerCase(),
+        ),
+      );
+    const pageRendered = (page) =>
+      Boolean(
+        page &&
+        (pageRecords.has(inspectedId(page.id)) ||
+          (portal.records ?? []).some(
+            (record) =>
+              record.kind === 'webpage' &&
+              pageRecords.has(inspectedId(record.id)) &&
+              inspectedId(portalField(record, 'rootwebpageid')) === inspectedId(page.id),
+          )),
+      );
+    const listed = new Set((report.webTemplates ?? []).map((row) => inspectedId(row.recordId ?? row.id)));
+    const listedSnippets = new Set((report.snippets ?? []).map((row) => inspectedId(row.recordId)));
+    const renderedPage = (portal.pages ?? []).find(
+      (row) => inspectedId(row.id) === inspectedId(render.attributes.pageId),
+    );
+    return {
+      state: 'observed',
+      traceId: render.traceId,
+      renderedAt: render.startedAt ?? null,
+      renderedPage: renderedPage
+        ? {
+            id: renderedPage.id,
+            name: renderedPage.name,
+            url: renderedPage.url,
+            status: render.attributes.status ?? null,
+          }
+        : null,
+      language: render.attributes.language ?? null,
+      template: render.attributes.template ?? null,
+      // Rendered exported sources the static graph does not list (an include whose name is computed at run time).
+      additionalSources: sources
+        .filter(
+          (source) =>
+            (source.kind === 'webtemplate' && !listed.has(inspectedId(source.recordId))) ||
+            (source.kind === 'contentsnippet' && !listedSnippets.has(inspectedId(source.recordId))),
+        )
+        .slice(0, 100)
+        .map((source) => ({
+          kind: source.kind,
+          name: source.name,
+          recordId: source.recordId,
+          sourceFile: source.file ?? null,
+        })),
+      // Templates the render ran from a built-in body, or found missing (an empty slot or an unknown include).
+      builtInOrMissing: slots.filter((slot) => slot.origin !== 'export').slice(0, 100),
+      rows: {
+        template: (row) => templates.has(inspectedId(row.recordId ?? row.id)),
+        snippet: (row) =>
+          snippetIds.has(inspectedId(row.recordId)) || slotNames.has(`snippet ${String(row.name).toLowerCase()}`),
+        page: pageRendered,
+        component: componentMatches,
+      },
+    };
+  };
+  const withObservedRender = (report, observedRender) => {
+    const { rows, ...render } = observedRender;
+    const mark = (test) => (row) => {
+      let observed = 'unknown';
+      if (rows) observed = test(row) ? 'rendered' : 'not-rendered';
+      return { ...row, observed };
+    };
+    return {
+      ...report,
+      observedRender: render,
+      page: report.page ? mark(() => rows?.page(report.page))(report.page) : report.page,
+      webTemplates: (report.webTemplates ?? []).map(mark((row) => rows.template(row))),
+      snippets: (report.snippets ?? []).map(mark((row) => rows.snippet(row))),
+      forms: (report.forms ?? []).map(mark((row) => rows.component(row))),
+      components: (report.components ?? []).map((row) =>
+        ['list', 'basic-form', 'advanced-form'].includes(row.kind)
+          ? mark((item) => rows.component({ id: item.recordId, name: item.name }))(row)
+          : row,
+      ),
+    };
+  };
   const allDiagnostics = (cfg = config()) => [
     ...packConfigurations.diagnostics,
     ...configurationPresetCollisions(store.state, packConfigurations.presets),
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
+    ...siteHttpPolicyDiagnostics(portal),
+    ...edgeDiagnostics(portal.observed),
+    ...(portal.observed?.siteVisibility === 'private' && !privateSiteAdmission()
+      ? [
+          {
+            code: 'PRIVATE_SITE_ADMISSION_UNCONFIGURED',
+            severity: 'warning',
+            message:
+              'The private-site observation renders the banner. Configure local identityProvider.privateSiteContactIds to exercise admission.',
+          },
+        ]
+      : []),
+    ...[privateSiteAdmission() ? admissionLifetimeDiagnostic(portal) : null].filter(Boolean),
     ...(cfg.importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
     ...(solutionMetadata.diagnostics ?? []),
@@ -3604,8 +4691,13 @@ export async function createSimulator(options) {
       );
     }
   };
-  // Note and attachment bodies for the portal readers (native services, /_api): inline or from the storage provider.
-  const noteAttachmentBody = (logical, row, options) => organizationHost.attachmentBody(logical, row, options);
+  // Rehydration reads the raw row and storage, so require the caller's column read before touching the bytes.
+  const portalAttachmentReader = (identity, read) => (logical, row, options) => {
+    const column = ATTACHMENT_COLUMNS[logical];
+    const id = row?.[`${logical}id`];
+    if (!column || store.portalAuthorization?.canReadRawColumn(identity, logical, column, id) === false) return null;
+    return read(logical, row, options);
+  };
   // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs), created once the organization exists.
   let messagingRoutes = null;
   // /_sim/api/flow-runs and /_sim/api/flow-waits (sim-flow-routes.mjs) answer next to them.
@@ -3993,6 +5085,7 @@ export async function createSimulator(options) {
         workflows: operationWorkflows,
         portal,
         clientResources,
+        portalPlatformLibraries: pcfPlatform.libraries,
         // The model-driven catalogue's tables on this host: the portal provider's site tables plus the store mappings.
         mappings: {
           ...powerPagesTables(portal, modelMetadata()),
@@ -4013,6 +5106,14 @@ export async function createSimulator(options) {
     staffSession,
     simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
   });
+  const localAccountsEnabled = providerSettings.localAccounts === true;
+  const localAccountMailboxPath = '/local-accounts/messages';
+  const localAccountMailbox = (req, res, _url, relative) => {
+    if (relative !== localAccountMailboxPath || req.method !== 'GET') throw adminEndpointNotFound();
+    if (!onAdmin(req) || !sameToken(req.headers['x-sim-csrf'], adminToken))
+      throw error('The local account mailbox requires the administration origin and token.', 403);
+    return json(res, 200, { items: localAccounts.messages() }, { 'cache-control': 'no-store' });
+  };
   // One table of [prefix, handler] for the /_sim/api prefixes this host answers after the shared routers: admin() dispatches
   // through it and PORTAL_ADMIN_ROUTES (status `routes`) is read from it. /session is sessionApi, which the request handler
   // also mounts before admin() so the sign-in page keeps its own rules; /__sim/events is not under /_sim/api and is not listed.
@@ -4074,6 +5175,7 @@ export async function createSimulator(options) {
       '/presets',
     ].map((prefix) => [prefix, portalAdmin]),
   ];
+  if (localAccountsEnabled) PORTAL_ADMIN.push([localAccountMailboxPath, localAccountMailbox]);
   const PORTAL_ADMIN_ROUTES = PORTAL_ADMIN.map(([prefix]) => prefix);
   // The /state payload with its verification evidence re-read (evidence/latest/report.json) and the implementation
   // fingerprints recomputed: browser adapters and admin assets are read on demand, so a startup-only digest cannot detect
@@ -4140,12 +5242,17 @@ export async function createSimulator(options) {
       const route = url.searchParams.get('path') ?? '/';
       if (!route.startsWith('/') || route.startsWith('//') || route.includes('\\'))
         throw error('A portal-relative page path is required.');
-      const report = inspectRoute(route, inspectionIdentity(req, route));
+      const target = requestTargetUrl(route, localOrigin);
+      const identity = inspectionIdentity(req, target);
+      target.pathname = target.pathname.replace(/\/{2,}/g, '/');
+      const language = requestLocale(req, target, null, identity);
+      const report = inspectRoute(route, identity, { language, previewCookie: requestPublishingPreview(req) });
       // view=summary: what a tool needs on every navigation; the full report stays on request.
       if (url.searchParams.get('view') === 'summary') {
         return json(res, 200, inspectionSummary(report));
       }
-      return json(res, 200, report);
+      // The static report is cached; the observed render is read per request and added to a copy.
+      return json(res, 200, withObservedRender(report, observedPageRender(req, report, identity)));
     }
     if (method === 'GET' && relative === '/verification-witness') {
       if (
@@ -4325,8 +5432,8 @@ export async function createSimulator(options) {
       return json(res, 200, personasPayload());
     }
     if (method === 'POST' && relative === '/personas/launch') {
-      const result = await launchPersona(await jsonObjectBody(req));
-      return json(res, 200, result, { 'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax' });
+      const { setCookie, ...result } = await launchPersona(await jsonObjectBody(req));
+      return json(res, 200, result, { 'set-cookie': setCookie });
     }
     if (method === 'DELETE' && relative.startsWith('/persona-runtimes/'))
       return json(
@@ -4391,10 +5498,11 @@ export async function createSimulator(options) {
         const created = await store.create(mapping.logicalName, values, { admin: true });
         try {
           const state = store.snapshot(undefined, { forkTables: true });
-          state.simulator.contactRoles = [
-            ...(state.simulator.contactRoles ?? []),
-            ...[...new Set(roleIds)].map((roleId) => ({ contactId, roleId })),
-          ];
+          grantContactRoles(
+            portal,
+            state,
+            roleIds.map((roleId) => ({ contactId, roleId })),
+          );
           if (body.select === true)
             state.simulator.identity = { id: contactId, contactId, roleSource: 'memberships', roles: [] };
           validateConfig(state.simulator);
@@ -4740,19 +5848,28 @@ export async function createSimulator(options) {
             403,
             'LIVE_WRITES_DISABLED',
           );
-        if (patch.permissionMode) {
-          state.settings.permissionMode = patch.permissionMode;
-          delete patch.permissionMode;
-        }
-        state.simulator = {
-          ...state.simulator,
-          ...patch,
-          ...(['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].some((key) => Object.hasOwn(patch, key))
-            ? { contentPolicySource: 'runtime state' }
-            : {}),
-          live: { ...config().live, ...patch.live },
+        const { permissionMode } = patch;
+        delete patch.permissionMode;
+        if (patch.contactRoles != null) validateContactRoles(patch.contactRoles);
+        // The change as a function of a state: checked on this snapshot, applied again to the live state when it
+        // commits (persistState rebase), so a job's commit in between is kept.
+        const configure = (target) => {
+          if (permissionMode) target.settings.permissionMode = permissionMode;
+          if (patch.contactRoles !== undefined)
+            configureContactRoles(portal, target, structuredClone(patch.contactRoles ?? []));
+          target.simulator = {
+            ...target.simulator,
+            ...structuredClone(patch),
+            ...(['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].some((key) =>
+              Object.hasOwn(patch, key),
+            )
+              ? { contentPolicySource: 'runtime state' }
+              : {}),
+            live: { ...config(target.simulator).live, ...structuredClone(patch.live) },
+          };
+          if (patch.platformOverrides || patch.portalOverrides) delete target.simulator.activeExperiment;
         };
-        if (patch.platformOverrides || patch.portalOverrides) delete state.simulator.activeExperiment;
+        configure(state);
         validateConfig(state.simulator);
         if (patch.contactRoles || patch.identity?.roleSource === 'memberships') {
           const model = buildPermissionModel(portal, state, {
@@ -4769,7 +5886,7 @@ export async function createSimulator(options) {
         }
         // An operations map is refused like PATCH /_sim/api/operations/<key>; saveState applies it.
         if (Object.hasOwn(patch, 'operations')) checkOperationOverrides(patch.operations, operations, error);
-        await saveState(state);
+        await saveState(state, { rebase: configure });
         void stateResponse(req, res);
       });
     if (relative === '/assets/capture' && method === 'POST') {
@@ -4928,6 +6045,8 @@ export async function createSimulator(options) {
       return change(async () => {
         // replaceCompiledState applies the current Solution data to the replacement.
         const next = structuredClone(seededInitialState());
+        // A data reset keeps no multistep form progress.
+        delete next.portalFormSessions;
         // Saved scenario definitions are workspace tooling and survive a reset.
         const scenarios = config().scenarios;
         if (Array.isArray(scenarios)) next.simulator = { ...next.simulator, scenarios };
@@ -4939,9 +6058,9 @@ export async function createSimulator(options) {
             if (store.state.tables?.[table]) next.tables[table] = store.state.tables[table];
         }
         await saveState(next);
+        localCaptcha?.clear();
+        localAccounts.clear();
         await organization?.reseed();
-        // Advanced form sessions belong to the reset state: a reset ends them.
-        webFormSessions.clear();
         void stateResponse(req, res);
       });
     if (relative === '/reload' && method === 'POST') {
@@ -5049,11 +6168,58 @@ export async function createSimulator(options) {
     (portal.websiteLanguages ?? [])
       .filter((language) => language.code && language.published !== false)
       .map((language) => language.code);
+  // A permitted portal association stores the derived memberships (data.mjs storeSiteMembership): the intersect then
+  // leaves the site tables, so whether local data holds it is part of the key.
   function siteTables() {
-    const cache = siteTables.cache;
-    if (cache?.portal !== portal || cache?.state !== store.state)
-      siteTables.cache = { portal, state: store.state, value: buildSiteTables(portal, store.state) };
+    const cache = siteTables.cache,
+      stored = Object.hasOwn(store.state.tables ?? {}, contactRoleIntersection(portal).table);
+    if (cache?.portal !== portal || cache?.state !== store.state || cache?.stored !== stored)
+      siteTables.cache = { portal, state: store.state, stored, value: buildSiteTables(portal, store.state) };
     return siteTables.cache.value;
+  }
+  const webApiReadDeps = (identity) => ({
+    store,
+    portal: {
+      ...portal,
+      webApiViews: solutionMetadata.views,
+      // The public Web API types columns from the Solution's own metadata (webApiPolicy's Solution-only rule).
+      // A table that only a user mapping declares contributes no column types here, unlike modelMetadata()
+      // which serves layouts and Liquid.
+      webApiEntities: solutionMetadata.entities,
+      webApiIdentity: identity,
+    },
+    identity,
+    metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
+  });
+  const dataSummaryProvider = registerDataSummaryProvider(projectPacks);
+  async function summarizePortalData(req, res, url, origin) {
+    if (req.method !== 'POST') throw error('Data summarization requires POST.', 405);
+    if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    if (portalAiRequestRefused(req, res)) return;
+    assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+    const request = await dataSummaryBody(req);
+    const read = readPortalData(() => {
+      if (config().mode === 'live') throw error('The data summarization provider requires local data.', 501);
+      const session = trace.getStore()?.auth?.session;
+      const identity = session?.contactId ? currentIdentity() : identityFor(null);
+      // A recommendation continuation is bound to this browser: the sign-in session, else the anonymous visitor cookie.
+      const visitor = session?.contactId
+        ? `contact:${session.contactId}:${session.sessionId ?? ''}`
+        : `visitor:${readVisitor(req.headers.cookie, visitorName()) ?? ''}`;
+      return dataSummarySource(url, request, {
+        ...webApiReadDeps(identity),
+        origin,
+        visitor,
+        prefer: req.headers.prefer,
+      });
+    });
+    // The site's answered refusals (400 90041003, 404 9004010D) carry the caching headers of an answer (F3 API-05d).
+    const source = await read.catch((error_) => {
+      if (error_?.status >= 400 && error_.status < 500) error_.responseHeaders = portalAiCacheHeaders();
+      throw error_;
+    });
+    const answer = await summarizeData(dataSummaryProvider, source);
+    return json(res, 200, answer, portalAiCacheHeaders());
   }
   async function api(req, res, url, { forceLocal = false } = {}) {
     const context = trace.getStore();
@@ -5066,26 +6232,22 @@ export async function createSimulator(options) {
     // writes and the documented error envelope live in lib/webapi-handler.mjs.
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
-      store,
-      attachmentBody: noteAttachmentBody,
+      ...webApiReadDeps(identity),
+      attachmentBody: portalAttachmentReader(identity, organizationHost.attachmentBody),
+      captureAttachmentBody: portalAttachmentReader(identity, organizationHost.captureAttachmentBody),
       webApiErrorTemplates: registeredWebApiErrorTemplates,
-      portal: {
-        ...portal,
-        webApiViews: solutionMetadata.views,
-        // The public Web API types columns from the Solution's own metadata (webApiPolicy's Solution-only rule).
-        // A table that only a user mapping declares contributes no column types here, unlike modelMetadata()
-        // which serves layouts and Liquid.
-        webApiEntities: solutionMetadata.entities,
-        webApiIdentity: identity,
-      },
-      identity,
-      csrf,
+      csrf: headerToken(req),
+      tokenRefusal: () => headerTokenRefusal(req),
       origin: url.origin,
       // Portal scripts address @odata.id targets on the live portal origin.
       origins: [url.origin, live.origin].filter(Boolean),
-      // Same Solution-only column types as webApiEntities above.
-      metadata: (logical) => solutionMetadata.entities?.[logical]?.fields,
-      json,
+      // The organization's metadata service answers the code component EntityDefinitions read (portal-entity-definitions.mjs).
+      entityMetadata: () => organization?.metadata ?? null,
+      json: (target, status, value, headers = {}, options) => {
+        const answered = { ...headers };
+        appendApplicationSessionRenewal(req, target, answered, { anyCaching: true });
+        return json(target, status, value, answered, options);
+      },
       jsonBody,
       change,
       onError: (cause, response) => {
@@ -5165,13 +6327,18 @@ export async function createSimulator(options) {
       ...extra,
     };
   };
-  const sessionCookie = (session) => ({
-    name: authSessions.name,
-    value: authSessions.value(session),
-    path: '/',
-    httpOnly: true,
-    sameSite: 'Lax',
-  });
+  const sendSession = (res, session, { allowSliding = true, ...extra } = {}) => {
+    const header = authSessions.cookie(session, { allowSliding });
+    const name = authSessions.name;
+    const cookie = {
+      name,
+      value: chunkedCookieValue(parseCookies(cookieRequestHeader(header)), name),
+      path: '/',
+      httpOnly: true,
+      sameSite: 'Lax',
+    };
+    return json(res, 200, describeSession(session, { ...extra, cookie }), { 'set-cookie': header });
+  };
   const sessionRolesResponse = (res, auth, body) => {
     if (!auth.session?.contactId)
       throw error('Sign this browser in through the portal first.', 409, 'SESSION_NOT_SIGNED_IN');
@@ -5182,9 +6349,7 @@ export async function createSimulator(options) {
     if (unknown.length) throw error(`Unknown web roles: ${unknown.join(', ')}`, 400, 'UNKNOWN_WEB_ROLES');
     const { roles: _previous, ...base } = auth.session; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const session = body.roles === null ? base : { ...base, roles: [...new Set(body.roles)] };
-    return json(res, 200, describeSession(session, { cookie: sessionCookie(session) }), {
-      'set-cookie': authSessions.cookie(session),
-    });
+    return sendSession(res, session, { allowSliding: false });
   };
   async function sessionApi(req, res, url) {
     const relative = url.pathname.slice('/__sim/api/session'.length).replace(/\/$/, '');
@@ -5213,9 +6378,7 @@ export async function createSimulator(options) {
     const returnUrl = safeReturnUrl(body?.returnUrl);
     const session =
       relative === '/sign-in' ? signInSession(body?.contactId, { roles: body?.roles }) : { contactId: null };
-    return json(res, 200, describeSession(session, { returnUrl, cookie: sessionCookie(session) }), {
-      'set-cookie': authSessions.cookie(session),
-    });
+    return sendSession(res, session, { returnUrl });
   }
   // Sign-in tickets for the administration console (design section 4): a single-use navigation from the administration
   // to the portal, in memory only, at most TICKET_LIMIT at a time, each valid for TICKET_LIFETIME_MS on the store clock.
@@ -5322,11 +6485,11 @@ export async function createSimulator(options) {
     return res.end();
   }
   // The local sign-in's answer: the persona's session cookie and a redirect, for the sign-in form and for a console ticket.
-  function localSignInResponse(res, contactId, location, cookies = []) {
+  function localSignInResponse(res, contactId, location, cookies = [], sessionDetails = {}) {
     traceSignIn(contactId, 'local');
     res.writeHead(302, {
       location,
-      'set-cookie': [authSessions.cookie({ contactId }), ...cookies],
+      'set-cookie': [authSessions.cookie({ contactId, ...sessionDetails }), ...cookies].flat(),
       'cache-control': 'no-store',
       'x-sim-route': 'sign-in',
     });
@@ -5376,7 +6539,13 @@ export async function createSimulator(options) {
       listId: null,
       metadata: { adx_copy: html },
     };
-    signInShell = { renderer, page, value: buildRenderer({ ...portal, pages: [page, ...portal.pages] }) };
+    signInShell = {
+      renderer,
+      page,
+      value: buildRenderer({ ...portal, pages: [page, ...portal.pages] }),
+      // The exported sign-in page copy the account layout embeds (render provenance: derived from it).
+      copySourceRefId: exported ? (renderer.sourceIndex().source(exported.metadata, 'copy')?.id ?? null) : null,
+    };
     return signInShell;
   };
   const anonymousCanRead = (target) => {
@@ -5384,33 +6553,20 @@ export async function createSimulator(options) {
     if (!page || page.id === servicePages(portal).profile?.id) return false;
     return pageAccess(portal, page, identityFor({ contactId: null }), { now: store.clock.now() }).allowed;
   };
-  const applyAccountPageContent = (html, content) => {
-    const marker = html.indexOf(SIGN_IN_MARKER);
-    // A content function is an account layout region (the sign-in page, lib/auth-session.mjs
-    // signInContent): it replaces the page's main region and receives the rendered page copy.
-    const main = marker >= 0 ? html.lastIndexOf('<main id="mainContent">', marker) : -1;
-    if (typeof content === 'function' && main >= 0) {
-      const valueOpen = '<div class="xrm-attribute-value">';
-      const valueStart = html.indexOf(valueOpen, main);
-      const copy =
-        valueStart >= 0 && valueStart < marker ? html.slice(valueStart + valueOpen.length, marker).trim() : '';
-      const mainEnd = html.indexOf('</main>', marker);
-      html =
-        html.slice(0, main) +
-        content(copy) +
-        html.slice(mainEnd < 0 ? marker + SIGN_IN_MARKER.length : mainEnd + '</main>'.length);
-      // Account pages link the platform's account stylesheet after the platform styles (live head).
-      html = html.replace(
-        /<link href="[^"]*\/privatemode\.bundle-[^"]*"[^>]*>/,
-        (link) => `${link}<link rel="stylesheet" href="/Areas/Account/css/account.css">`,
-      );
-    } else {
-      const markup = typeof content === 'function' ? content('') : content;
-      if (marker >= 0) html = html.replace(SIGN_IN_MARKER, () => markup);
-      else if (/<body[^>]*>/i.test(html)) html = html.replace(/<body[^>]*>/i, (tag) => tag + markup);
-      else html += markup;
-    }
-    return html;
+  // The account page content edits (lib/liquid.mjs accountPageEdits): the content is the platform sign-in page's, each
+  // part of it (a provider tile, local sign-in, registration, invitation) named with the authentication site settings
+  // that configure that part (lib/sign-in-provenance.mjs).
+  const applyAccountPageContent = (html, content, shell) => {
+    const index = renderer.sourceIndex();
+    const copySourceRefId = shell?.copySourceRefId ?? null;
+    const edits = accountPageEdits(html, content, {
+      marker: SIGN_IN_MARKER,
+      contentPlatform: signInPartTags({ portal, index, providers: externalSignIn?.signInProviders() ?? [] }),
+      resourcePlatform: shellTags(portal, index, null),
+      copySourceRefId,
+      copySource: copySourceRefId ? (index.sources.get(copySourceRefId) ?? null) : null,
+    });
+    return { html: applyMarkupEdits(html, edits), edits };
   };
   /** A platform account page (sign-in, invitation redemption) inside the site's shell. */
   async function renderAccountPage(req, res, url, { status = 200, content, route = 'sign-in-page' }) {
@@ -5419,31 +6575,63 @@ export async function createSimulator(options) {
     const identity = currentIdentity();
     const rendered = await shell.value.renderPage(shell.page.url, {
       user: identity,
+      previewCookie: requestPublishingPreview(req),
       request: { url: url.href, path: url.pathname, params: requestParams(req, url, {}), method: req.method },
     });
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
-    let html = String(rendered.html ?? '');
-    html = applyAccountPageContent(html, content);
+    const applied = applyAccountPageContent(String(rendered.html ?? ''), content, shell);
+    let html = applied.html;
+    // A browser document gets the render provenance of the composed page: the exported header, footer and copy keep
+    // their sources, the account content is the sign-in page's (platform-shell:sign-in).
+    const scriptNonce = pageScriptNonce(portal);
+    const traced = provenanceDestination(req)
+      ? shell.value.provenanceForEdited(rendered, applied.edits, { scriptNonce })
+      : null;
+    if (traced) html = traced.html;
+    let scriptPolicy = traced?.scriptPolicy ?? null;
+    if (scriptNonce && !scriptPolicy) {
+      const nonced = shell.value.scriptNoncesFor(rendered, scriptNonce, applied.edits);
+      if (nonced) ({ html, scriptPolicy } = nonced);
+    }
+    recordWithheldScriptNonces(scriptPolicy, url.pathname);
+    // The scripts the injectors add below carry the response's marker: they are the ones that get the nonce.
+    const injected = { injectedScripts: scriptPolicy ? scriptNonce.injected : null };
     if (rendered.isDocument !== false) {
-      html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
-      html = injectRuntime(
+      html = injectRuntimeDependencies(html, sourceDependencies, [], injected);
+      html = injectLocalHead(
+        injectRuntimeCompatibility(html, sourceDependencies, [], injected),
+        localOverrides,
+        traced?.provenance ?? null,
+        injected,
+      );
+      html = injectPageRuntime(
         html,
-        csrf,
+        requestTokens.issue(req, res),
         renderedRevision,
         identity,
         trace.getStore()?.spanId,
         siteLanguageCodes(),
-        trace.getStore()?.traceSpan?.traceId,
+        {
+          rootTraceId: trace.getStore()?.traceSpan?.traceId,
+          ...injected,
+        },
       );
     }
-    res.writeHead(status, {
+    if (scriptPolicy) html = nonceInjectedScripts(html, scriptNonce);
+    const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...PAGE_HEADERS,
-      ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...siteHeaders(portal, {
+        confinement: confinementPolicy(),
+        kind: 'page',
+        nonce: scriptNonce?.nonce,
+        handlerHashes: scriptPolicy?.handlerHashGroups ?? scriptPolicy?.handlerHashes,
+      }),
       'x-sim-route': route,
-    });
-    return res.end(html);
+    };
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(status, headers);
+    return res.end(refreshProof(html));
   }
   // The platform's sign-in page: the site's external providers (lib/sign-in-flow.mjs) and,
   // when local sign-in is enabled or the site configures no provider, the local personas.
@@ -5453,6 +6641,8 @@ export async function createSimulator(options) {
     url,
     { status = 200, returnUrl = '/', error: problem = null, invitationCode = null, code = null } = {},
   ) {
+    if (privateSiteAdmission() && !hasPrivateSiteSession(req))
+      return refusePrivateSite(res, status >= 400 ? status : 401, code ?? undefined, problem ?? undefined);
     // A refused sign-in answers its own page: the root names the refusal (D-R3-4).
     const routed = status >= 400 && problem ? trace.getStore() : null;
     if (routed) routed.httpError = { code: code ?? 'SignInRefused', message: String(problem) };
@@ -5462,14 +6652,14 @@ export async function createSimulator(options) {
     const content = (copy) =>
       signInContent({
         copy,
-        registerTab: flags.registration && flags.openRegistration,
+        registerTab: flags.registration && (flags.openRegistration || localAccounts.registrationAvailable()),
         redeemTab: flags.registration && flags.invitation && !invitationCode,
         personas: showPersonas ? signInPersonas() : [],
         personaCatalog: showPersonas ? { ...personaReport(), administrationUrl: personaAdministrationUrl() } : null,
         personaReturnUrl: returnUrlParameter(url.searchParams) || status >= 400 ? returnUrl : null,
         providers,
         showPersonas,
-        csrf,
+        csrf: requestTokens.issue(req, res),
         defaultContactId: personaKey(config().identity?.contactId ?? config().identity?.id) || null,
         returnUrl,
         anonymousUrl: anonymousCanRead(returnUrl) ? returnUrl : '/',
@@ -5477,7 +6667,7 @@ export async function createSimulator(options) {
         redeemInvitation: providers.length > 0 && !invitationCode && flags.registration && flags.invitation,
         error: problem,
         title: signInRenderer().page.title,
-      });
+      }) + localAccounts.signInLink(returnUrl);
     return renderAccountPage(req, res, url, { status, content, route: 'sign-in-page' });
   }
   async function signInForm(req) {
@@ -5498,8 +6688,9 @@ export async function createSimulator(options) {
   }
   // The sign-in page and the local persona sign-in; sign-out and external sign-in are
   // answered earlier by lib/sign-in-flow.mjs.
-  const authenticateSignInPost = async (req, res, url, requested) => {
-    const form = await signInForm(req);
+  // form: the fields lib/local-accounts.mjs already read from a sign-in post that carried no local password.
+  const authenticateSignInPost = async (req, res, url, requested, form = null) => {
+    form ??= await signInForm(req);
     const returnUrl = safeReturnUrl(form.ReturnUrl ?? form.returnUrl ?? requested);
     if (!authenticationSettings(portal).localLogin && externalSignIn?.signInProviders().length)
       return renderSignIn(req, res, url, {
@@ -5509,7 +6700,7 @@ export async function createSimulator(options) {
           'Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.',
       });
     if (form.personaKey) {
-      if (!pageToken(form.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+      if (!pageToken(req, form.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
       refuseBrowserContextLaunch(req, form.personaKey);
       const result = await launchPersona({
         personaKey: form.personaKey,
@@ -5518,12 +6709,12 @@ export async function createSimulator(options) {
       traceSignIn(result.contactId, 'persona');
       res.writeHead(302, {
         location: result.url,
-        'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
+        'set-cookie': result.setCookie,
         'cache-control': 'no-store',
       });
       return res.end();
     }
-    if (personaReport().enabled && !pageToken(form.__RequestVerificationToken))
+    if ((personaReport().enabled || pairedPortalRequest(req)) && !pageToken(req, form.__RequestVerificationToken))
       throw error('Missing simulator CSRF token.', 403);
     const contactId = typeof form.contactId === 'string' ? form.contactId.trim() : '';
     const persona = personaKey(contactId)
@@ -5550,13 +6741,49 @@ export async function createSimulator(options) {
   externalSignIn = createExternalSignIn({
     portal: () => portal,
     origin: () => localOrigin,
-    csrf,
+    requestTokens,
     adminToken: () => adminToken,
     sessions: authSessions,
     store,
+    // The redemption workflow starts after the redemption has committed, as the local portal application user (hosted
+    // session F4 AUTH-05d: the job is owned by the runtime user and its failure keeps the redemption).
+    redemptionWorkflow: async ({ workflowId, contactId }) => {
+      const cfg = config();
+      const api = organization.api;
+      if (cfg.mode !== 'local' || cfg.pageMode !== 'local' || !api?.hasPortalInvitationWorkflow?.(workflowId))
+        return false;
+      // Authorization indexes are built from committed role membership.
+      await portalApplicationUser();
+      let failure = null;
+      const started = await change(() =>
+        organization.runOwned(async () => {
+          try {
+            return await api.executePortalInvitationWorkflow({
+              workflowId,
+              contactId,
+              principal: applicationWorkflowPrincipal,
+            });
+          } catch (cause) {
+            failure = cause;
+            return true;
+          }
+        }),
+      );
+      if (failure) throw failure;
+      return started;
+    },
+    localAccounts: () =>
+      localAccounts.enabled
+        ? {
+            registration: () => localAccounts.invitationRegistrationAvailable(),
+            signInPage: (req, res, url, options) => localAccounts.signInPage(req, res, url, options),
+          }
+        : null,
     personas: signInPersonas,
     personaCatalog: personaReport,
     identityProvider: { settings: providerSettings, assets: providerAssets },
+    privateSiteSession: (contactId) =>
+      allowedPrivateSiteIdentity(contactId) ? privateSiteSessions.cookie({ contactId }) : null,
     webRoles: () => appliedPermissionModel?.webRoles ?? [],
     identity: currentIdentity,
     audit,
@@ -5566,6 +6793,67 @@ export async function createSimulator(options) {
     renderSignIn,
     renderPage: renderAccountPage,
     readBody: rawBody,
+  });
+  const registrationCaptchaScope = (visitor) => ({
+    kind: 'registration',
+    formId: 'local-registration',
+    owner: `visitor:${visitor}`,
+  });
+  const registrationCaptcha = {
+    available: useLocalCaptcha,
+    issue(req, res) {
+      if (!useLocalCaptcha()) return null;
+      const cookie = readVisitor(req.headers.cookie, visitorName());
+      if (cookie) return localCaptcha.issue(registrationCaptchaScope(cookie));
+      if (req.method !== 'GET') return null;
+      // Account routes do not otherwise begin a browser visitor session.
+      const visitor = newVisitor(visitorName());
+      const challenge = localCaptcha.issue(registrationCaptchaScope(visitor.id));
+      if (challenge) res.appendHeader('set-cookie', visitor.cookie);
+      return challenge;
+    },
+    redeem(req, proof) {
+      const visitor = readVisitor(req.headers.cookie, visitorName());
+      return Boolean(visitor && useLocalCaptcha() && localCaptcha.redeem(registrationCaptchaScope(visitor), proof));
+    },
+  };
+  const localAccounts = createLocalAccounts({
+    enabled: localAccountsEnabled,
+    captcha: registrationCaptcha,
+    portal: () => portal,
+    origin: () => localOrigin,
+    store,
+    requestTokens,
+    invitations: externalSignIn.invitations,
+    diagnostic: recordDiagnostic,
+    // A sign-in page post without a local password is the platform sign-in page's persona or provider post.
+    signInPost: (req, res, url, form) =>
+      authenticateSignInPost(req, res, url, returnUrlParameter(url.searchParams), form),
+    authCookieName: () => authSessions.name,
+    signedSession: readPortalSession,
+    canRememberSession: localApplicationSessions,
+    canRememberBrowser: localApplicationSessions,
+    signIn: (res, account, location, cookies, { persistent } = {}) =>
+      localSignInResponse(res, account.contactId, location, cookies, {
+        credentialStamp: account.stamp,
+        persistent,
+      }),
+    renderPage(req, res, _url, { status, content, route }) {
+      res.writeHead(status, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        // Only the origin, never the path or the reset and confirmation codes in the query, leaves as a referrer; a
+        // no-referrer page would post its forms with Origin: null, which the portal's origin check refuses.
+        'referrer-policy': 'strict-origin',
+        'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
+        'x-sim-route': route,
+      });
+      res.end(
+        req.method === 'HEAD'
+          ? undefined
+          : `<!doctype html><meta charset="utf-8"><title>Local account</title><main>${content}</main>`,
+      );
+    },
   });
   const modelDrivenCatalogue = storeCatalogue({
     store,
@@ -5721,6 +7009,145 @@ export async function createSimulator(options) {
     csrf: () => appsToken,
     diagnostic: recordDiagnostic,
   });
+  const localeCookie = (req) => parseCookies(req.headers.cookie)[CONTEXT_LANGUAGE_COOKIE];
+  // Classic PreviewPermission reads a Boolean. An invalid present cookie disables preview, like false.
+  function requestPublishingPreview(req) {
+    const value = parseCookies(req.headers.cookie).adxPreviewUnpublishedEntities;
+    return value == null ? undefined : value.toLowerCase() === 'true';
+  }
+  const requestLocale = (req, url, languageCode = null, user = currentIdentity()) =>
+    renderer.requestLanguage(url, { languageCode, languageCookie: localeCookie(req), user }).selected;
+  const rememberLocale = (req, res, code) => {
+    if (req.method === 'GET' && code && localeCookie(req) !== code)
+      res.appendHeader(
+        'set-cookie',
+        `${CONTEXT_LANGUAGE_COOKIE}=${encodeURIComponent(code)}; Path=/; HttpOnly; SameSite=Lax`,
+      );
+  };
+  // The request filters of the portal AI APIs (hosted session F3, summary-F3.md API-05d, runs a and b): without
+  // X-Requested-With an anonymous request answers the platform's 500 error page and a signed-in one 401; with it, a
+  // request without a verification token answers 401. Both with an empty body. True when the request was answered.
+  const portalAiRequestRefused = (req, res) => {
+    const noStore = { 'cache-control': PAGE_CACHE_CONTROL, expires: '-1' };
+    const ajax = /^xmlhttprequest$/i.test(String(req.headers['x-requested-with'] ?? '').trim());
+    if (!ajax && !trace.getStore()?.auth?.session?.contactId) {
+      res.writeHead(500, { 'content-type': 'text/html; charset=utf-8', ...noStore });
+      res.end(platformErrorDocument());
+      return true;
+    }
+    if (ajax && req.headers.__requestverificationtoken) return false;
+    res.writeHead(401, noStore);
+    res.end();
+    return true;
+  };
+  // The caching headers of a portal AI JSON answer (hosted session F3, summary-F3.md API-05d, ai-xrw-* and ai-datasum-*
+  // captures of runs a and b): an anonymous visitor's answers are private; a signed-in visitor's, like every 401, are
+  // no-cache, no-store, must-revalidate with Expires -1. /summarystream is private for both.
+  const portalAiCacheHeaders = () =>
+    trace.getStore()?.auth?.session?.contactId
+      ? { 'cache-control': PAGE_CACHE_CONTROL, expires: '-1' }
+      : { 'cache-control': 'private' };
+  const handleSearchSummary = async (req, res, origin, stream) => {
+    // Another method answers 404 with no body (captured for GET).
+    if (req.method !== 'POST') {
+      res.writeHead(404, { 'cache-control': PAGE_CACHE_CONTROL });
+      return res.end();
+    }
+    if (req.headers.origin && req.headers.origin !== origin) throw error('Cross-origin requests are not allowed.', 403);
+    if (portalAiRequestRefused(req, res)) return;
+    assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+    const query = await readSummaryQuery(req, rawBody);
+    if (!query) return json(res, 500, unansweredSummary(), portalAiCacheHeaders());
+    const sources = await readPortalData(() => {
+      if (config().mode === 'live') throw error('The search summary provider requires local data.', 501);
+      const identity = trace.getStore()?.auth?.session?.contactId ? currentIdentity() : identityFor(null);
+      // observed.searchUnpublishedPages listed: a found web page's publishing state stops counting for its citation, as
+      // it does for the search that found it (portal-search.mjs admitWebPages); its access rules still apply.
+      const listed = (config().observed ?? portal.observed)?.searchUnpublishedPages === 'listed';
+      const citationRules = listed
+        ? {
+            ...portal,
+            publishingStates: (portal.publishingStates ?? []).map((state) => ({ ...state, isVisible: true })),
+          }
+        : portal;
+      return searchSummarySources({
+        portal,
+        store,
+        query,
+        origin,
+        identity,
+        readProvider: { fetchXml: localPortalFetch },
+        metadata: modelMetadata(),
+        config: config(),
+        diagnostic: recordDiagnostic,
+        canReadPage(citation, { found = false } = {}) {
+          const route = languageRoute(portal, citation, 'GET');
+          const target = route?.kind === 'rewrite' ? route.pathname : citation.pathname;
+          const locale = requestLocale(req, citation, route?.code, identity);
+          return pageAccess(found ? citationRules : portal, target, identity, {
+            previewCookie: false,
+            now: store.clock.now(),
+            languageId: locale?.id,
+          }).allowed;
+        },
+      });
+    });
+    const answer = await summarizeSearch(summaryProvider, query, sources);
+    if (!stream) return json(res, 200, answer, portalAiCacheHeaders());
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'private' });
+    return res.end(summaryStreamEvents(answer));
+  };
+  // The observed edge controls (lib/edge-access.mjs): logs the WAF rules that matched, or might have, and answers a
+  // refused request as the edge does. True when the request was refused.
+  const refuseAtEdge = (req, res, url) => {
+    const { refusal, events } = edgeAccess.check(req, url);
+    for (const event of events)
+      publishLog('request', {
+        kind: 'edge',
+        level: event.decided ? 'info' : 'warning',
+        ...event,
+        message: event.decided
+          ? `WAF custom rule ${event.rule} (${event.action}) matched.`
+          : `WAF custom rule ${event.rule} (${event.action}) might match: ${event.reason}; failing closed.`,
+      });
+    if (!refusal) return false;
+    const routed = trace.getStore();
+    if (routed) routed.httpError = { code: refusal.code, message: refusal.message };
+    const body = req.method === 'HEAD' ? '' : refusal.body;
+    // The edge answers before the site: no local visitor session either.
+    res.removeHeader('set-cookie');
+    res.writeHead(refusal.status, { ...refusal.headers, 'content-length': Buffer.byteLength(refusal.body) });
+    res.end(body);
+    return true;
+  };
+  // Adds everyResponseHeaders to the response when it is written, for each header the response does not set itself.
+  const sendEveryResponseHeaders = (res) => {
+    const writeHead = res.writeHead;
+    res.writeHead = function writeHeadWithSiteHeaders(status, ...rest) {
+      const given = rest.find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? {};
+      const names = new Set(Object.keys(given).map((name) => name.toLowerCase()));
+      const contentType = Object.entries(given).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+      const fixed = everyResponseHeaders(portal, {
+        status,
+        contentType: String(contentType ?? res.getHeader('content-type') ?? ''),
+      });
+      for (const [name, value] of Object.entries(fixed)) {
+        if (names.has(name) || res.hasHeader(name)) continue;
+        try {
+          res.setHeader(name, value);
+        } catch (error_) {
+          // A value Node refuses (ERR_INVALID_CHAR) never fails the response: the header is dropped and reported.
+          recordDiagnostic({
+            code: 'PORTAL_HTTP_HEADER_INVALID',
+            severity: 'warning',
+            header: name,
+            message: `The ${name} header could not be sent (${error_.code ?? 'invalid value'}) and was dropped.`,
+          });
+        }
+      }
+      return writeHead.call(this, status, ...rest);
+    };
+  };
   /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -5732,30 +7159,80 @@ export async function createSimulator(options) {
     // The portal also accepts the administration's origin for the paths the console reaches across ports; the portal
     // listener's gate has already refused every browser-shaped administration request outside the allow-list.
     const adminOriginAccepted = !onAdmin(req) && !onApps(req) && req.headers.origin === adminOrigin;
+    const url = requestTargetUrl(req.url, localOrigin);
+    // The hosted edge (observed IP restriction and WAF custom rules) answers before the site: before the CORS page
+    // answer, every page and every portal-facing simulator route (form posts, sign-in, static compat scripts). Only
+    // the administration surface, which the hosted edge never sees, and the other listeners are outside it. Its
+    // refusal carries no site header.
+    if (!onAdmin(req) && !onApps(req) && !ADMINISTRATION_PATH.test(url.pathname) && refuseAtEdge(req, res, url)) return;
     if (
       req.headers.origin &&
       req.headers.origin !== ownOrigin &&
       !adminOriginAccepted &&
       !externalSignIn?.acceptsOrigin(req)
-    )
+    ) {
+      // The loopback origin boundary: a cross-origin request is refused without any site header, whatever the site's
+      // HTTP/Access-Control-* settings say (they are sent on the requests this boundary admits). The one opt-in: a
+      // credential-free read of an authored page a public site was observed sharing (observed.corsPages,
+      // lib/page-cors.mjs), from an exact allowed origin.
+      if (
+        !onAdmin(req) &&
+        !onApps(req) &&
+        answerPageCors(req, res, {
+          portal,
+          live: config().mode === 'live' || config().pageMode === 'live',
+          privateAdmission: privateSiteAdmission(),
+          readable: (page) =>
+            pageAccess(portal, page, identityFor(null), { previewCookie: false, now: store.clock.now() }).allowed,
+          diagnostic: recordDiagnostic,
+        })
+      )
+        return;
       throw error('Cross-origin requests are not allowed.', 403);
+    }
     if (req.headers['sec-fetch-site'] === 'cross-site' && isWrite(req.method))
       throw error('Cross-site writes are not allowed.', 403);
-    const url = requestTargetUrl(req.url, localOrigin);
-    // The admin token is accepted wherever a page or apps token is: it is replaced by that token before the routes see it.
-    normalizeTokenHeaders(req, url.pathname, { adminToken, pageToken: csrf, appsToken });
+    // The headers hosted sites send on every response (lib/response-headers.mjs everyResponseHeaders), on the portal's
+    // own responses past the origin boundary; the administration keeps its own headers.
+    if (!onAdmin(req) && !onApps(req) && !url.pathname.startsWith('/__sim')) sendEveryResponseHeaders(res);
+    if (!onAdmin(req) && !onApps(req) && privateSiteAdmission() && !hasPrivateSiteSession(req)) {
+      if (await externalSignIn.route(req, res, url, { privateSiteOnly: true })) return;
+      const wantsDocument =
+        documentNavigation(req) ||
+        (['GET', 'HEAD'].includes(req.method) && /\btext\/html\b/i.test(req.headers.accept ?? ''));
+      if (wantsDocument && (await externalSignIn.beginSiteAdmission(res, safeReturnUrl(url.pathname + url.search))))
+        return;
+      return refusePrivateSite(res);
+    }
+    if (!onAdmin(req) && !onApps(req) && localAccounts.enabled) {
+      // Local credential routes take precedence over live page and endpoint forwarding, even with a language prefix.
+      const accountUrl = new URL(url);
+      accountUrl.pathname = accountUrl.pathname.replace(/\/{2,}/g, '/');
+      const locale = languageRoute(portal, accountUrl, 'POST');
+      if (locale?.kind === 'rewrite') accountUrl.pathname = locale.pathname;
+      if (await localAccounts.route(req, res, accountUrl)) return;
+    }
+    // Preserve the explicit administration capability in the paired profile. Its browser token is a separate value.
+    normalizeTokenHeaders(req, url.pathname, {
+      adminToken,
+      pageToken: pairedBrowserTokens ? adminToken : csrf,
+      appsToken,
+    });
     if (
       managementStorage &&
       !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)
     )
       await change(async () => {});
-    // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService), local route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
+    // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService): the /_services/sharepoint-* services
+    // and the local download route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
     if (organization?.api?.sharepoint) {
       portalDocuments ??= createPortalDocumentService({
         sharepoint: organization.api.sharepoint,
         store,
         portal: () => portal,
         access: portalDocumentAccess,
+        // An unexpected failure's detail stays local; the visitor gets a generic message.
+        diagnostic: recordDiagnostic,
         // An unconfigured BlockedAttachments uses the Dataverse organization default list
         // (DATAVERSE_BLOCKED_ATTACHMENTS); the organization row, a catalogue default or an instance override (even empty) replaces it.
         blockedExtensions: () => {
@@ -5768,7 +7245,14 @@ export async function createSimulator(options) {
             .filter(Boolean);
         },
       });
-      if (await portalDocuments.handle(req, res, url, { identity: currentIdentity(), csrf })) return;
+      if (
+        await portalDocuments.handle(req, res, url, {
+          identity: currentIdentity(),
+          tokenAccepted: (value) => pageToken(req, value),
+          origin: localOrigin,
+        })
+      )
+        return;
     }
     if (canvasHandler(req, res, url)) return;
     if (await codeAppsHandler(req, res, url)) return;
@@ -5822,7 +7306,7 @@ export async function createSimulator(options) {
         if (!local()) throw error('Pack writes require local providers.', 409, 'LocalRuntimeRequired');
         if (!(identity.contactId ?? identity.id))
           throw error('Pack writes require sign-in.', 401, 'AuthenticationRequired');
-        assertPortalToken(req.headers.__requestverificationtoken, csrf);
+        assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
         const body = await jsonObjectBody(req);
         const result = await invokePackMutation({
           endpoint,
@@ -5839,7 +7323,8 @@ export async function createSimulator(options) {
     const formRoute = /^\/__sim\/forms\/(entityform|webform)\/([\w-]+)\/submit$/.exec(url.pathname);
     if (formRoute) {
       if (req.method !== 'POST') throw error('Native form submission requires POST.', 405);
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
+      const sourceEpoch = portalSourcePublications ? null : portalSourceEpoch;
       const body = await jsonBody(req);
       const formIdentity = currentIdentity();
       // An anonymous visitor's advanced form session belongs to its browser session: the
@@ -5854,13 +7339,25 @@ export async function createSimulator(options) {
         typeof body?.pageUrl === 'string' && body.pageUrl.startsWith('/') ? body.pageUrl : '/',
         localOrigin,
       );
-      return change(async () => {
-        const result = await submitPortalForm(
-          formRoute[1],
-          formRoute[2],
-          body,
-          formSubmissionOptions(formIdentity, visitor, pageTarget),
-        );
+      const workflowAction = body?.action === 'workflow';
+      const messageAction = Boolean(NATIVE_STATE_ACTIONS[body?.action]?.messages);
+      const submit = async () => {
+        // Every record action (Activate, Close Case, Create Order, ...) is pinned to the current source epoch.
+        const stateAction =
+          typeof body?.action === 'string' && !['submit', 'previous', 'workflow'].includes(body.action);
+        const ensureActionSource =
+          (stateAction || workflowAction) && config().mode !== 'live'
+            ? () => requirePortalSourceEpoch(sourceEpoch)
+            : null;
+        ensureActionSource?.();
+        const result = await submitPortalForm(formRoute[1], formRoute[2], body, {
+          ...formSubmissionOptions(formIdentity, visitor, pageTarget),
+          ensureActionSource,
+          runFormWorkflow: workflowAction ? runFormWorkflow : null,
+          runFormMessage: messageAction && config().mode !== 'live' ? runFormMessage : null,
+          hostChange: change,
+          workflowIdentity: workflowAction ? currentIdentity : null,
+        });
         return json(
           res,
           result.operation === 'create' ? 201 : 200,
@@ -5875,9 +7372,19 @@ export async function createSimulator(options) {
           },
           result.recordId ? { entityid: result.recordId } : {},
         );
-      });
+      };
+      // The workflow runner and a record action's Dataverse messages own their host changes and store transactions.
+      return workflowAction || messageAction ? submit() : change(submit);
     }
     if (url.pathname.startsWith('/__sim/api')) mirrorHead(req);
+    // This browser's classic publishing preview cookie (lib/publishing-preview.mjs).
+    if (/^\/__sim\/api\/session\/preview\/?$/.test(url.pathname))
+      return handlePublishingPreview(req, res, {
+        portal,
+        identity: identityFor(trace.getStore()?.auth?.session),
+        csrf: sameToken(req.headers['x-sim-csrf'], adminToken),
+        body: () => jsonBody(req),
+      });
     // Browser sign-in sessions : GET /__sim/api/session, POST .../sign-in, .../sign-out.
     if (/^\/__sim\/api\/session(?:\/|$)/.test(url.pathname)) return sessionApi(req, res, url);
     if (url.pathname.startsWith('/__sim/api')) return admin(req, res, url);
@@ -5914,12 +7421,12 @@ export async function createSimulator(options) {
     if (url.pathname === '/__sim/sign-in') {
       if (req.method === 'POST') {
         const body = await signInForm(req);
-        if (!pageToken(body.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
+        if (!pageToken(req, body.__RequestVerificationToken)) throw error('Missing simulator CSRF token.', 403);
         refuseBrowserContextLaunch(req, body.personaKey);
         const result = await launchPersona({ personaKey: body.personaKey, returnUrl: body.ReturnUrl });
         res.writeHead(302, {
           location: result.url,
-          'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
+          'set-cookie': result.setCookie,
           'cache-control': 'no-store',
         });
         return res.end();
@@ -5940,7 +7447,7 @@ export async function createSimulator(options) {
       const { renderPersonaPicker } = await import('./lib/persona-picker-view.mjs');
       const content =
         '<link rel="stylesheet" href="/__sim/persona-picker.css"><h1>Local persona sign-in</h1><p>Review the persona and sign in. This changes this browser’s local session only.</p><form method="post" action="/_sim/sign-in"><input type="hidden" name="__RequestVerificationToken" value="' +
-        csrf +
+        requestTokens.issue(req, res) +
         '"><input type="hidden" name="ReturnUrl" value="' +
         escaped(returnUrl) +
         '">' +
@@ -5994,15 +7501,29 @@ export async function createSimulator(options) {
     }
     if (/^\/__sim(?:\/|$)/.test(url.pathname)) throw error('Simulator resource not found.', 404);
     if (url.pathname === '/_layout/tokenhtml') {
+      // Only GET answers the fragment: HEAD, POST and OPTIONS get an empty 404 with the page caching headers (hosted
+      // session F5, two runs); an OPTIONS request is not a preflight there.
+      if (req.method !== 'GET') {
+        const { vary: _vary, ...headers } = tokenHtmlHeaders(portal, { confinement: confinementPolicy() }); // NOSONAR: binding is excluded from the rest object or is a placeholder
+        res.writeHead(404, { ...headers, 'content-length': 0 });
+        return res.end();
+      }
       // Native: a self-closing hidden input plus the anti-forgery cookie token, with the page
       // headers the platform sends on it (lib/response-headers.mjs tokenHtmlHeaders).
-      res.writeHead(200, {
+      const token = requestTokens.issue(req, res);
+      const paired = pairedPortalRequest(req);
+      if (paired && token) res.appendHeader('set-cookie', antiForgeryCookie(token));
+      const headers = {
         'content-type': 'text/html; charset=utf-8',
         ...tokenHtmlHeaders(portal, { confinement: confinementPolicy() }),
-        'set-cookie': antiForgeryCookie(csrf),
-      });
-      return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${csrf}" />`);
+        ...(paired ? {} : { 'set-cookie': antiForgeryCookie(token) }),
+      };
+      if (req.method === 'GET') appendApplicationSessionRenewal(req, res, headers);
+      res.writeHead(200, headers);
+      return res.end(`<input name="__RequestVerificationToken" type="hidden" value="${token}" />`);
     }
+    if (summaryProvider && [PORTAL_SEARCH_SUMMARY, PORTAL_SEARCH_SUMMARY_STREAM].includes(url.pathname))
+      return handleSearchSummary(req, res, ownOrigin, url.pathname === PORTAL_SEARCH_SUMMARY_STREAM);
     const endpoint = (config().endpoints ?? []).find(
       (e) =>
         e.enabled !== false &&
@@ -6011,7 +7532,7 @@ export async function createSimulator(options) {
     );
     if (endpoint) {
       if (endpoint.mode === 'live') return forward(req, res, url);
-      if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       if (endpoint.entity) {
         const shadow = new URL(url);
         shadow.pathname = `/_api/${endpoint.entity}`;
@@ -6019,6 +7540,19 @@ export async function createSimulator(options) {
       }
       return json(res, Number(endpoint.status) || 200, endpoint.body ?? {});
     }
+    // The site agent (hosted session F3, summary-F3.md API-05b). BotConfiguration lists the agents whose Bot Consumer grants
+    // one of the visitor's web roles; Mirage holds no Copilot Studio agent, so it lists none unless an endpoint mock above
+    // supplies the configuration. The portal agents API answers 400 9004010A in every captured state.
+    if (
+      /^\/_services\/agent\/botconfiguration$/i.test(url.pathname) &&
+      req.method === 'GET' &&
+      config().pageMode !== 'live'
+    )
+      return json(res, 200, []);
+    if (/^\/_api\/agents\/[^/]+\/activities\/?$/i.test(url.pathname) && config().mode !== 'live')
+      return json(res, 400, {
+        error: { code: '9004010A', message: 'An unexpected error occurred while processing the request' },
+      });
     // Source operations are discovered automatically; executing exported JavaScript
     // requires a trusted pack or an explicit local mode selected in Operations.
     if (url.pathname === '/__sim-static/pcf-host.js') {
@@ -6032,11 +7566,26 @@ export async function createSimulator(options) {
     }
     if (url.pathname.startsWith(PORTAL_PCF)) {
       return await servePcfResource(req, res, {
-        assets: codeComponents.assets,
+        assets: pcfPlatform.assets.has(url.pathname) ? pcfPlatform.assets : codeComponents.assets,
         key: url.pathname,
         fail: (status, message) => error(message, status),
       });
     }
+    // The native address a Liquid tag host names (code-components.mjs pcfWebResourceGuid) of a served resource.
+    const pcfWebResource = /^\/_pcfwebresource\/([0-9a-f-]{36})$/i.exec(url.pathname);
+    const pcfWebResourceKey = pcfWebResource && pcfWebResourceAsset(codeComponents, pcfWebResource[1]);
+    // Only the bundle and the style sheet are served there; an image, HTML or RESX resource of the control answers
+    // 403 with an empty body (captured, paqvilo-developer pcf-parity summary-F section 6).
+    if (pcfWebResourceKey && !['code', 'css'].includes(codeComponents.assets.get(pcfWebResourceKey)?.kind)) {
+      res.writeHead(403, { 'cache-control': 'no-cache, no-store, must-revalidate', 'content-length': '0' });
+      return res.end();
+    }
+    if (pcfWebResourceKey)
+      return await servePcfResource(req, res, {
+        assets: codeComponents.assets,
+        key: pcfWebResourceKey,
+        fail: (status, message) => error(message, status),
+      });
     const serverLogic = serverLogicName(url.pathname);
     if (serverLogic !== null) {
       if (
@@ -6046,12 +7595,15 @@ export async function createSimulator(options) {
         try {
           if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
             throw error('This method cannot execute server logic.', 405);
-          if (isWrite(req.method)) assertPortalToken(req.headers.__requestverificationtoken, csrf, 'Forbidden');
+          if (isWrite(req.method))
+            assertPortalToken(req.headers.__requestverificationtoken, headerToken(req), 'Forbidden');
           const raw = await executeServerLogic({
             name: serverLogic,
             method: req.method,
             body: isWrite(req.method) ? (await rawBody(req)).toString('utf8') : '',
             query: Object.fromEntries(url.searchParams),
+            requestUrl: url.href,
+            requestHeaders: redactPayload(req.headers).value,
           });
           if (raw !== null)
             return json(
@@ -6085,12 +7637,16 @@ export async function createSimulator(options) {
       recordDiagnostic({ ...answer.diagnostic, path: url.pathname });
       return json(res, answer.status, answer.body, answer.headers);
     }
-    // The default search page when the export has none at /search/ (portal-search.mjs).
+    // The fallback search route also accepts a language prefix when the site displays language codes.
+    const searchLanguage = config().pageMode === 'live' ? null : languageRoute(portal, url, req.method);
+    const searchPath = searchLanguage?.kind === 'rewrite' ? searchLanguage.pathname : url.pathname;
     if (
-      /^\/search\/?$/i.test(url.pathname) &&
+      /^\/search\/?$/i.test(searchPath) &&
       req.method === 'GET' &&
       !portal.pages.some((page) => /^\/search\/?$/i.test(page.url ?? ''))
     ) {
+      const locale = requestLocale(req, url, searchLanguage?.code);
+      rememberLocale(req, res, searchLanguage?.code);
       const html = await renderPortalSearchPage({
         portal,
         store,
@@ -6098,43 +7654,58 @@ export async function createSimulator(options) {
         metadata: modelMetadata(),
         config: config(),
         identity: currentIdentity(),
+        attachmentBody: portalAttachmentReader(currentIdentity(), organizationHost.attachmentBody),
         params: url.searchParams,
+        languageCode: locale?.code,
+        action: searchLanguage?.kind === 'rewrite' ? `/${encodeURIComponent(searchLanguage.code)}/search/` : '/search/',
         diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
       });
       // The same page response headers as every portal page: site HTTP/* settings, the confinement CSP, nosniff.
-      res.writeHead(200, {
+      // The default search page is the platform's (platform-shell:search-page), configured by the Search/* settings.
+      // Under a nonce policy it carries the policy too; its builder proves no script, so none gets the nonce.
+      const index = renderer.sourceIndex(locale?.id);
+      const scriptNonce = pageScriptNonce(portal);
+      const traced = unprovedDocument(
+        req,
+        html,
+        'search-page',
+        (portal.records ?? [])
+          .filter((record) => record.kind === 'sitesetting' && /^search\//i.test(String(record.name ?? '')))
+          .map((record) => index.source(record, '$record')?.id),
+        scriptNonce,
+      );
+      const searchHeaders = {
         'content-type': 'text/html; charset=utf-8',
         ...PAGE_HEADERS,
-        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+        ...siteHeaders(portal, {
+          confinement: confinementPolicy(),
+          kind: 'page',
+          nonce: traced?.scriptPolicy ? scriptNonce.nonce : null,
+          handlerHashes: traced?.scriptPolicy?.handlerHashGroups ?? traced?.scriptPolicy?.handlerHashes,
+        }),
         'x-sim-route': 'portal-search-local',
-      });
-      return res.end(html);
+      };
+      const refreshProof = publishRenderProof(searchHeaders, traced?.provenance);
+      appendApplicationSessionRenewal(req, res, searchHeaders);
+      res.writeHead(200, searchHeaders);
+      const searchBody = traced?.html ?? html;
+      return res.end(refreshProof(traced?.scriptPolicy ? nonceInjectedScripts(searchBody, scriptNonce) : searchBody));
     }
-    const flow = operationPortal().cloudFlows.find(
-      (record) =>
-        record.path && record.path?.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase(),
-    );
-    if (flow && config().mode !== 'live') {
-      if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
-      const identity = currentIdentity();
-      assertOperationRole(flow, identity);
-      const bytes = (await rawBody(req)).toString('utf8');
-      let input;
-      try {
-        const parsed = String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')
-          ? Object.fromEntries(new URLSearchParams(bytes))
-          : JSON.parse(bytes || '{}');
-        input = typeof parsed.eventData === 'string' ? JSON.parse(parsed.eventData) : (parsed.eventData ?? parsed);
-      } catch {
-        throw error('Cloud-flow input must be valid JSON.', 400);
-      }
-      const answer = await runPortalFlow({ flow, input, identity });
-      return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, {
-        ...answer.headers,
-        'x-sim-route': 'cloud-flow-local',
-        'cache-control': 'no-store',
+    // The Power Pages flow API under any version segment (hosted session F8: v2.0 is routed as v1.0 is).
+    const flowRoute = /^\/_api\/cloudflow\/[^/]+\/trigger\/([^/]*)\/?$/i.exec(url.pathname);
+    if (flowRoute && config().mode !== 'live') return cloudFlowRequest(req, res, url.pathname, flowRoute[1]);
+    // The map list data service a map list names in data-search-url: a direct POST answers the platform's 500 error page
+    // (hosted session F2, LIST-02b, runs a and b: no map data request is ever sent by the page itself, the map provider
+    // script being blocked by the page's content security policy).
+    if (/^\/entitylist\/map\/search\/?$/i.test(url.pathname) && req.method === 'POST' && config().mode !== 'live') {
+      res.writeHead(500, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': PAGE_CACHE_CONTROL,
+        pragma: 'no-cache',
+        expires: '-1',
+        'x-sim-route': 'entitylist-map-search-local',
       });
+      return res.end(platformErrorDocument());
     }
     // The platform's account stylesheet (account pages): local equivalent.
     if (/^\/areas\/account\/css\/account\.css$/i.test(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
@@ -6155,6 +7726,29 @@ export async function createSimulator(options) {
       const unchanged = notModified(req.headers, headers);
       res.writeHead(unchanged ? 304 : 200, headers);
       return res.end(req.method === 'HEAD' || unchanged ? undefined : body);
+    }
+    // The legacy CMS inline editor's file browser answers a server exception (hosted session F3, PAGE-05b); the other
+    // legacy CMS services (/_services/cms, .../__templates/...) have no route and answer Page Not Found.
+    if (/^\/_services\/portal\/[^/]+\/elfinder\/connector$/i.test(url.pathname))
+      throw error('The CMS inline editor file browser has been deprecated.', 500, 'CMS_FILE_BROWSER_DEPRECATED');
+    // The PWA service worker of an enabled PWAFeature (hosted session F3: /js/sw.js, any query, application/x-javascript,
+    // Service-Worker-Allowed: /). The body is the local stand-in (lib/platform-manifest.mjs LOCAL_SERVICE_WORKER).
+    // An exported web file at that path answers instead (web-file routing below).
+    if (
+      url.pathname.toLowerCase() === '/js/sw.js' &&
+      ['GET', 'HEAD'].includes(req.method) &&
+      pwaFeatureStatus(siteSetting(portal, 'PWAFeature')) === 'enable' &&
+      !portal.webFiles.some((file) => normalizePortalPath(file.url) === normalizePortalPath(url.pathname))
+    ) {
+      const body = Buffer.from(LOCAL_SERVICE_WORKER, 'utf8');
+      res.writeHead(200, {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+        'content-type': 'application/x-javascript',
+        'service-worker-allowed': '/',
+        'content-length': body.byteLength,
+        'x-sim-resource-provider': 'local-platform-equivalent',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : body);
     }
     // The platform's stack ranking plug-in (form pages with stack rank cells): local equivalent.
     if (url.pathname === '/xrm-adx/js/jquery.stackranking.js' && ['GET', 'HEAD'].includes(req.method)) {
@@ -6206,6 +7800,7 @@ export async function createSimulator(options) {
           if (abandoned) return;
         }
         const quickIdentity = currentIdentity();
+        const quickComponents = [];
         const body = await renderQuickForm({
           portal,
           store,
@@ -6214,6 +7809,8 @@ export async function createSimulator(options) {
           params: Object.fromEntries(url.searchParams),
           metadata: modelMetadata(),
           schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+          onComponentRendered: (item) => quickComponents.push(item),
+          diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
         });
         const quickRequest = {
           url: url.href,
@@ -6237,16 +7834,14 @@ export async function createSimulator(options) {
           bootstrap: sourceStyles.bootstrap || resource(bootstrapFile?.url ?? '/css/bootstrap.min.css'),
           renderStyles: (paths) => paths.map(resource).join(''),
         });
-        const styles =
-          quickPlatform.headStart +
+        const quickStyles =
           quickPlatform.remaining.stylesheets.map(resource).join('') +
-          formContentStyles(sourceStyles.content, config().shellProfile) +
-          layout.head +
-          quickPlatform.headEnd;
+          formContentStyles(sourceStyles.content, config().shellProfile);
         for (const item of formStyleDiagnostics(body, config().shellProfile))
           recordDiagnostic({ ...item, path: url.pathname });
         // The form posts back to the document's own path (./{websiteId}?query); only the entity form view script loads.
         const quickAntiForgeryPath = `/_portal/${quickSite}/Layout/GetAntiForgeryToken`;
+        let quickContent = null;
         const form = webFormsForm({
           id: 'content_form',
           action: `./${quickSite}${url.search}`,
@@ -6254,19 +7849,89 @@ export async function createSimulator(options) {
           validators: true,
           formScriptPaths: ['/xrm-adx/js/crmentityformview.js'],
           variant: quickPlatform.variant,
+          onContent: (range) => {
+            quickContent = range;
+          },
         });
-        const document = `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${styles}</head>${layout.body}${quickPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(quickAntiForgeryPath)}${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">${form}</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`;
-        res.writeHead(200, {
+        const quickIndex = renderer.sourceIndex();
+        // A nonce policy (the 'nonce' placeholder): the quick view's own scripts get the response's nonce.
+        const scriptNonce = pageScriptNonce(portal);
+        const proving = provenanceDestination(req) || Boolean(scriptNonce);
+        // The markup the builder writes itself, bound as the document's platform pass binds it (platformDocumentTags).
+        const quickTags = platformDocumentTags({ portal, index: quickIndex, part: 'quick-view' });
+        const built = (text) => (proving ? platformFragment(text, quickTags) : text);
+        // The quick view's own markup names the quick view form, its fields and the host form control
+        // (lib/component-provenance.mjs); the document around it is the platform's (platform-shell:quick-view), its
+        // chrome and anti-forgery holder their own shell parts.
+        const quickForm = proving
+          ? builtFormFragment(
+              form,
+              componentRenderResult(body, { components: quickComponents, index: quickIndex, tag: 'quickform' }),
+              quickContent,
+              quickTags,
+            )
+          : form;
+        const quickFragment = joinRenderFragments(
+          `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
+          headStartFragment(quickPlatform, {
+            index: quickIndex,
+            bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+            ...(proving ? { tags: quickTags } : {}),
+          }),
+          built(quickStyles),
+          proving ? layout.headFragment : layout.head,
+          built(quickPlatform.headEnd),
+          `</head>${layout.body}`,
+          built(quickPlatform.bodyOpen),
+          layout.chromeFragment ?? layout.chrome,
+          platformFragment(antiForgeryHolder(quickAntiForgeryPath), { component: shellComponent('antiforgery') }),
+          built(`${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">`),
+          quickForm,
+          built(`</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`),
+        );
+        const quickProvenance = provenanceDestination(req)
+          ? platformDocumentFragment(quickFragment, { portal, index: quickIndex, part: 'quick-view' })
+          : null;
+        const quickNonced = builtDocumentNonces(scriptNonce, {
+          html: quickFragment.text,
+          proved: quickFragment,
+          provenance: quickProvenance,
+          index: quickIndex,
+          pathname: url.pathname,
+        });
+        // Without a proof the decided document stands in for it (its html, no provenance).
+        let quickTraced = quickNonced;
+        if (quickProvenance && !quickTraced)
+          quickTraced = finalizePortalProvenance({ fragment: quickProvenance, index: quickIndex });
+        // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
+        // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
+        // the proof is shown the document through `sent`.
+        // Under a nonce policy the scripts added from here on carry the response's marker (answerWithScriptNonces).
+        const quickInjected = scriptNonce?.injected ?? null;
+        const document = injectLocalHead(
+          quickTraced?.html ?? quickFragment.text,
+          localOverrides,
+          quickTraced?.provenance ?? null,
+          { injectedScripts: quickInjected },
+        );
+        const quickHeaders = {
           'content-type': 'text/html; charset=utf-8',
           ...PAGE_HEADERS,
           'x-frame-options': siteHeaders(portal)['x-frame-options'],
-        });
+          // Under a nonce policy the site's policy, with the nonce the quick view's proved scripts carry.
+          ...builtDocumentPolicyHeaders(scriptNonce, quickNonced?.scriptPolicy),
+        };
+        const refreshQuickProof = publishRenderProof(quickHeaders, quickTraced?.provenance);
+        answerWithScriptNonces(res, scriptNonce, refreshQuickProof);
+        res.writeHead(200, quickHeaders);
         return res.end(
           req.method === 'HEAD'
             ? undefined
             : frameReadiness.decorate(injectLocalHead(document, localOverrides), {
                 path: url.pathname,
                 observed: config().observed ?? portal.observed,
+                sent: refreshQuickProof,
+                injectedScripts: quickInjected,
               }),
         );
       } catch (cause) {
@@ -6274,17 +7939,89 @@ export async function createSimulator(options) {
         return res.end(`<!doctype html><title>Quick view</title><p role="alert">${escaped(cause.message)}</p>`);
       }
     }
+    const previewCookie = requestPublishingPreview(req);
+    // The modern list's configuration (lib/platform.mjs listViewConfiguration), read by its grid with a GET.
+    const listConfiguration = /^\/_services\/portal\/GetListViewConfiguration\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
+    if (listConfiguration && req.method === 'GET' && config().pageMode !== 'live') {
+      const home = servicePages(portal).home ?? { id: 'service', url: '/', name: '', title: '', metadata: {} };
+      const body = listViewConfiguration(
+        listConfiguration[1],
+        renderer.contextForPage(home, url, { user: currentIdentity(), previewCookie }),
+        {
+          portal,
+          store,
+          identity: currentIdentity(),
+          config: config(),
+          metadata: modelMetadata(),
+          schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+        },
+      );
+      // Inferred refusals (not captured): an unknown or unincluded list answers 404 with an empty object, a visitor who
+      // may not read the list's table 403 with the grid service's AccessDenied body.
+      if (!body || body.AccessDenied) {
+        res.writeHead(body ? 403 : 404, { ...PAGE_HEADERS, 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify(body ?? {}));
+      }
+      res.writeHead(200, { ...PAGE_HEADERS, 'content-type': 'application/json; charset=utf-8' });
+      // The platform indents the configuration with CRLF line breaks (captured).
+      return res.end(JSON.stringify(body, null, 2).replaceAll('\n', '\r\n'));
+    }
+    // The chart tag's data service (lib/portal-chart-builder.mjs), read by the platform chart script.
+    if (url.pathname.toLowerCase() === CHART_BUILDER_PATH && req.method === 'GET' && config().mode !== 'live') {
+      const identity = currentIdentity();
+      const answer = await chartBuilderAnswer({
+        chartId: url.searchParams.get('chartId'),
+        viewId: url.searchParams.get('viewId'),
+        charts: solutionInventory.filter((record) => record.component === 'chart'),
+        views: modelMetadata().views ?? [],
+        metadata: modelMetadata(),
+        canRead: (table) =>
+          Boolean(identity?.admin) ||
+          store.state.settings.permissionMode === 'permissive' ||
+          store.rules(table, 'read', identity).length > 0,
+        fetchXml: (xml) => localPortalFetch(xml, identity),
+        entityMetadata: (table) =>
+          organization?.metadata?.retrieveEntityResponse(table, 'Attributes Relationships')?.EntityMetadata ?? null,
+        diagnostic: recordDiagnostic,
+      });
+      return json(res, answer.status, answer.body);
+    }
+    const nativeIdentity = currentIdentity();
+    const localAttachments = config().mode !== 'live';
+    const listWorkflowSourceEpoch = portalSourcePublications ? null : portalSourceEpoch;
     if (
       await handleNativeService(req, res, url, {
         portal,
         store,
         readProvider,
-        identity: currentIdentity(),
+        globalChoices: localPortalGlobalChoices(),
+        identity: nativeIdentity,
         // The browser's visitor id, resolved for this request (lib/visitor-session.mjs); null without a visitor cookie.
         visitor: trace.getStore()?.visitor ?? null,
-        csrf,
+        csrf: headerToken(req),
+        issueCsrf: () => requestTokens.issue(req, res),
+        expectedBodyCsrf: (supplied) => requestTokens.expected(req, supplied),
+        pairedTokenCookie: pairedPortalRequest(req),
         adminToken,
-        attachmentBody: noteAttachmentBody,
+        runListWorkflow,
+        // A grid record action's Dataverse messages (Create Order, Generate Quote, ...), as the site's application user.
+        runRecordMessage: config().mode === 'live' ? null : runFormMessage,
+        verifyListWorkflowSource: () => requirePortalSourceEpoch(listWorkflowSourceEpoch),
+        workflowRequestContext: () => {
+          const current = config();
+          return {
+            portal,
+            identity: currentIdentity(),
+            config: current,
+            schemas: { ...solutionMetadata.componentSchemas, ...current.componentSchemas },
+            metadata: modelMetadata(),
+          };
+        },
+        attachmentBody: portalAttachmentReader(nativeIdentity, organizationHost.attachmentBody),
+        captureAttachmentBody: localAttachments
+          ? portalAttachmentReader(nativeIdentity, organizationHost.captureAttachmentBody)
+          : null,
+        readAttachment: localAttachments ? readPortalData : null,
         config: config(),
         schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
         metadata: modelMetadata(),
@@ -6295,6 +8032,7 @@ export async function createSimulator(options) {
         origin: localOrigin,
         cache,
         recordDiagnostic,
+        implicitGrant: settingOptionsRest.implicitGrant,
         decorateDocument: (html) =>
           frameReadiness.decorate(injectLocalHead(html, localOverrides), {
             path: url.pathname,
@@ -6305,31 +8043,79 @@ export async function createSimulator(options) {
           return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() }));
         },
         renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
-        serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }),
+        serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity(), previewCookie }),
         pageContext: (target) =>
           renderer.contextForPage(
             servicePages(portal).home ?? { id: 'service', url: '/', name: '', title: '', metadata: {} },
             target,
-            { user: currentIdentity() },
+            { user: currentIdentity(), previewCookie },
           ),
       })
     )
       return;
-    const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock)\/note$/i.exec(url.pathname);
+    const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock|delete)\/note$/i.exec(url.pathname);
     if (fileApi) {
-      const answer = (status, body) => {
-        // Live: page cache headers and the site frame option; a JSON answer also varies by encoding, the 204 does not.
+      const answer = (status, body, { varies = true } = {}) => {
+        // Live: page cache headers and the site frame option; a JSON answer also varies by encoding, the 204 does not,
+        // and neither do the AU error answers (hosted session F2, attach and attachdel runs).
         const { vary, ...page } = PAGE_HEADERS;
         res.writeHead(status, {
           ...page,
           'x-frame-options': siteHeaders(portal)['x-frame-options'],
-          ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8', vary }),
+          ...(body === undefined
+            ? {}
+            : { 'content-type': 'application/json; charset=utf-8', ...(varies ? { vary } : {}) }),
         });
         return res.end(body === undefined ? undefined : JSON.stringify(body));
       };
-      assertPortalToken(req.headers.__requestverificationtoken, csrf);
+      // Hosted session F2 (attach runs a/b, e, f/g, i/j; attachdel a2/b2, h/p2): an upload block without annotation Write
+      // answers 403 with the message's placeholder unformatted, cache-control private and content type "UPLOAD".
+      const attachmentWriteDenied = () => {
+        res.writeHead(403, {
+          'cache-control': 'private',
+          'content-type': 'UPLOAD; charset=utf-8',
+          'x-frame-options': siteHeaders(portal)['x-frame-options'],
+        });
+        return res.end(
+          JSON.stringify({
+            ErrorCode: 'AU0005',
+            ErrorMessage: 'User does not have required permissions to {0} attachments.',
+          }),
+        );
+      };
+      assertPortalToken(req.headers.__requestverificationtoken, headerToken(req));
       const now = Date.now();
       for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) dropStaged(id);
+      // The staged note row of an entry, as stored now (a DELETE or another write may have removed it).
+      const stagedNoteRow = (id) =>
+        store.tableRows('annotation').find((row) => String(row.annotationid ?? '').toLowerCase() === id) ?? null;
+      if (/^delete$/i.test(fileApi[1])) {
+        // DELETE /_api/file/delete/note?noteId=: the control's remove button before the form is saved (API-04f).
+        if (req.method !== 'DELETE') throw error('Staged attachment removal requires DELETE.', 405);
+        await rawBody(req);
+        const noteId = String(url.searchParams.get('noteId') ?? '').toLowerCase();
+        const entry = stagedUploads.get(noteId);
+        if (entry?.owner !== uploadOwner()) throw error('Unknown file upload.', 404);
+        const row = entry.note ? stagedNoteRow(noteId) : null;
+        if (row) {
+          // Hosted session F2 (attachdel m/n, o/q): without annotation Delete 403 AU0005 "…to DELETE attachments." and
+          // the note stays; with it 204 and the note is deleted.
+          if (!store.allowed('annotation', 'delete', row, currentIdentity()))
+            return answer(
+              403,
+              { ErrorCode: 'AU0005', ErrorMessage: 'User does not have required permissions to DELETE attachments.' },
+              { varies: false },
+            );
+          await change(() =>
+            store.transact(
+              () => portalRecordWrites(store, { portalRequest: true }).remove('annotation', noteId, currentIdentity()),
+              { incremental: true },
+            ),
+          );
+        }
+        if (stagedUploads.get(noteId) === entry) dropStaged(noteId);
+        return answer(204);
+      }
       if (/^InitializeFileUpload$/i.test(fileApi[1])) {
         if (req.method !== 'POST') throw error('File upload initialisation requires POST.', 405);
         await rawBody(req);
@@ -6343,7 +8129,71 @@ export async function createSimulator(options) {
             409,
             'StagedUploadLimit',
           );
-        const id = randomUUID();
+        // The form and regarding record the upload names. Hosted session F2 (attach runs b/e, f/g, i/j, k/l): the portal
+        // counts the record's notes by the system read and refuses a file beyond the form's count with 400 AU00039
+        // (also when the page's MaxFile was raised in the browser), then creates the staged note on the record.
+        const regardingId = String(url.searchParams.get('regardingId') ?? '');
+        const scope =
+          config().mode !== 'live'
+            ? formAttachmentScope({
+                portal,
+                schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas },
+                metadata: modelMetadata(),
+                formType: url.searchParams.get('formType'),
+                formId: url.searchParams.get('formId'),
+              })
+            : null;
+        // The form's size and type limits are checked on the declared file before anything is staged or written, so no
+        // file outside them is ever stored (fail closed: hosted refuses such files in the browser; its server answer was
+        // not captured). The answer takes the hosted AU shape with the form service's own code and message (inferred).
+        const problem = scope
+          ? formAttachmentFileProblem(scope.component, {
+              name,
+              type: String(req.headers['x-ms-file-type'] ?? req.headers['content-type'] ?? ''),
+              size,
+            })
+          : null;
+        if (problem) return answer(400, { ErrorCode: problem.code, ErrorMessage: problem.message }, { varies: false });
+        // Only a record the visitor can read binds the upload; any other upload stays staged until the form saves it.
+        const regarding =
+          scope &&
+          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(regardingId) &&
+          (await readProvider.get(scope.entity, regardingId, currentIdentity()).catch(() => null))
+            ? { entity: scope.entity, id: regardingId.toLowerCase() }
+            : null;
+        if (regarding) {
+          const count = await formAttachmentCount(readProvider, null, regarding.entity, regarding.id);
+          if (count >= formAttachmentLimit(scope.component))
+            return answer(400, { ErrorCode: 'AU00039', ErrorMessage: null }, { varies: false });
+        }
+        let id = randomUUID();
+        let note = false;
+        if (regarding) {
+          const values = stagedAttachmentNote({
+            store,
+            portal,
+            entity: regarding.entity,
+            recordId: regarding.id,
+            identity: currentIdentity(),
+            now: new Date(now),
+          });
+          // The staged note needs annotation Create on the record (hosted session F2: the attachdel runs a2/b2 and h/p2
+          // had Read, Create and Append; with Read only, state-0 runs s0g and s0h, the form renders no control at all).
+          const draft = {
+            objectid: { id: regarding.id, logical_name: values.objecttypecode },
+            objecttypecode: values.objecttypecode,
+          };
+          if (store.allowed('annotation', 'create', draft, currentIdentity())) {
+            const created = await change(() =>
+              store.transact(
+                () => portalRecordWrites(store, { portalRequest: true }).create('annotation', values, { admin: true }),
+                { incremental: true },
+              ),
+            );
+            id = String(created?.annotationid ?? id).toLowerCase();
+            note = true;
+          }
+        }
         const token = randomBytes(24).toString('base64');
         if (!trace.getStore().visitor) {
           const visitor = newVisitor(visitorName());
@@ -6360,6 +8210,10 @@ export async function createSimulator(options) {
           writing: Promise.resolve(),
           received: 0,
           created: now,
+          regarding,
+          note,
+          // The bytes go into the staged note with the last block when the form keeps its files in Dataverse.
+          writesNote: note && scope.dataverse === true,
         });
         // The staged note upload on the request's root (D-R3-10): the file, never its bytes.
         trace.getStore()?.traceSpan?.set({
@@ -6383,6 +8237,19 @@ export async function createSimulator(options) {
       if (stagedUploads.get(String(url.searchParams.get('noteId') ?? '').toLowerCase()) !== entry)
         throw error('Unknown file upload.', 404);
       const noteId = String(url.searchParams.get('noteId') ?? '').toLowerCase();
+      if (entry.regarding) {
+        const row = entry.note ? stagedNoteRow(noteId) : null;
+        if (entry.note && !row) {
+          dropStaged(noteId);
+          throw error('Unknown file upload.', 404);
+        }
+        // The staged note keeps its row when the block is refused (hosted session F2, attach runs b/e, f/g, i/j).
+        const target = row ?? {
+          objectid: { id: entry.regarding.id, logical_name: entry.regarding.entity },
+          objecttypecode: entry.regarding.entity,
+        };
+        if (!store.allowed('annotation', 'update', target, currentIdentity())) return attachmentWriteDenied();
+      }
       if (Date.now() - entry.created > 3600000) {
         dropStaged(noteId);
         throw error('Unknown file upload.', 404);
@@ -6408,6 +8275,29 @@ export async function createSimulator(options) {
         if (stagedUploads.get(noteId) === entry) stagedUploads.delete(noteId);
         throw cause;
       }
+      // Hosted session F2 (attach runs k and l, max1-none:one-file): the upload writes its file into the staged note
+      // (Update annotation during UploadFileBlock), so a file that is never submitted stays on the record.
+      if (last && entry.writesNote && stagedUploads.get(noteId) === entry && stagedNoteRow(noteId)) {
+        const documentbody = await stagedContent(noteId, entry);
+        await change(() =>
+          store.transact(
+            () =>
+              portalRecordWrites(store, { portalRequest: true }).update(
+                'annotation',
+                noteId,
+                {
+                  filename: entry.name.slice(0, 255),
+                  mimetype: String(entry.type || 'application/octet-stream').slice(0, 255),
+                  documentbody,
+                  filesize: entry.size,
+                  isdocument: true,
+                },
+                { admin: true },
+              ),
+            { incremental: true },
+          ),
+        );
+      }
       trace.getStore()?.traceSpan?.set({
         transfer: 'upload-block',
         fileColumn: 'documentbody',
@@ -6420,13 +8310,51 @@ export async function createSimulator(options) {
       });
       return answer(204);
     }
+    // The Azure Blob Storage file Web API (lib/portal-file-api.mjs); a live runtime forwards it with the rest of /_api.
+    if (
+      url.pathname.startsWith('/_api/file/') &&
+      config().mode !== 'live' &&
+      (await handlePortalFileApi(req, res, url, {
+        store,
+        portal,
+        identity: currentIdentity(),
+        csrf: headerToken(req),
+        tokenRefusal: () => headerTokenRefusal(req),
+        owner: ({ start }) => {
+          if (start && !trace.getStore().visitor) {
+            const visitor = newVisitor(visitorName());
+            trace.getStore().visitor = visitor.id;
+            res.setHeader('set-cookie', visitor.cookie);
+          }
+          return uploadOwner();
+        },
+        attachmentBody: portalAttachmentReader(currentIdentity(), organizationHost.attachmentBody),
+        storage: () => organizationHost.providers.storage.forRoute('portalCloudAttachments'),
+        change,
+        json,
+        recordDiagnostic,
+      }))
+    )
+      return;
+    if (dataSummaryProvider && url.pathname.startsWith(PORTAL_DATA_SUMMARY))
+      return summarizePortalData(req, res, url, ownOrigin);
     if (url.pathname.startsWith('/_api/')) return api(req, res, url);
     if (config().pageMode === 'live') return forward(req, res, url);
+    // The file control's download link (lib/portal-file-download.mjs).
+    if (isPortalFileDownload(url.pathname) && config().mode !== 'live')
+      return handlePortalFileDownload(req, res, url, { store, portal, identity: currentIdentity(), recordDiagnostic });
+    // A read may yield to a source publication between routing, authorization, and Liquid rendering.
+    const requestedPortalSource = portalSourcePublications ? null : portalSourceEpoch;
+    const requirePageSource = () => {
+      if (['GET', 'HEAD'].includes(req.method)) requirePortalSourceEpoch(requestedPortalSource);
+    };
     // Routing and sign-in : repeated slashes collapse before resolution (portal
     // navigation builds "../" + "/page" links and Power Pages resolves them); a website language code
     // prefix is removed with a 302; the local sign-in and sign-out routes answer here.
     if (url.pathname.includes('//')) url.pathname = url.pathname.replace(/\/{2,}/g, '/');
+    const originalPagePath = url.pathname;
     const language = languageRoute(portal, url, req.method);
+    rememberLocale(req, res, language?.code);
     if (language?.kind === 'redirect') {
       // The platform's language redirect carries its page caching headers (live 302 to /SignIn).
       const { vary: _languageVary, ...languageHeaders } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
@@ -6440,16 +8368,23 @@ export async function createSimulator(options) {
       return res.end();
     }
     if (language?.kind === 'rewrite') url.pathname = language.pathname;
+    const selectedLanguage = requestLocale(req, url, language?.code);
+    const pageAccessOptions = { now: store.clock.now(), languageId: selectedLanguage?.id, previewCookie };
     // /Register is the platform's invitation redemption page (the sign-in page's "Redeem
     // invitation" tab); locally it is the RedeemInvitation route.
+    // Its invitation= query (the Send Invitation email's link) prefills the code (hosted session F4 AUTH-05d).
     if (/^\/register\/?$/i.test(url.pathname) && !exportedPageFor(portal, url.pathname)) {
       const back = returnUrlParameter(url.searchParams);
+      const invitation = url.searchParams.get('invitation');
       url.pathname = '/Account/Login/RedeemInvitation';
-      url.search = back ? `?ReturnUrl=${encodeURIComponent(back)}` : '';
+      const query = new URLSearchParams();
+      if (back) query.set('ReturnUrl', back);
+      if (invitation) query.set('invitation', invitation);
+      url.search = query.size ? `?${query}` : '';
     }
     // External sign-in: ExternalLogin, the provider's response at the reply URL,
     // ExternalLoginCallback, RedeemInvitation, LogOff and the default-provider redirect.
-    if (await externalSignIn.route(req, res, url, { language: language?.code ?? null })) return;
+    if (await externalSignIn.route(req, res, url, { language: selectedLanguage?.code ?? null })) return;
     const signInRoute = authRoute(url.pathname, req.method, { loginPath: loginPath(portal) });
     if (signInRoute) return authenticate(req, res, url, signInRoute);
     let formParams = {};
@@ -6458,7 +8393,10 @@ export async function createSimulator(options) {
     const nativePostbackEnabled = nativeFormTransport(config().observed ?? portal.observed) === 'postback';
     const postedPage =
       req.method === 'POST' &&
-      portal.pages.find((page) => normalizePortalPath(page.url) === normalizePortalPath(url.pathname));
+      localizedPortalPage(
+        portal.pages.find((page) => normalizePortalPath(page.url) === normalizePortalPath(url.pathname)),
+        selectedLanguage?.id,
+      );
     const postedTemplate =
       postedPage && portal.pageTemplates.find((template) => template.id === postedPage.pageTemplateId);
     // Exported Liquid AJAX pages often use POST for DataTables filters. Rendering
@@ -6482,8 +8420,8 @@ export async function createSimulator(options) {
           // a body token, when sent, must match too.
           const tokens = controls.getAll('__RequestVerificationToken');
           const verified = tokens.length
-            ? tokens.length === 1 && pageToken(tokens[0])
-            : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
+            ? tokens.length === 1 && pageToken(req, tokens[0])
+            : pageToken(req, nativeViewStateKey(controls.get('__VIEWSTATE')));
           if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
           // The captcha refresh is an ASP.NET AJAX partial postback answered with the update panel delta.
           const captchaTarget = /^(.+\$captcha)\$CaptchaLinkButton$/.exec(controls.get('__EVENTTARGET') ?? '');
@@ -6545,8 +8483,8 @@ export async function createSimulator(options) {
       // The same rule as a page postback: a body token, or the document's own __VIEWSTATE key.
       const tokens = controls.getAll('__RequestVerificationToken');
       const verified = tokens.length
-        ? tokens.length === 1 && pageToken(tokens[0])
-        : pageToken(nativeViewStateKey(controls.get('__VIEWSTATE')));
+        ? tokens.length === 1 && pageToken(req, tokens[0])
+        : pageToken(req, nativeViewStateKey(controls.get('__VIEWSTATE')));
       if (!verified) throw portalTokenRefusal(tokens.length > 0 || controls.has('__VIEWSTATE'));
       nativeEntries = [...controls];
     } else if (!['GET', 'HEAD'].includes(req.method)) throw error('Use the local Web API for writes.', 405);
@@ -6562,25 +8500,45 @@ export async function createSimulator(options) {
         throw error('Malformed modal website identifier.');
       }
       const websiteId = normalizeId(websiteSegment);
-      if (
-        websiteId &&
-        websiteId !== '00000000-0000-0000-0000-000000000000' &&
-        websiteId !== normalizeId(portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid)
-      )
+      const zeroWebsiteId = '00000000-0000-0000-0000-000000000000';
+      const exportedWebsiteId = normalizeId(
+        portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid,
+      );
+      if (websiteId && websiteId !== zeroWebsiteId && websiteId !== exportedWebsiteId)
         throw error('The modal website is not exported by this portal.', 404);
       const requestedForm = url.searchParams.get('entityformid') ?? url.searchParams.get('entityform');
       const definition = portal.forms.find((form) => normalizeId(form.id) === normalizeId(requestedForm));
-      if (!requestedForm || !definition) throw error('An exported entityformid is required.', 404);
+      const formIdentity = currentIdentity();
+      const modalConfig = config();
+      const shellMode = modalConfig.observed?.modalFormShell;
+      const zeroWebsite = websiteSegment === zeroWebsiteId;
+      const shellWebsiteAllowed =
+        shellMode === 'signed-in-zero-website'
+          ? zeroWebsite && url.searchParams.size > 0
+          : shellMode === 'signed-in-exported-or-zero-website' &&
+            (zeroWebsite || (exportedWebsiteId && websiteSegment.toLowerCase() === exportedWebsiteId));
+      const emptyModal =
+        requestedForm === null &&
+        shellWebsiteAllowed &&
+        ['GET', 'HEAD'].includes(req.method) &&
+        modalConfig.mode === 'local' &&
+        formIdentity.contactId &&
+        trace.getStore()?.auth?.session?.contactId &&
+        ![...url.searchParams.keys()].some((key) => key !== 'pageid' && /^(?:entityform(?:id)?|pageid)$/i.test(key));
+      if ((!requestedForm || !definition) && !emptyModal) throw error('An exported entityformid is required.', 404);
       const requestedPage = url.searchParams.get('pageid');
       const explicitPage = requestedPage
         ? portal.pages.find((page) => normalizeId(page.id) === normalizeId(requestedPage))
         : null;
       if (requestedPage && !explicitPage) throw error('The modal parent page is not exported.', 404);
-      const formIdentity = currentIdentity();
       if (explicitPage) {
-        const access = pageAccess(portal, explicitPage, formIdentity, { now: store.clock.now() });
+        const access = pageAccess(portal, explicitPage, formIdentity, pageAccessOptions);
         if (!access.allowed)
           throw error(access.diagnostics?.[0]?.message || 'Page access denied.', access.status ?? 403, access.code);
+      }
+      if (emptyModal && req.method === 'GET') {
+        const queryValidation = observedPageQueryValidation(url, modalConfig.observed);
+        if (queryValidation) throw error(queryValidation.message, queryValidation.status, queryValidation.code);
       }
       const page = explicitPage ?? {
         id: null,
@@ -6597,22 +8555,36 @@ export async function createSimulator(options) {
         renderedRevision = revision;
       const context = modalRenderer.contextForPage(page, url.pathname + url.search, {
         user: formIdentity,
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
+        previewCookie,
       });
       if (!explicitPage) {
         context.page = null;
         context.sitemap.current = null;
       }
       const collected = [];
-      const renderModalForm = () =>
-        renderComponent('entityform', definition.id, context, {
+      // The form's render provenance reports (lib/component-provenance.mjs), of the form's last render.
+      let modalComponents = [],
+        modalExplicit = [],
+        modalFormHtml = '';
+      const renderModalForm = async () => {
+        if (!definition) return '';
+        modalComponents = [];
+        modalExplicit = [];
+        modalFormHtml = await renderComponent('entityform', definition.id, context, {
+          onComponentRendered: (item) => modalComponents.push(item),
+          onProgressRendered: (item) => modalExplicit.push(item),
           portal,
           store,
           readProvider,
+          canRunFormWorkflow,
           args: { id: definition.id },
           metadata: modelMetadata(),
+          globalChoices: localPortalGlobalChoices(),
           config: config(),
           modal: true,
+          // A modal form draws the same trusted local CAPTCHA challenge as its page form.
+          issueCaptcha: issueFormCaptcha,
           observed: config().observed ?? portal.observed,
           onNativePostbackDescriptor: nativePostbackEnabled ? (item) => collected.push(item) : null,
           nativePostbackState: trace.getStore()?.nativePostbackState,
@@ -6621,12 +8593,14 @@ export async function createSimulator(options) {
               ...spec,
               portal,
               catalog: codeComponents,
+              platformLibraries: pcfPlatform.libraries,
               metadata: modelMetadata(),
               language: context?.__language ?? portal.language,
-              identity: formIdentity,
               mappings: store.snapshot({ sections: ['mappings'] }).mappings,
               diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
             }),
+          // The modal form is its own document: its field hosts write the platform libraries once for it.
+          pcfPlatformScripts: (pageState) => pcfPlatformScripts(pcfPlatform.libraries, pageState),
           diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
           sourceDependencies,
           richTextCompatibility: richTextCompatibility(),
@@ -6637,6 +8611,8 @@ export async function createSimulator(options) {
           },
           renderLiquid: (source, ctx) => modalRenderer.renderString(source, ctx),
         });
+        return modalFormHtml;
+      };
       let html = await renderModalForm();
       if (nativeEntries) {
         const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
@@ -6649,19 +8625,19 @@ export async function createSimulator(options) {
             nativeFiles,
           );
           response = nativePostbackResponse({ result, context, values: submission.body.values });
-        } catch (cause) {
+        } catch (error_) {
           response = nativePostbackResponse({
-            error: cause,
+            error: error_,
             context: submission.context,
             values: submission.body.values,
             observed: config().observed ?? portal.observed,
             portal,
           });
-          trace.getStore().error = cause;
+          trace.getStore().error = error_;
           recordDiagnostic({
-            ...(cause.details?.permissionDiagnostic ?? {
-              code: cause.code ?? 'FORM_SAVE_FAILED',
-              message: cause.message,
+            ...(error_.details?.permissionDiagnostic ?? {
+              code: error_.code ?? 'FORM_SAVE_FAILED',
+              message: error_.message,
             }),
             path: url.pathname,
             ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
@@ -6681,7 +8657,10 @@ export async function createSimulator(options) {
                 id: response.state.savedId ?? null,
               })
             : 'Success';
-          html += `<script type="text/javascript">window.parent.postMessage(${JSON.stringify(message)}, "*");</script>`;
+          // The message holds a record name: a < stays inside the script string (it cannot close the element).
+          const escapedLt = String.raw`\u003c`;
+          const payload = JSON.stringify(message).replaceAll('<', escapedLt);
+          html += `<script type="text/javascript">window.parent.postMessage(${payload}, "*");</script>`;
         }
       }
       const resource = (entry, type) => renderShellResource(entry, type, { localOnly: true });
@@ -6724,7 +8703,6 @@ export async function createSimulator(options) {
           : {}),
       };
       Object.assign(headers, siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }));
-      res.writeHead(200, headers);
       // Native modal form page (Form.aspx): content_form wraps the static
       // EntityFormControl; its empty anti-forgery holder uses the portal-scoped URL.
       // The platform serves it through the layout master (live evidence): the layout frame of a
@@ -6734,29 +8712,135 @@ export async function createSimulator(options) {
       );
       const layout = await modalRenderer.serviceLayout(url.pathname + url.search, {
         user: formIdentity,
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
       });
       const modalAntiForgeryPath = `/_portal/${scopedSite}/Layout/GetAntiForgeryToken`;
-      const document = injectRuntimeCompatibility(
-        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${modalPlatform.headStart}${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(modalAntiForgeryPath)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: 'content_form', action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
-        sourceDependencies,
-        configuredHeadScripts,
+      const modalIndex = renderer.sourceIndex();
+      // A nonce policy (the 'nonce' placeholder): the modal document's own scripts get the response's nonce.
+      const scriptNonce = pageScriptNonce(portal);
+      const proving = provenanceDestination(req) || Boolean(scriptNonce);
+      // The markup the builder writes itself, bound as the document's platform pass binds it (platformDocumentTags).
+      const modalTags = platformDocumentTags({ portal, index: modalIndex, part: 'modal-form' });
+      const built = (text) => (proving ? platformFragment(text, modalTags) : text);
+      let modalContent = null;
+      const modalForm = webFormsForm({
+        id: 'content_form',
+        action: url.pathname + url.search,
+        content: html,
+        aspNetScripts,
+        onContent: (range) => {
+          modalContent = range;
+        },
+      });
+      // The form's own markup names its basic form, FormXml controls, tabs, sections and columns
+      // (lib/component-provenance.mjs); the modal form document around it is the platform's (platform-shell:modal-form),
+      // its chrome, anti-forgery holder and the local compatibility adapters their own shell parts.
+      const modalContentProof =
+        proving && definition
+          ? {
+              html,
+              renderProvenance:
+                componentRenderResult(modalFormHtml, {
+                  components: modalComponents,
+                  explicit: modalExplicit,
+                  index: modalIndex,
+                  tag: 'entityform',
+                  args: { id: definition.id },
+                })?.renderProvenance ?? [],
+            }
+          : null;
+      // The content's last characters past the form's own render are the startup script the document appends.
+      const modalFormFragment = proving
+        ? builtFormFragment(modalForm, modalContentProof, modalContent, modalTags, html.length - modalFormHtml.length)
+        : modalForm;
+      const modalFragment = joinRenderFragments(
+        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>`,
+        headStartFragment(modalPlatform, {
+          index: modalIndex,
+          bootstrapMarkup: sourceStyles.bootstrapSnippet ? sourceStyles.bootstrap : null,
+          ...(proving ? { tags: modalTags } : {}),
+        }),
+        built(`${styles}${headScripts}`),
+        proving ? layout.headFragment : layout.head,
+        built(modalPlatform.headEnd),
+        `</head>${layout.body}`,
+        built(modalPlatform.bodyOpen),
+        layout.chromeFragment ?? layout.chrome,
+        platformFragment(antiForgeryHolder(modalAntiForgeryPath), { component: shellComponent('antiforgery') }),
+        built(
+          `${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">`,
+        ),
+        modalFormFragment,
+        built(
+          `</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        ),
       );
-      for (const item of formStyleDiagnostics(document, config().shellProfile))
+      const modalAdapters = runtimeCompatibilityEdits(modalFragment.text, sourceDependencies, configuredHeadScripts)
+        .map((edit) => ({
+          ...edit,
+          ...platformFragment(edit.text, { component: shellComponent('compatibility-adapter') }),
+        }))
+        .reverse();
+      const modalComposed = applyRenderEdits(modalFragment, modalAdapters);
+      let modalDocument = injectRuntimeCompatibility(modalFragment.text, sourceDependencies, configuredHeadScripts);
+      const modalProvenance = provenanceDestination(req)
+        ? platformDocumentFragment(modalComposed, { portal, index: modalIndex, part: 'modal-form' })
+        : null;
+      // The composed fragment proves the document only when it is the document answered; otherwise nothing is proved.
+      const modalNonced = builtDocumentNonces(scriptNonce, {
+        html: modalDocument,
+        proved: modalComposed,
+        provenance: modalComposed.text === modalDocument ? modalProvenance : null,
+        index: modalIndex,
+        pathname: url.pathname,
+      });
+      let modalTraced = modalNonced?.provenance ? modalNonced : null;
+      if (modalProvenance && !modalTraced)
+        modalTraced = finalizePortalProvenance({ fragment: modalProvenance, index: modalIndex });
+      const traceModal = modalTraced && modalComposed.text === modalDocument;
+      if (modalNonced && !traceModal) modalDocument = modalNonced.html;
+      Object.assign(
+        headers,
+        builtDocumentPolicyHeaders(scriptNonce, modalNonced?.scriptPolicy, {
+          confinement: confinementPolicy(),
+          kind: 'page',
+        }),
+      );
+      const refreshModalProof = publishRenderProof(headers, traceModal ? modalTraced.provenance : null);
+      answerWithScriptNonces(res, scriptNonce, refreshModalProof);
+      const modalToken = requestTokens.issue(req, res);
+      res.writeHead(200, headers);
+      for (const item of formStyleDiagnostics(modalDocument, config().shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
+      // The local head goes in here, once, with its proof. The statement that answers below keeps the text its
+      // reviewed CodeQL disposition is matched by: its own injectLocalHead call finds every asset already there, and
+      // the proof is shown the document through `sent`.
+      // Under a nonce policy the scripts added from here on carry the response's marker (answerWithScriptNonces).
+      const modalInjected = scriptNonce?.injected ?? null;
+      const document = injectLocalHead(
+        traceModal ? modalTraced.html : modalDocument,
+        localOverrides,
+        traceModal ? modalTraced.provenance : null,
+        { injectedScripts: modalInjected },
+      );
       return res.end(
-        injectRuntime(
+        injectPageRuntime(
           frameReadiness.decorate(injectLocalHead(document, localOverrides), {
             path: url.pathname,
             observed: config().observed ?? portal.observed,
             head: req.method === 'HEAD',
+            injectedScripts: modalInjected,
           }),
-          csrf,
+          modalToken,
           renderedRevision,
           formIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
-          trace.getStore()?.traceSpan?.traceId,
+          {
+            rootTraceId: trace.getStore()?.traceSpan?.traceId,
+            sent: refreshModalProof,
+            injectedScripts: modalInjected,
+          },
         ),
       );
     }
@@ -6780,6 +8864,7 @@ export async function createSimulator(options) {
         new URL('./lib/bootstrap-plugins-compat.js', import.meta.url),
       ],
       ['/__sim-static/vendor/jqueryui-dialog-compat.js', new URL('./lib/jqueryui-dialog-compat.js', import.meta.url)],
+      ['/__sim-static/jqueryui-dialog-compat.css', new URL('./lib/jqueryui-dialog-compat.css', import.meta.url)],
       ['/__sim-static/vendor/date-format-compat.js', new URL('./lib/date-format-compat.js', import.meta.url)],
       ['/__sim-static/vendor/footer-spacing-compat.js', new URL('./lib/footer-spacing-compat.js', import.meta.url)],
       [PAGES_CLIENT_API_SCRIPT, PAGES_CLIENT_API_FILE],
@@ -6800,28 +8885,73 @@ export async function createSimulator(options) {
       else if (fontName?.endsWith('.ttf')) fontMime = 'font/ttf';
       else if (fontName?.endsWith('.eot')) fontMime = 'application/vnd.ms-fontobject';
       res.writeHead(200, {
-        'content-type': fontRuntimeAsset ? fontMime : 'application/javascript; charset=utf-8',
+        'content-type': fontRuntimeAsset ? fontMime : `${mime(url.pathname)}; charset=utf-8`,
         'cache-control': 'no-cache',
         'x-sim-resource-provider': 'local-compatibility',
       });
       return res.end(req.method === 'HEAD' ? undefined : body);
     }
     // Absolute sign-in redirects use the local origin (listenerVerdictOf admits only the listener's Host).
-    const routeOptions = { origin: localOrigin };
+    const routeOptions = {
+      origin: localOrigin,
+      languageCode: selectedLanguage?.code,
+      returnUrl: originalPagePath + url.search,
+    };
     const key = normalizePortalPath(url.pathname);
+    const knownPage = portal.pages.find((page) => normalizePortalPath(page.url) === key);
+    const codeSite = portal.codeSite?.entryFile && ['GET', 'HEAD'].includes(req.method) ? portal.codeSite : null;
+    const codeSiteRoot = codeSite ? portal.pages.find((page) => normalizePortalPath(page.url) === '/') : null;
+    // A code site's build files are its web files (the landing page among them), with case-insensitive paths.
+    const compiled = codeSiteRoot && !knownPage ? await resolveCompiledCodeSiteFile(codeSite, url.pathname) : null;
+    const compiledFile = compiled?.file ?? null;
     // A path ending with "/" is looked up as a page first (legacy slash rule); a web file
     // answers only when no page has that URL.
-    const pageFirst = url.pathname.endsWith('/') && portal.pages.some((p) => normalizePortalPath(p.url) === key);
+    const pageFirst = url.pathname.endsWith('/') && knownPage;
     const webFile = pageFirst ? null : portal.webFiles.find((f) => normalizePortalPath(f.url) === key);
-    const webFileAccess = webFile ? pageAccess(portal, webFile, currentIdentity(), { now: store.clock.now() }) : null;
+    const webFileAccess = webFile ? pageAccess(portal, webFile, currentIdentity(), pageAccessOptions) : null;
     // A web file outside its release or expiration dates is not visible (Learn, web files): it is absent, as an unknown path is.
     const asset = webFileAccess?.code === 'WEB_FILE_NOT_RELEASED' ? null : webFile;
     // Routing : a denied web file follows the denied-page outcome below.
-    const assetAccess = asset ? webFileAccess : null;
+    const compiledAccess =
+      compiledFile && !webFile
+        ? pageAccess(
+            portal,
+            { file: compiledFile, metadata: { parentpageid: codeSiteRoot.id } },
+            currentIdentity(),
+            pageAccessOptions,
+          )
+        : null;
+    const assetAccess = asset ? webFileAccess : compiledAccess;
     const deniedRoute =
       assetAccess && !assetAccess.allowed
         ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions)
         : null;
+    if (compiledFile && assetAccess?.allowed) {
+      const source = await readWebFileSource(compiledFile, codeSite.compiledDir, url.pathname);
+      // As hosted code sites serve the uploaded build (lib/response-headers.mjs codeSiteFileHeaders): an HTML file is a
+      // raw document without the portal shell, and compressible types are gzipped for a client that accepts it.
+      const served = codeSiteFileHeaders({
+        body: source,
+        fileName: path.basename(compiledFile),
+        caseVariant: compiled.caseVariant,
+        caching:
+          assetAccess.previewOnly || store.state.settings?.webFileCaching === 'revalidate' ? 'revalidate' : 'platform',
+        fallbackType: mime(compiledFile),
+      });
+      const gzip = served.compress && /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+      const body = gzip ? gzipSync(source) : source;
+      const headers = {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile', freshNonce: true }),
+        ...served.headers,
+        ...(gzip ? { 'content-encoding': 'gzip' } : {}),
+        'content-length': body.byteLength,
+        'x-sim-resource-provider': 'code-site-build',
+        ...(assetAccess.previewOnly ? { 'cache-control': 'private, no-store' } : {}),
+      };
+      const status = notModified(req.headers, headers) ? 304 : 200;
+      res.writeHead(status, headers);
+      return res.end(req.method === 'HEAD' || status === 304 ? undefined : body);
+    }
     if (asset && !deniedRoute) {
       const { root, file } = await webFileSourcePaths(portal.sourceDir, asset.file, url.pathname);
       const relative = path.relative(root, file);
@@ -6831,16 +8961,20 @@ export async function createSimulator(options) {
       // record's disposition, platform caching, ETag with 304, HTTP/* settings.
       const sendFile = (body, contentType, extra = {}) => {
         const headers = {
-          ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+          ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile', freshNonce: true }),
           ...webFileHeaders({
             body,
             contentType,
             fileName: asset.metadata?.filename ?? asset.metadata?._attachment?.name ?? path.basename(file),
-            caching: store.state.settings?.webFileCaching === 'revalidate' ? 'revalidate' : 'platform',
+            caching:
+              webFileAccess.previewOnly || store.state.settings?.webFileCaching === 'revalidate'
+                ? 'revalidate'
+                : 'platform',
             disposition: webFileDisposition(asset.metadata),
             mimeCharset: portal.observed?.webFileMimeCharset,
           }),
           ...extra,
+          ...(webFileAccess.previewOnly ? { 'cache-control': 'private, no-store' } : {}),
           'content-length': Buffer.byteLength(body),
         };
         res.writeHead(notModified(req.headers, headers) ? 304 : 200, headers);
@@ -6896,7 +9030,9 @@ export async function createSimulator(options) {
           /* Non-JSON content follows the ordinary response or script path below. */
         }
       }
-      if (sourceMaps && kind === 'script' && !jsonPayload) {
+      const scriptDebugging = sourceMaps && kind === 'script' && !jsonPayload;
+      // The browser compares installed worker script bytes during updates. Keep that request on the authored variant.
+      if (scriptDebugging && req.headers['service-worker'] !== 'script') {
         body = withFileSourceMap(body, file);
         if (!body.toString('utf8').includes('sourceURL=')) {
           generatedDebugUrl = pathToFileURL(file).href;
@@ -6909,7 +9045,7 @@ export async function createSimulator(options) {
           Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file, text.split(/\r\n?|\n/).length, text)} */\n`),
         ]);
       }
-      const proofHeaders = {};
+      const responseHeaders = scriptDebugging ? { vary: 'Accept-Encoding, Service-Worker' } : {};
       if (req.method === 'GET' && kind === 'script' && !jsonPayload) {
         const index = renderer.sourceIndex();
         const source = [...index.sources.values()].find(
@@ -6959,11 +9095,11 @@ export async function createSimulator(options) {
             },
           });
           while (scriptProofs.size > 128) scriptProofs.delete(scriptProofs.keys().next().value);
-          proofHeaders['x-paqvilo-script-proof'] = proofId;
-          proofHeaders['x-paqvilo-provenance-access'] = access;
+          responseHeaders['x-paqvilo-script-proof'] = proofId;
+          responseHeaders['x-paqvilo-provenance-access'] = access;
         }
       }
-      return sendFile(body, contentType, proofHeaders);
+      return sendFile(body, contentType, responseHeaders);
     }
     // The captcha challenge resources answer locally (the asset cache admits no Telerik resource URL).
     if (
@@ -6976,6 +9112,7 @@ export async function createSimulator(options) {
       const cached = await cache.get(url.pathname + url.search, {
         origin: live.origin,
       });
+      requirePageSource();
       if (cached) {
         res.writeHead(cached.status, {
           'cache-control': 'no-cache',
@@ -6984,6 +9121,7 @@ export async function createSimulator(options) {
         return res.end(cached.body);
       }
     }
+    requirePageSource();
     // Routing (lib/redirects.mjs): page URLs end with "/" (case-insensitive);
     // the "Knowledge Article" site-marker route answers before redirects; unresolved
     // paths try redirects and the canonical slash (URL history only with
@@ -7003,12 +9141,21 @@ export async function createSimulator(options) {
       return res.end();
     }
     const pageIdentity = currentIdentity();
-    const exportedPage = deniedRoute
-      ? null
-      : portal.pages.find((p) => normalizePortalPath(p.url) === key && (url.pathname.endsWith('/') || key === '/'));
+    const exportedPage = !deniedRoute && (url.pathname.endsWith('/') || key === '/') ? knownPage : null;
     const markerRoute = exportedPage || deniedRoute ? null : siteMarkerRoute(portal, url);
-    const routedPage = exportedPage ?? markerRoute?.page ?? null;
-    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, { now: store.clock.now() }) : null;
+    // A code site's application route (hosted session F5): no page, web file or build file at the path, and the path
+    // is not a static file type. It renders the Page Not Found page (the Home page without one) with HTTP 200, the
+    // landing document in place of its template output (lib/liquid.mjs codeSiteLanding).
+    const spaPage =
+      codeSiteRoot &&
+      !deniedRoute &&
+      !markerRoute &&
+      !knownPage &&
+      !webFile &&
+      codeSiteNavigation(codeSite, url.pathname);
+    const routedPage =
+      exportedPage ?? markerRoute?.page ?? (spaPage ? (servicePages(portal).notFound ?? codeSiteRoot) : null);
+    const access = routedPage ? pageAccess(portal, routedPage, pageIdentity, pageAccessOptions) : null;
     // The Profile site-marker page requires a signed-in user (platform profile page).
     const profile = servicePages(portal).profile;
     const signInRequired = Boolean(
@@ -7017,22 +9164,67 @@ export async function createSimulator(options) {
     const pageRouteOf = () => {
       if (!routedPage)
         return resolveUnmatchedRoute(portal, url, {
-          readable: (page) => pageAccess(portal, page, pageIdentity, { now: store.clock.now() }).allowed,
+          readable: (page) => pageAccess(portal, page, pageIdentity, pageAccessOptions).allowed,
           urlHistory: store.state.settings?.urlHistoryRedirects === true,
         });
       if (!access.allowed) return deniedPageRoute(portal, url, pageIdentity, access, routeOptions);
+      // An application route shows the Home page copy (the landing page): a visitor who may not read Home gets the
+      // answer the root gives. Hosted handling of a restricted Home is not captured; this fails closed.
+      if (spaPage) {
+        const homeAccess = pageAccess(portal, codeSiteRoot, pageIdentity, pageAccessOptions);
+        if (!homeAccess.allowed) return deniedPageRoute(portal, url, pageIdentity, homeAccess, routeOptions);
+      }
       if (signInRequired)
         return deniedPageRoute(portal, url, pageIdentity, { code: 'PROFILE_SIGN_IN_REQUIRED' }, routeOptions);
       return null;
     };
     const route = deniedRoute ?? pageRouteOf();
+    // The platform's robots.txt of a private site where nothing of the export answers: no web file, page, code-site
+    // route, redirect or canonical match, only Page Not Found (lib/redirects.mjs platformRobotsResponse).
+    const robots =
+      !webFile &&
+      !routedPage &&
+      !deniedRoute &&
+      route?.status === 404 &&
+      ['PAGE_NOT_FOUND', 'UNMAPPED_RESOURCE'].includes(route.code) &&
+      ['GET', 'HEAD'].includes(req.method)
+        ? platformRobotsResponse(portal, url, store.clock.now())
+        : null;
+    if (robots) {
+      res.writeHead(robots.status, {
+        ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'webFile' }),
+        ...robots.headers,
+      });
+      return res.end(req.method === 'HEAD' ? undefined : robots.body);
+    }
     if (route?.kind === 'redirect' && !route.page) {
       res.writeHead(route.status, {
-        location: route.location,
+        location:
+          route.source === 'canonical' && language?.kind === 'rewrite'
+            ? `/${language.code}${route.location}`
+            : route.location,
         'cache-control': 'no-store',
         'x-sim-route': route.source ?? 'redirect',
       });
       return res.end();
+    }
+    // A missing build file of a code site is the platform's plain 404 document, not the Page Not Found page.
+    if (!routedPage && route?.status === 404 && codeSiteRoot && codeSiteMissingFile(codeSite, url.pathname)) {
+      recordDiagnostic({
+        code: 'PAGE_NOT_FOUND',
+        path: url.pathname,
+        message: 'The code site build has no such file.',
+      });
+      const body = Buffer.from(CODE_SITE_MISSING_FILE_DOCUMENT);
+      const { vary: _vary, ...page } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
+      res.writeHead(404, {
+        ...page,
+        ...siteHeaders(portal, { confinement: confinementPolicy(), freshNonce: true }),
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': body.byteLength,
+        'x-sim-route': 'code-site-missing-file',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : body);
     }
     if (route?.kind === 'error') throw error(route.message, route.status, route.code);
     if (route) {
@@ -7055,9 +9247,27 @@ export async function createSimulator(options) {
     if (nativeEntries && (route || !routedPage || !access?.allowed))
       throw error('Native form page is not accessible.', 403);
     let renderedSource;
+    // A nonce policy (the 'nonce' placeholder): one nonce for this response's headers and scripts.
+    const scriptNonce = pageScriptNonce(portal);
     const renderCurrentPage = () => {
+      requirePageSource();
       if (nativeContext) nativeContext.nativePostbacks = [];
-      renderedSource = { renderer, revision };
+      const headerPortal = portal,
+        confinement = confinementPolicy();
+      renderedSource = {
+        epoch: requestedPortalSource,
+        renderer,
+        revision,
+        dependencies: sourceDependencies,
+        shellProfile: config().shellProfile,
+        headers: siteHeaders(headerPortal, { confinement, kind: 'page' }),
+        // The headers of a response whose scripts got the nonce, with its proved inline event handlers' hashes.
+        policyHeaders: (handlerHashes) =>
+          siteHeaders(headerPortal, { confinement, kind: 'page', nonce: scriptNonce?.nonce, handlerHashes }),
+        languageCodes: siteLanguageCodes(),
+        isSpaSite: portal.isSpaSite,
+      };
+      if (nativeContext && ['GET', 'HEAD'].includes(req.method)) nativeContext.admittedPortalRender = renderedSource;
       const late = nativeContext?.lateRoot?.();
       return late ? traces.run(late, renderPageNow) : renderPageNow();
     };
@@ -7065,10 +9275,12 @@ export async function createSimulator(options) {
       let renderPath = url.pathname;
       if (route) renderPath = route.page.url;
       else if (markerRoute) renderPath = markerRoute.page.url;
+      else if (spaPage) renderPath = routedPage.url;
       return renderedSource.renderer.renderPage(renderPath + url.search, {
+        ...(spaPage && !route ? { codeSiteLanding: true } : {}),
         user: pageIdentity,
-        // The website language whose code the language route removed from the path .
-        languageCode: language?.code ?? null,
+        languageCode: selectedLanguage?.code ?? null,
+        previewCookie,
         request: {
           url: url.href,
           path: url.pathname,
@@ -7078,6 +9290,10 @@ export async function createSimulator(options) {
       });
     };
     let rendered = await renderCurrentPage();
+    // Plain authored rendering may finish with its admitted source and permission-checked read result.
+    // The mutable-input callbacks above still require the original source at response time.
+    if (renderedSource.sourceConflict) throw renderedSource.sourceConflict;
+    if (renderedSource.usedMutableInputs) requirePageSource();
     if (nativeEntries) {
       const collected = nativeContext?.nativePostbacks ?? [];
       const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
@@ -7090,19 +9306,19 @@ export async function createSimulator(options) {
           nativeFiles,
         );
         response = nativePostbackResponse({ result, context, values: submission.body.values });
-      } catch (cause) {
+      } catch (error_) {
         response = nativePostbackResponse({
-          error: cause,
+          error: error_,
           context: submission.context,
           values: submission.body.values,
           observed: config().observed ?? portal.observed,
           portal,
         });
-        nativeContext.error = cause;
+        nativeContext.error = error_;
         recordDiagnostic({
-          ...(cause.details?.permissionDiagnostic ?? {
-            code: cause.code ?? 'FORM_SAVE_FAILED',
-            message: cause.message,
+          ...(error_.details?.permissionDiagnostic ?? {
+            code: error_.code ?? 'FORM_SAVE_FAILED',
+            message: error_.message,
           }),
           path: url.pathname,
           ...(response.state?.outcome?.requestId ? { errorId: response.state.outcome.requestId } : {}),
@@ -7115,6 +9331,19 @@ export async function createSimulator(options) {
     }
     let html = typeof rendered === 'string' ? rendered : rendered.html;
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
+    // A page whose render failed with a server exception answers the site's observed error page (hosted session F3).
+    if (rendered.failure) {
+      const presentation = observedPageErrorResponse({
+        method: req.method,
+        error: rendered.failure,
+        observed: config().observed ?? portal.observed,
+        portal,
+        languageId: selectedLanguage?.id,
+        requestPath: url.pathname,
+        now: store.clock.now(),
+      });
+      if (presentation) return writeErrorPresentation(presentation, req, res);
+    }
     // A component that sends the visitor elsewhere (an advanced form that requires
     // authentication sends an anonymous visitor to sign in) answers for the whole page.
     const componentRedirect = (rendered.diagnostics ?? []).find(
@@ -7131,19 +9360,33 @@ export async function createSimulator(options) {
     // the live portal serves their template output verbatim, so prepending scripts
     // would corrupt JSON.parse() and jQuery .load() consumers.
     const isDocument = contentType.includes('text/html') && (rendered.isDocument ?? isHtmlDocument(html));
-    // A bare HTML template may be a native browser navigation or an XHR fragment. Only
-    // the document destination establishes parser-node proof; data callers keep original bytes.
-    if (contentType.includes('text/html') && req.headers['sec-fetch-dest'] === 'document' && !rendered.provenance) {
-      const traced = renderedSource.renderer.provenanceFor(rendered);
+    // A bare HTML template may be a native browser navigation or an XHR fragment. Only a
+    // document destination (top-level or framed) establishes parser-node proof; data callers keep original bytes.
+    let scriptPolicy = null;
+    if (contentType.includes('text/html') && provenanceDestination(req) && !rendered.provenance) {
+      const traced = renderedSource.renderer.provenanceFor(rendered, { scriptNonce });
       if (traced) {
         html = traced.html;
         rendered.provenance = traced.provenance;
+        scriptPolicy = traced.scriptPolicy ?? null;
       }
     }
+    if (scriptNonce && !scriptPolicy && contentType.includes('text/html')) {
+      const nonced = renderedSource.renderer.scriptNoncesFor(rendered, scriptNonce);
+      if (nonced) ({ html, scriptPolicy } = nonced);
+    }
+    recordWithheldScriptNonces(scriptPolicy, url.pathname);
+    // The scripts the injectors add below carry the response's marker: they are the ones that get the nonce.
+    const injected = { injectedScripts: scriptPolicy ? scriptNonce.injected : null };
     if (isDocument) {
-      html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
-      for (const item of formStyleDiagnostics(html, config().shellProfile))
+      html = injectRuntimeDependencies(html, renderedSource.dependencies, [], injected);
+      html = injectLocalHead(
+        injectRuntimeCompatibility(html, renderedSource.dependencies, [], injected),
+        localOverrides,
+        rendered.provenance ?? null,
+        injected,
+      );
+      for (const item of formStyleDiagnostics(html, renderedSource.shellProfile))
         recordDiagnostic({ ...item, path: url.pathname });
       if (localOverrides.assets.length || Object.keys(localOverrides.compat).length)
         recordDiagnostic({
@@ -7159,10 +9402,13 @@ export async function createSimulator(options) {
     const headers = {
       'content-type': contentType,
       ...PAGE_HEADERS,
-      ...siteHeaders(portal, { confinement: confinementPolicy(), kind: 'page' }),
+      ...(scriptPolicy
+        ? renderedSource.policyHeaders(scriptPolicy.handlerHashGroups ?? scriptPolicy.handlerHashes)
+        : renderedSource.headers),
       ...(nativeContext?.nativePostbackState?.outcome?.requestId
         ? { 'x-ms-request-id': nativeContext.nativePostbackState.outcome.requestId }
         : {}),
+      ...(spaPage && !route ? { 'x-sim-route': 'code-site-app' } : {}),
     };
     // A redirecting page answer has no Vary header (live sign-in redirect).
     if (route?.kind === 'redirect') {
@@ -7190,22 +9436,37 @@ export async function createSimulator(options) {
       if (adapters.length) headers['x-sim-compatibility'] = adapters.join(', ');
       if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
     }
-    const responseBody = isDocument
-      ? injectRuntime(
+    const documentToken = isDocument ? requestTokens.issue(req, res) : null;
+    let responseBody = isDocument
+      ? injectPageRuntime(
           html,
-          csrf,
+          documentToken,
           renderedSource.revision,
           pageIdentity,
           trace.getStore()?.spanId,
-          siteLanguageCodes(),
-          trace.getStore()?.traceSpan?.traceId,
+          renderedSource.languageCodes,
+          {
+            rootTraceId: trace.getStore()?.traceSpan?.traceId,
+            site: { isSpaSite: renderedSource.isSpaSite },
+            ...injected,
+          },
         )
       : html;
+    // The toolkit's scripts added above get the nonce too (render-provenance.mjs nonceInjectedScripts).
+    if (scriptPolicy) responseBody = nonceInjectedScripts(responseBody, scriptNonce);
     if (rendered.provenance) {
       const entry = renderProofs.get(rendered.provenance.proofId);
       if (entry) entry.proof = refreshScriptProofLocations(responseBody, rendered.provenance);
     }
-    res.writeHead(route?.status ?? rendered.status ?? 200, headers);
+    const status = route?.status ?? rendered.status ?? 200;
+    // A code site's application route advertises its rendered length, except on an unbound browser HEAD: that answer
+    // omits the GET-only token, so its length is not the GET representation's.
+    if (spaPage && !route) {
+      if (req.method === 'HEAD' && !documentToken) delete headers['content-length'];
+      else headers['content-length'] = Buffer.byteLength(responseBody);
+    }
+    if (isDocument && !route && status < 300) appendApplicationSessionRenewal(req, res, headers);
+    res.writeHead(status, headers);
     res.end(responseBody);
   }
   const recordRequestErrorDiagnostics = (err, req, context) => {
@@ -7228,22 +9489,70 @@ export async function createSimulator(options) {
         path: req.url?.split('?')[0],
       });
   };
+  // An error document is the runtime's (platform-shell:error-page); a failure to trace it never replaces the answer.
+  // Under a nonce policy (`scriptNonce`) it is decided proving nothing (unprovedDocument).
+  const errorDocumentProof = (req, body, scriptNonce = null) => {
+    try {
+      if (typeof body !== 'string') return null;
+      return scriptNonce
+        ? unprovedDocument(req, body, 'error-page', [], scriptNonce)
+        : platformDocumentProof(req, body, 'error-page');
+    } catch {
+      return null;
+    }
+  };
+  // An observed error presentation. The custom error page carries the site's headers: under a nonce policy, the policy
+  // with a nonce that none of its scripts gets (the error snippet's markup is the snippet with its Liquid removed, not
+  // provable source).
+  const writeErrorPresentation = (presentation, req, res) => {
+    const scriptNonce = presentation.custom ? pageScriptNonce(portal) : null;
+    const traced = errorDocumentProof(req, presentation.body, scriptNonce);
+    const nonced = traced?.scriptPolicy ? traced : null;
+    const site = presentation.custom
+      ? {
+          ...PAGE_HEADERS,
+          ...siteHeaders(portal, {
+            confinement: confinementPolicy(),
+            kind: 'page',
+            nonce: nonced ? scriptNonce.nonce : null,
+            handlerHashes: nonced?.scriptPolicy.handlerHashGroups ?? nonced?.scriptPolicy.handlerHashes,
+          }),
+        }
+      : {};
+    const headers = { ...site, ...presentation.headers };
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(presentation.status, headers);
+    if (nonced) return res.end(refreshProof(nonceInjectedScripts(nonced.html, scriptNonce)));
+    return res.end(traced ? refreshProof(traced.html) : presentation.body);
+  };
   const writePageRequestError = (err, req, res, status) => {
+    const siteObserved = config().observed ?? portal.observed;
+    // The error snippet's language; a request whose language cannot be read keeps the import language's snippet.
+    const errorLanguageId = () => {
+      try {
+        return requestLocale(req, requestTargetUrl(req.url, localOrigin))?.id;
+      } catch {
+        return undefined;
+      }
+    };
+    // Every server exception of a page request answers the observed error page (hosted session F3), with the answered status.
     const presentation = observedPageErrorResponse({
       method: req.method,
-      error: err,
-      observed: config().observed ?? portal.observed,
+      error: { status, code: err?.code, message: err?.message, dataverse: Boolean(err?.dataverse) },
+      observed: siteObserved,
+      portal,
+      languageId: siteObserved?.pageErrorPresentation === 'generic-error' ? errorLanguageId() : undefined,
+      requestPath: req.url?.split('?')[0],
+      now: store.clock.now(),
     });
-    if (presentation) {
-      res.writeHead(presentation.status, presentation.headers);
-      return res.end(presentation.body);
-    }
-    res.writeHead(status, {
+    const errorProof = (body) => errorDocumentProof(req, body);
+    if (presentation) return writeErrorPresentation(presentation, req, res);
+    const headers = {
       'content-type': 'text/html; charset=utf-8',
       ...(err.code === 'REDIRECT_SITE_MARKER_NULL_REFERENCE' && observed.siteMarkerRedirect === 'null-reference'
         ? { 'cache-control': PAGE_CACHE_CONTROL }
         : {}),
-    });
+    };
     const invalidReturnUrl = err.code === 'InvalidPersonaCatalog' && err.invalidParameter === 'returnUrl';
     let requestTitle = null;
     if (invalidReturnUrl) requestTitle = 'Invalid returnUrl';
@@ -7252,9 +9561,11 @@ export async function createSimulator(options) {
         err.status === 404 || /persona/i.test(err.message)
           ? 'Invalid persona parameter'
           : 'Local sign-in request failed';
-    res.end(
-      `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
-    );
+    const body = `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`;
+    const traced = errorProof(body);
+    const refreshProof = publishRenderProof(headers, traced?.provenance);
+    res.writeHead(status, headers);
+    res.end(traced ? refreshProof(traced.html) : body);
   };
   // A request that takes a JSON error envelope: the portal and administration APIs, native form posts, a pack endpoint,
   // and any request whose Accept names JSON and not HTML (a script's fetch, a client library).
@@ -7277,22 +9588,28 @@ export async function createSimulator(options) {
       const postback = req.url.startsWith('/__sim/forms/entityform/')
         ? formWriteError(err, config().observed ?? portal.observed, 'entityform', portal)
         : null;
-      return void json(res, status, {
-        error: {
-          code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
-          message: requestErrorMessage(err),
-          // The admin API's error shape names the refused query parameter (sim-administration.md); so does the local
-          // sign-in shortcut's (`persona`).
-          ...((req.url.startsWith('/__sim/api') || /^\/__?sim\/sign-in(?:\?|$)/.test(req.url)) &&
-          typeof err.parameter === 'string'
-            ? { parameter: err.parameter }
-            : {}),
-          ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
-            ? { validationErrors: err.details.validationErrors }
-            : {}),
+      return void json(
+        res,
+        status,
+        {
+          error: {
+            code: requestErrorCode(err) ?? 'SIMULATOR_ERROR',
+            message: requestErrorMessage(err),
+            // The admin API's error shape names the refused query parameter (sim-administration.md); so does the local
+            // sign-in shortcut's (`persona`).
+            ...((req.url.startsWith('/__sim/api') || /^\/__?sim\/sign-in(?:\?|$)/.test(req.url)) &&
+            typeof err.parameter === 'string'
+              ? { parameter: err.parameter }
+              : {}),
+            ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
+              ? { validationErrors: err.details.validationErrors }
+              : {}),
+          },
+          ...(postback ? { postback } : {}),
         },
-        ...(postback ? { postback } : {}),
-      });
+        // A handler's own caching headers for its answered refusals (summarizePortalData).
+        err?.responseHeaders ?? {},
+      );
     }
     return writePageRequestError(err, req, res, status);
   };
@@ -7340,8 +9657,17 @@ export async function createSimulator(options) {
   // request.params in ASP.NET order: the request's cookies, then form values, then query values, so the later source wins.
   // The runtime's own session, visitor and anti-forgery cookies are never a parameter.
   const requestParams = (req, url, form) => {
-    const own = new Set([authSessions.name, visitorName(), ANTI_FORGERY_COOKIE]);
-    const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(([name]) => !own.has(name));
+    const own = new Set([
+      authSessions.name,
+      `${authSessions.name}-mfa`,
+      rememberedBrowserCookieName(authSessions.name),
+      privateSiteSessions.name,
+      visitorName(),
+      ANTI_FORGERY_COOKIE,
+    ]);
+    const cookies = Object.entries(parseCookies(req.headers.cookie)).filter(
+      ([name]) => !own.has(name) && !isPortalBindingCookie(name) && !isCookieChunk(name, authSessions.name),
+    );
     return { ...Object.fromEntries(cookies), ...form, ...Object.fromEntries(url.searchParams) };
   };
   /* NOSONAR */ const onRequest = (req, res) => {
@@ -7490,6 +9816,11 @@ export async function createSimulator(options) {
       auth,
       localOnly: req.headers['x-paqvilo-local-only'] === 'true',
       visitor,
+      // The visitor the browser's cookie named (null when the visitor was started by this request): only such a visitor
+      // has an anonymous adx_webformsession row (web-form-session-row.mjs).
+      cookieVisitor: readVisitor(req.headers.cookie, visitorName()),
+      // The visitor's address, as a multistep form session row records it (web-form-session-row.mjs).
+      remoteAddress: req.socket?.remoteAddress ?? null,
       // A page path with a file suffix (/report.pdf, /data.json) is not audited; when it reaches the Liquid renderer it
       // still gets its http root, opened there (D-R3-13).
       lateRoot:
@@ -7783,8 +10114,8 @@ export async function createSimulator(options) {
     await externalSignIn.start({ host });
     bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
-  } catch (cause) {
-    await closeAfterStartupFailure(cause);
+  } catch (error_) {
+    await closeAfterStartupFailure(error_);
   }
   let reloadRequested = false;
   // Source notifications the watcher reported, and how many of them a published or failed reload has covered: status
@@ -7796,8 +10127,45 @@ export async function createSimulator(options) {
   const layerSignature = () =>
     JSON.stringify([
       (solutionData.layers ?? []).map((layer) => layer.dir),
+      pcfLayers.map((layer) => layer.dir),
       solutionMetadata.plugins?.sourceFiles ?? [],
+      portal.codeSite?.compiledDir ?? null,
     ]);
+  // A full reload pass: deployment profiles, the portal export, Solutions and the recompiled state.
+  async function reloadPortalAndSolutionSources() {
+    activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
+    sourcePortal = await importSource(config().modelDriven?.records);
+    if (requirePortalSource) assertPortalSource(sourcePortal);
+    portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
+    sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
+    await loadSolutions();
+    activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
+    generatedPresets = initialState(portal, bootstrapOptions()).presets;
+    store.presetLibrary = generatedPresets;
+    // Publish the new source fingerprint and renderer before the recompiled
+    // state, so no status read pairs reloaded data with the old fingerprint.
+    fingerprint = await calculateFingerprint();
+    renderer = buildRenderer();
+    // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
+    // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
+    const publish = async () => {
+      await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
+      await organizationHost.refreshSources();
+      await organizationHost.loadCanvas();
+    };
+    // Findings of the previous revision are dropped; those the publication raised (SOURCE_EXTENSIONS_REFRESHED) stay.
+    const previousFindings = diagnostics.length;
+    await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
+    diagnostics.splice(0, previousFindings);
+  }
+  // A pass that changed the set of layers restarts the watcher with the new list.
+  async function restartWatcherForLayers(notified) {
+    if (!watch || watchedLayers === layerSignature()) return;
+    await restartWatcher();
+    // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
+    // report it again: one more pass reads those paths.
+    if (watchNotified > notified) reloadRequested = true;
+  }
   async function reload() {
     if (closing) return;
     // Settled outside the host change queue (as standalone-runtime.mjs does): a job's api.change would wait on a held queue.
@@ -7812,7 +10180,7 @@ export async function createSimulator(options) {
     if (closing) return;
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
-    reloadPromise = (async () => {
+    reloadPromise = publishPortalSource(async () => {
       while (reloadRequested && !closing) {
         reloadRequested = false;
         // The notifications this pass reads; a later one is covered by the next pass.
@@ -7827,6 +10195,8 @@ export async function createSimulator(options) {
           operationWorkflows,
           solutionOperations,
           codeComponents,
+          pcfLayers,
+          pcfPlatform,
           fingerprint,
           renderer,
           activeProfiles,
@@ -7840,30 +10210,9 @@ export async function createSimulator(options) {
           const started = performance.now();
           const changed = [...changedPaths].sort(compareText);
           changedPaths.clear();
-          activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
-          sourcePortal = await importSource(config().modelDriven?.records);
-          if (requirePortalSource) assertPortalSource(sourcePortal);
-          portal = applyPortalOverrides(await environmentBound(sourcePortal, store.state), config().portalOverrides);
-          sourceDependencies = { ...(await discoverSourceDependencies(portal)), compat: localOverrides.compat };
-          await loadSolutions();
-          activeProfiles = withDefinedVariables(activeProfiles, solutionData.environmentVariables);
-          generatedPresets = initialState(portal, bootstrapOptions()).presets;
-          store.presetLibrary = generatedPresets;
-          // Publish the new source fingerprint and renderer before the recompiled
-          // state, so no status read pairs reloaded data with the old fingerprint.
-          fingerprint = await calculateFingerprint();
-          renderer = buildRenderer();
-          // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
-          // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
-          const publish = async () => {
-            await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
-            await organizationHost.refreshSources();
-            await organizationHost.loadCanvas();
-          };
-          // Findings of the previous revision are dropped; those the publication raised (SOURCE_EXTENSIONS_REFRESHED) stay.
-          const previousFindings = diagnostics.length;
-          await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
-          diagnostics.splice(0, previousFindings);
+          const controlsOnly = controlSourcesOnly(changed);
+          if (controlsOnly) await reloadCodeComponentSources();
+          else await reloadPortalAndSolutionSources();
           revision++;
           bootstrapTimings.lastReload = {
             at: new Date().toISOString(),
@@ -7871,20 +10220,9 @@ export async function createSimulator(options) {
             changed: changed.slice(0, 50),
             changedCount: changed.length,
           };
-          recordDiagnostic({
-            code: 'SOURCES_RELOADED',
-            severity: 'info',
-            revision,
-            changed: changed.slice(0, 20),
-            message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
-          });
+          recordDiagnostic(sourcesReloadedDiagnostic(revision, changed, controlsOnly));
           recordReloadNotices(previous.sourcePortal, sourcePortal, revision);
-          if (watch && watchedLayers !== layerSignature()) {
-            await restartWatcher();
-            // The restart cancelled the reload a notification during this pass scheduled, and the new watcher does not
-            // report it again: one more pass reads those paths.
-            if (watchNotified > notified) reloadRequested = true;
-          }
+          await restartWatcherForLayers(notified);
           watchCovered = Math.max(watchCovered, notified);
           publishLog('reload', {
             revision,
@@ -7902,6 +10240,8 @@ export async function createSimulator(options) {
           operationWorkflows = previous.operationWorkflows;
           solutionOperations = previous.solutionOperations;
           codeComponents = previous.codeComponents;
+          pcfLayers = previous.pcfLayers;
+          pcfPlatform = previous.pcfPlatform;
           fingerprint = previous.fingerprint;
           renderer = previous.renderer;
           activeProfiles = previous.activeProfiles;
@@ -7916,7 +10256,7 @@ export async function createSimulator(options) {
           if (!reloadRequested || closing) throw err;
         }
       }
-    })().finally(() => {
+    }).finally(() => {
       reloadPromise = null;
     });
     return reloadPromise;
@@ -7936,11 +10276,20 @@ export async function createSimulator(options) {
     ];
     const pluginSourceKeys = new Set(pluginSources.map((file) => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
+    const codeSite = portal.codeSite;
+    const codeSiteSources = [codeSite?.configFile, codeSite?.compiledDir].filter(Boolean);
     const canvasWatch = canvasSourceWatch(settingOptionsRest.canvas?.sources, projectRoot);
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
+    // A pcf.sources entry is watched from its configured path, so its first build is seen too.
+    const pcfSourceWatch = [
+      ...(settingOptionsRest.pcf?.sources ?? []).map((source) => source.path),
+      ...(settingOptionsRest.pcf?.platformLibraries ?? []),
+      ...pcfLayers.map((layer) => layer.dir),
+    ];
     const ignoreSource = solutionWatchFilter({
       sourceDir,
       roots: [...solutionRoots, ...clientSources],
+      controlTrees: pcfSourceWatch,
       layers: [
         ...layers,
         ...clientSources.filter((source) => !/[.]js$/i.test(source)).map((dir) => ({ type: 'directory', dir })),
@@ -7948,11 +10297,22 @@ export async function createSimulator(options) {
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
     watcher = sourceWatcher(
-      [sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasWatch.roots],
+      [
+        sourceDir,
+        ...solutionRoots,
+        ...clientSources,
+        ...pluginSources,
+        ...canvasWatch.roots,
+        ...codeSiteSources,
+        ...pcfSourceWatch,
+      ],
       {
         ignoreInitial: true,
         ignored: (file, stats) =>
-          pluginSourceKeys.has(path.resolve(file).toLowerCase()) || canvasWatch.contains(file)
+          pluginSourceKeys.has(path.resolve(file).toLowerCase()) ||
+          canvasWatch.contains(file) ||
+          file === codeSite?.configFile ||
+          (codeSite?.compiledDir && (file === codeSite.compiledDir || file.startsWith(codeSite.compiledDir + path.sep)))
             ? false
             : ignoreSource(file, stats),
         awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
@@ -8038,8 +10398,14 @@ export async function createSimulator(options) {
     applyPreset: (name) => change(() => applySelectedPreset(name)),
     // Sign-in for tools and tests that render portal routes as a persona :
     // { cookieHeader: "paqvilo-mirage-auth-<port>=…" for a Cookie request header, identity }.
-    signIn: (contactId, options = {}) => {
+    // browserSession: true issues the session as a browser sign-in (lifetime, security stamp) with its Set-Cookie
+    // header in setCookie; without it the cookie value is a programmatic session for tools and tests.
+    signIn: (contactId, { browserSession = false, ...options } = {}) => {
       const session = signInSession(contactId, options);
+      if (browserSession) {
+        const setCookie = authSessions.cookie(session);
+        return { cookieHeader: cookieRequestHeader(setCookie), setCookie, identity: describeSession(session) };
+      }
       return {
         cookieHeader: `${authSessions.name}=${authSessions.value(session)}`,
         identity: describeSession(session),

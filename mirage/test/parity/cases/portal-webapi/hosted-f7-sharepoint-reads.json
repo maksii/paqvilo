@@ -1,0 +1,562 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f7-sharepoint-reads",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages site, 2026-11-27",
+    "scope": "Portal Web API reads of the SharePoint document tables on hosted session F7's invented schema (pqf7_case with document management), signed in as a contact with Global read on sharepointdocument and sharepointdocumentlocation, the environment's SharePoint integration off: with Webapi/<table>/fields * (phase s0) and with explicit column lists (phase s1-loc-fields, a default SharePoint site, the table library and one location per record): select-less, $select, $filter and FetchXML reads with and without a regarding condition, the record's two document relationships as navigations, and the record itself. Projection: status, OData-Version, x-ms-request-id presence and Server-Timing, the error object, or the context, counts, nextLink presence and rows. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f7-a-hosted-f7-sharepoint-reads",
+      "sha256": "2ab9220d318abf987db31ed0d75cd1b84eebfd8c502a293b2e577544e7fc0608",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f7-b-hosted-f7-sharepoint-reads",
+      "sha256": "c0646262eb2c92aa19c56e9c4b223377ac44755de11384cb5580f913f0c55021",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "s0:documents-top",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$top=5"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040122",
+          "message": "You are unauthorized to process this request.",
+          "innererror": {
+            "code": "90040122",
+            "message": "You are unauthorized to process this request.",
+            "type": "WebApiUnAuthorizedAccess"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-select",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$select=fullname,relativelocation,isfolder&$top=5"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040122",
+          "message": "You are unauthorized to process this request.",
+          "innererror": {
+            "code": "90040122",
+            "message": "You are unauthorized to process this request.",
+            "type": "WebApiUnAuthorizedAccess"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-by-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$select=fullname,relativelocation&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040122",
+          "message": "You are unauthorized to process this request.",
+          "innererror": {
+            "code": "90040122",
+            "message": "You are unauthorized to process this request.",
+            "type": "WebApiUnAuthorizedAccess"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-fetch-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040122",
+          "message": "You are unauthorized to process this request.",
+          "innererror": {
+            "code": "90040122",
+            "message": "You are unauthorized to process this request.",
+            "type": "WebApiUnAuthorizedAccess"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:documents-nav",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})/pqf7_case_SharePointDocuments?$select=fullname"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:locations-by-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/sharepointdocumentlocations?$select=name,relativeurl&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040122",
+          "message": "You are unauthorized to process this request.",
+          "innererror": {
+            "code": "90040122",
+            "message": "You are unauthorized to process this request.",
+            "type": "WebApiUnAuthorizedAccess"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:locations-nav",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})/pqf7_case_SharePointDocumentLocations?$select=name,relativeurl"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s0:case",
+      "input": {
+        "method": "GET",
+        "phase": "s0",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})?$select=pqf7_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf7_cases(pqf7_name)/$entity",
+          "rows": [
+            {
+              "pqf7_caseid": "{record}",
+              "pqf7_name": "{recordName}"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-top",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$top=5"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _regardingobjectid_value in table sharepointdocument is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute _regardingobjectid_value in table sharepointdocument is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-select",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$select=fullname,relativelocation,isfolder&$top=5"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute isfolder in table sharepointdocument is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute isfolder in table sharepointdocument is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-by-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$select=fullname,relativelocation&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _regardingobjectid_value in table sharepointdocument is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute _regardingobjectid_value in table sharepointdocument is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-fetch-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocument%22%3E%3Cattribute%20name%3D%22fullname%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 400,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=400, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x80071017",
+          "innererror": {
+            "code": "0x80071017",
+            "message": "SharePoint S2S and MSTeams integration is not enabled for this org"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-nav",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})/pqf7_case_SharePointDocuments?$select=fullname"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:locations-by-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocumentlocations?$select=name,relativeurl&$filter=_regardingobjectid_value eq {record}"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute _regardingobjectid_value in table sharepointdocumentlocation is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute _regardingobjectid_value in table sharepointdocumentlocation is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:locations-nav",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})/pqf7_case_SharePointDocumentLocations?$select=name,relativeurl"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+          "innererror": {
+            "code": "90040101",
+            "message": "Attribute All Columns in table pqf7_case is not enabled for Web Api.",
+            "type": "AttributePermissionIsMissing"
+          }
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:case",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/pqf7_cases({record})?$select=pqf7_name"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf7_cases(pqf7_name)/$entity",
+          "rows": [
+            {
+              "pqf7_caseid": "{record}",
+              "pqf7_name": "{recordName}"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:documents-select-allowed",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocuments?$select=fullname,relativelocation&$top=5"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#sharepointdocuments(fullname,relativelocation)",
+          "total": -1,
+          "nextLink": false,
+          "rows": []
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:locations-select-allowed",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocumentlocations?$select=name,relativeurl&$top=5"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#sharepointdocumentlocations(name,relativeurl)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "name": "pqf7_case",
+              "relativeurl": "pqf7_case",
+              "sharepointdocumentlocationid": "f7f7f7f7-0000-4000-8000-000000000502"
+            },
+            {
+              "name": "Documents on pqf7 lab site",
+              "relativeurl": "f7 a view first_F7F7F7F7000040008000000000001001",
+              "sharepointdocumentlocationid": "f7f7f7f7-0000-4000-8000-000000000509"
+            },
+            {
+              "name": "Documents on pqf7 lab site",
+              "relativeurl": "f7 a upload first_F7F7F7F7000040008000000000001002",
+              "sharepointdocumentlocationid": "f7f7f7f7-0000-4000-8000-000000000511"
+            },
+            {
+              "name": "Documents on pqf7 lab site",
+              "relativeurl": "f7 a folder first_F7F7F7F7000040008000000000001003",
+              "sharepointdocumentlocationid": "f7f7f7f7-0000-4000-8000-000000000512"
+            },
+            {
+              "name": "Documents on pqf7 lab site",
+              "relativeurl": "f7 b view first_F7F7F7F7000040008000000000002001",
+              "sharepointdocumentlocationid": "f7f7f7f7-0000-4000-8000-000000000519"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "s1-loc-fields:locations-fetch-regarding",
+      "input": {
+        "method": "GET",
+        "phase": "s1-loc-fields",
+        "headers": {},
+        "path": "/_api/sharepointdocumentlocations?fetchXml=%3Cfetch%3E%3Centity%20name%3D%22sharepointdocumentlocation%22%3E%3Cattribute%20name%3D%22name%22%2F%3E%3Cattribute%20name%3D%22relativeurl%22%2F%3E%3Cfilter%3E%3Ccondition%20attribute%3D%22regardingobjectid%22%20operator%3D%22eq%22%20value%3D%22{record}%22%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#sharepointdocumentlocations(name,relativeurl,sharepointdocumentlocationid)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "name": "Documents on pqf7 lab site",
+              "relativeurl": "{recordName}_{RECORD}",
+              "sharepointdocumentlocationid": "{location}"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

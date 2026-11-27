@@ -199,6 +199,12 @@ remove a recorded pointer, add `--revise-drop-volatile "<case-id>#<pointer>"` (r
 refused when the new captures still differ at that pointer or when the case records no such pointer. A recorded pointer
 that is absent from the new output must be dropped this way.
 
+A capture of a hosted site can name that site (its host or name in an evidence text or a URL). `--redact <term>`
+(repeatable, at least three characters) replaces every case-insensitive occurrence of each term in the captures' case
+ids, inputs, outputs and object keys with `"<redacted>"` before the cases are built, longest term first. The case file
+records `redaction: { placeholder, terms, occurrences }`, never the terms; the captures themselves are not changed, and
+the same captures and terms always build the same file. A file built with a redaction is refused a rebuild without one.
+
 ### Adapters
 
 An adapter is the one reviewed projection between Mirage values and oracle values for its surface. It exports either a

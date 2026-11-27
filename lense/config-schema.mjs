@@ -1,5 +1,6 @@
 // Validate configuration before it can become a browser URL, path, or routing rule.
 import { catalogueKeys, parseSetting } from '../mirage/lib/config-keys.mjs';
+import { parseAnalysisLimits } from './analysis/limits.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const chooseLazily = (condition, yes, no) => {
@@ -17,6 +18,7 @@ const SITE_KEYS = [
   'scope',
   'routes',
   'mirage',
+  'analysis',
 ];
 // Every catalogue mirage key is a row of mirage/lib/config-keys.mjs (the one registration point).
 const MIRAGE_KEYS = catalogueKeys();
@@ -129,6 +131,10 @@ export function mirageSettings(value, name) {
 
 function siteSettings(site, name) {
   if (site.startPath !== undefined) startPath(site.startPath, `${name}.startPath`);
+  if (site.analysis !== undefined) {
+    keys(site.analysis, ['limits'], `${name}.analysis`);
+    if (site.analysis.limits !== undefined) parseAnalysisLimits(site.analysis.limits, `${name}.analysis.limits`);
+  }
   if (site.mirage != null) mirageSettings(site.mirage, `${name}.mirage`);
   if (site.scope !== undefined && !['all', 'changed'].includes(site.scope))
     throw new Error(`${name}.scope must be 'all' or 'changed'`);
@@ -184,6 +190,27 @@ function validateRoute(rule, at) {
   for (const field of ['file', 'dir']) if (rule[field] !== undefined) string(rule[field], `${at}.${field}`);
 }
 
+/**
+ * A running everyday browser can be named instead of its endpoint: the browser writes the endpoint of its remote
+ * debugging switch (edge://inspect or chrome://inspect, "Allow remote debugging for this browser instance") to the
+ * DevToolsActivePort file of its normal user-data directory, and the attachment reads it from there.
+ */
+export const ATTACH_CHANNELS = [
+  'msedge',
+  'msedge-beta',
+  'msedge-dev',
+  'msedge-canary',
+  'chrome',
+  'chrome-beta',
+  'chrome-dev',
+  'chrome-canary',
+];
+
+/** browser.cdpUrl is a debugging endpoint URL or the channel name of a running everyday browser. */
+export function validateCdpUrl(value, name = 'browser.cdpUrl') {
+  if (!ATTACH_CHANNELS.includes(value)) httpUrl(value, name, ['http:', 'https:', 'ws:', 'wss:']);
+}
+
 function validateBrowser(browser) {
   keys(
     browser,
@@ -208,7 +235,7 @@ function validateBrowser(browser) {
   if (browser.userDataDir !== null) browserUserDataDir(browser.userDataDir);
   if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
   debugPort(browser.debugPort);
-  if (browser.cdpUrl !== null) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  if (browser.cdpUrl !== null) validateCdpUrl(browser.cdpUrl);
 }
 
 function validateSites(sites) {

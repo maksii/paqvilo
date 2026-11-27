@@ -156,13 +156,38 @@ const schemaValidationOption = (trigger) =>
   trigger.kind === 'Http' &&
   typeof trigger.operationOptions === 'string' &&
   trigger.operationOptions.split(',').every((option) => option.trim() === 'EnableSchemaValidation');
-// The schema's keywords are inspected for every Request trigger, so an unsupported schema fails whatever the body is. The body
-// of an Http trigger is checked against the schema only when Schema Validation is on.
-export function validateTriggerInput(trigger, input) {
+// The schema's keywords are inspected for every Request trigger, so an unsupported schema fails whatever the body is. The body of
+// an Http trigger is checked against the schema only when Schema Validation is on.
+// A Power Pages trigger's input is checked at its run's start as `powerPagesSchema` says (runExportedCloudFlow): "enforced" (the
+// default) checks the declared schema and reports FLOW_TRIGGER_SCHEMA_ENFORCED when it refuses; "not-enforced"
+// (observed.powerPagesFlowTriggerSchema) runs the flow with what was sent, as hosted session F8 (envelope group, two runs)
+// recorded for a missing required field, a string for a number, an undeclared property and {}. A resume (no value) does not
+// check it again.
+/**
+ * @param {object} trigger
+ * @param {unknown} input
+ * @param {{ powerPagesSchema?: 'enforced' | 'not-enforced' | null, diagnostic?: Function | null }} [options] without
+ *   powerPagesSchema (a resume, a direct call) a Power Pages trigger's input is not checked.
+ */
+export function validateTriggerInput(trigger, input, { powerPagesSchema, diagnostic = null } = {}) {
+  if (trigger.kind === 'powerpages' && powerPagesSchema !== 'enforced') return;
   const schema = trigger.inputs?.schema ?? {};
-  inspectSchema(schema, 0, { schemas: 0, checks: 0 });
-  if (trigger.kind === 'Http' && !schemaValidationOption(trigger)) return;
-  validateFlowInput(input, schema);
+  try {
+    inspectSchema(schema, 0, { schemas: 0, checks: 0 });
+    if (trigger.kind === 'Http' && !schemaValidationOption(trigger)) return;
+    validateFlowInput(input, schema);
+  } catch (error) {
+    if (trigger.kind === 'powerpages')
+      diagnostic?.({
+        code: 'FLOW_TRIGGER_SCHEMA_ENFORCED',
+        severity: 'warning',
+        message:
+          "A hosted site runs a Power Pages flow with whatever its caller sent and does not check the trigger's declared schema (paqvilo-developer hosted-f8 summary-F8 section 3). Mirage refused the input: " +
+          error.message +
+          ' Set observed.powerPagesFlowTriggerSchema to not-enforced, with evidence, to reproduce the hosted behaviour.',
+      });
+    throw error;
+  }
 }
 const responseStatus = (code) => Number.isInteger(code) && code >= 200 && code <= 599 && (code < 300 || code >= 400);
 // Recurrence (https://learn.microsoft.com/azure/connectors/connectors-native-recurrence#add-the-recurrence-trigger): frequency
@@ -2113,7 +2138,7 @@ export function executeFlowDefinition({
   const triggers = Object.values(definition?.triggers ?? {});
   if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     fail('The cloud-flow input must be an object.', 400, 'InvalidRequest');
-  validateTriggerInput(triggers[0], input);
+  validateTriggerInput(triggers[0], input, { powerPagesSchema: context?.powerPagesTriggerSchema ?? null, diagnostic });
   // A tracked run passes the non-secret parameter values frozen at its start (runTrackedFlow), so a resume replays them.
   const parameters = flowParameters(definition, store),
     state = {
@@ -2135,6 +2160,8 @@ export function executeFlowDefinition({
     terminated = false,
     terminatedFailure = null,
     terminatedCancelled = false,
+    // A Response that failed because its Power Pages caller no longer waits (context.responseClosed).
+    responseClosedFailed = false,
     cancelled = false,
     // The action that failed the run (D-R3-4): the latest Failed or TimedOut action, an enclosing action (Scope, If, loop)
     // keeping the inner action that failed it.
@@ -2568,6 +2595,11 @@ export function executeFlowDefinition({
             break;
           }
           case 'Response': {
+            // A Power Pages caller that no longer waits for the run (its request answered, or it never waited): the action fails.
+            if (context.responseClosed?.()) {
+              responseClosedFailed = true;
+              fail('The Power Pages request no longer waits for this Response.', 400, 'LocalFlowResponseClosed');
+            }
             const answer = resolve(action.inputs ?? {}),
               code = Number(answer.statusCode ?? 200);
             if (!responseStatus(code) || response) fail('Invalid or duplicate flow response.');
@@ -2826,9 +2858,13 @@ export function executeFlowDefinition({
       });
     return invokeConnector(request);
   };
-  // A row, recurrence, connector or on-demand (context.background) run completes without a Response; any other run must answer one.
+  // Power Pages request flows can omit the Response action entirely.
   const rowLike = ['dataverse', 'dataverse-action', 'recurrence', 'connector'].includes(trigger.kind),
-    answersWithout = rowLike || context.background || trigger.kind === 'http';
+    answersWithout =
+      rowLike ||
+      context.background ||
+      trigger.kind === 'http' ||
+      (trigger.kind === 'powerpages' && !contract.actions.some((action) => action.type === 'Response'));
   const resolveSecretParameters = function* () {
     for (const [name, secret] of parameters.secrets) {
       const answer = yield { secret, name };
@@ -2876,6 +2912,17 @@ export function executeFlowDefinition({
       if (!succeeded) throw flowFailure(failedAction);
       return { status: 'Succeeded', actions: clone(state.results) };
     }
+    // A Power Pages run that Terminate ends Succeeded before its Response stays Succeeded although its caller had no answer
+    // (hosted session F8, outcomes group and its flow-run rows): `unanswered` tells the caller.
+    if (terminated && outcome === 'Succeeded' && trigger.kind === 'powerpages')
+      return { status: 'Succeeded', actions: clone(state.results), unanswered: true };
+    // That run ends with the hosted run error of its failed Response (hosted session F8, flow-run rows of the delay and
+    // envelope groups); every other run without a Response keeps LocalFlowFailed.
+    if (responseClosedFailed)
+      throw named(
+        new DataError('An action failed. No dependent actions succeeded.', 400, 'ActionFailed'),
+        failedAction,
+      );
     fail('Local flow completed without a Response.', 400, 'LocalFlowFailed');
   };
   return drive(
@@ -3305,6 +3352,8 @@ function restoreTrackedFlowRun(resumed, { resume, sealed, args, processId, name,
           context: {
             ...args.context,
             ...(background ? { background } : {}),
+            // A Power Pages request that stopped waiting for this run (flow-runs.mjs closeResponse) fails its Response action.
+            ...(typeof runs.responseClosed === 'function' ? { responseClosed: () => runs.responseClosed(runId) } : {}),
             correlationId,
             runId,
             runChildFlow,

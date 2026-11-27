@@ -118,13 +118,16 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   if (await pill.isVisible()) await pill.click();
   await page.locator('#paqvilo-panel .tabs [data-act=tab][data-v=runtime]').click();
   await page.locator('#paqvilo-panel [data-act=xray]').click();
-  const select = () =>
-    page.evaluate(() => {
-      const tools = document.getElementById('paqvilo-xray').__px,
-        node = document.querySelector('iframe').contentDocument.getElementById('fx_title');
-      tools.select(node);
-      return tools.selection();
+  // X-ray reads a frame once it has loaded (its load event), and the field is visible before that: the field is picked
+  // once X-ray accepts the frame's elements, as a person picks it again when the first click did nothing.
+  const select = async () => {
+    await page.waitForFunction(() => {
+      const tools = document.getElementById('paqvilo-xray').__px;
+      tools.select(document.querySelector('iframe').contentDocument.getElementById('fx_title'));
+      return tools.selectedNode() !== null;
     });
+    return page.evaluate(() => document.getElementById('paqvilo-xray').__px.selection());
+  };
   await select();
   await page.waitForFunction(() => {
     const identity = document.getElementById('paqvilo-xray').__px.selection();

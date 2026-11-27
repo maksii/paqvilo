@@ -40,7 +40,7 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     'sample.js': `function get(){return JSON.stringify({source:true});}`,
     'Request.cloudflowconsumer.yml': `adx_cloudflowconsumerid: request\nadx_name: Echo\nadx_processid: ${flow}\nadx_flowapiurl: /_api/cloudflow/v1.0/trigger/${flow}\nadx_cloudflowconsumer_adx_webrole:\n- ${role}`,
     'Workflows/echo.json': JSON.stringify(definition),
-    'Workflows/echo.json.data.xml': `<Workflow WorkflowId="{${flow}}" Name="Echo"/>`,
+    'Workflows/echo.json.data.xml': `<Workflow WorkflowId="{${flow}}" Name="Echo"><StateCode>1</StateCode></Workflow>`,
     'Workflows/standalone.json': JSON.stringify({
       properties: { definition: { actions: { connector: { type: 'OpenApiConnection' } } } },
     }),
@@ -63,6 +63,11 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, body);
   }
+  return { dir, app: await operationSimulator(t, dir) };
+}
+
+/** A local simulator over <dir>/portal and the Solution <dir>/solution, whose configured identity holds the Runner role. */
+export async function operationSimulator(t, dir) {
   const app = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
@@ -85,5 +90,5 @@ export async function operationFixture(t, { solutionComponents = false } = {}) {
     },
   });
   ownedFixture(t).add(() => app.close());
-  return { dir, app };
+  return app;
 }

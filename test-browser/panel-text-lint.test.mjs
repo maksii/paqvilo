@@ -248,10 +248,15 @@ test('Inspect shows names and words, never IDs or codes, and one icon per meanin
     components.join('|'),
   );
   assert.ok(!components.some((row) => row.includes('{% include')), 'an include names its template once');
-  // Rendered controls: matched ones are rows; the others are one count line.
+  // Rendered controls: matched ones are rows; the others are listed under their own group, each saying why (E14).
   const rendered = panel('[data-group="runtime-rendered"]');
   assert.equal(await rendered.locator('.row').count(), 1);
-  assert.equal(await rendered.locator('.group-note').innerText(), '2 more controls on this page match no source');
+  const unmatched = panel('[data-group="runtime-rendered-unmatched"] .row');
+  assert.deepEqual(await unmatched.locator('.name > span:first-child').allInnerTexts(), [
+    'unmatched_one',
+    'unmatched_two',
+  ]);
+  assert.deepEqual(await unmatched.locator('.c').allInnerTexts(), ['not found', 'not found']);
   // A page source's kind is what the file is; its name says so already, so the column stays empty (its tooltip names it).
   const pageSources = panel('[data-group="runtime-page-sources"] .ico');
   assert.deepEqual(await pageSources.allInnerTexts(), ['', '', '']);

@@ -1,8 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { setMaxListeners } from 'node:events';
 import { installDomProvenance } from './dom-provenance.mjs';
+import { installPortalProvenanceRegistry } from './portal-element-provider.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
+import { platformRule } from './request-classes.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
+import { scriptHashIndex } from './script-source-evidence.mjs';
 import {
   originOf,
   readEndedByContextClose,
@@ -19,15 +22,24 @@ const safeURL = (value) =>
   typeof value === 'string' && value.length <= 32768 && /^(?:https?:\/\/|file:\/\/\/)/.test(value)
     ? { url: value.split(/[?#]/, 1)[0], urlKey: digest(value) }
     : null;
+// A proof acknowledged for a script's response or document names that parsed script by its hash and address.
+const namesScript = (proof, compiled) =>
+  proof.generatedHash === compiled.hash &&
+  (proof.urlKey ? proof.urlKey === compiled.urlKey : proof.url === compiled.url);
+
+// The proofs that can locate a callsite in one parsed script: the acknowledged ones, else the export source whose
+// text has the hash the browser reported for this very script (admitted by `admitByHash`).
+function scriptProofsFor(record, compiled) {
+  const acknowledged = [...record.proofs.values()].filter((proof) => namesScript(proof, compiled));
+  if (acknowledged.length) return acknowledged;
+  const byHash = record.hashProofs.get(compiled.scriptId);
+  return byHash && byHash.generatedHash === compiled.hash ? [byHash] : [];
+}
+
 /* NOSONAR */ function collectNodeMatches(record, event, parsed, frame, locate) {
   const matches = [];
   for (const compiled of parsed) {
-    for (const proof of record.proofs.values()) {
-      if (
-        proof.generatedHash !== compiled.hash ||
-        !(proof.urlKey ? proof.urlKey === compiled.urlKey : proof.url === compiled.url)
-      )
-        continue;
+    for (const proof of scriptProofsFor(record, compiled)) {
       if (
         !proof.external &&
         !compiled.hasSourceURL &&
@@ -54,20 +66,196 @@ const safeURL = (value) =>
 }
 
 function hasUnverifiedScriptVersion(record, parsed) {
-  return parsed.some(
-    (script) =>
-      ![...record.proofs.values()].some(
-        (proof) =>
-          proof.generatedHash === script.hash &&
-          (proof.urlKey ? proof.urlKey === script.urlKey : proof.url === script.url),
-      ),
-  );
+  return parsed.some((script) => !scriptProofsFor(record, script).length);
 }
 
-// A callsite without a proof stays pending while a proof for its document can still arrive (`settled` is false).
-function unresolvedCallsite(settled, reason) {
-  return settled ? { sourceRefs: [], facts: [], reason } : null;
+// What a callsite notification may say a call did: created, copied or inserted elements (the element's own record),
+// moved an element the parser made, or changed one (dom-provenance.mjs).
+const CREATIONS = new Set(['created-by', 'cloned-by', 'attached-by']);
+const CHANGES = new Set(['moved-by', 'changed-by']);
+const RELATIONSHIPS = new Set([...CREATIONS, ...CHANGES]);
+// The names of what a change changed: at most eight distinct attribute names (lowercase letters, digits and `_.:-`,
+// at most 64 characters), "text" or "children", and whether more were left out. A notification that says anything
+// else, or names a change for a creation or a move, is refused. Returns null for a refused notification.
+const CHANGE_WORD = /^[a-z][a-z0-9_.:-]{0,63}$/;
+export function changeWords(data) {
+  const { relationship, what, more } = data ?? {};
+  if (more !== undefined && more !== true) return null;
+  if (relationship !== 'changed-by')
+    return what === undefined && more === undefined ? { words: [], more: false } : null;
+  if (
+    !Array.isArray(what) ||
+    !what.length ||
+    what.length > 8 ||
+    !what.every((word) => typeof word === 'string' && CHANGE_WORD.test(word)) ||
+    new Set(what).size !== what.length
+  )
+    return null;
+  return { words: [...what], more: more === true };
 }
+const changeLabel = (event) => {
+  if (!event.what?.words.length) return '';
+  const more = event.what.more ? ' and more' : '';
+  return ': ' + event.what.words.join(', ') + more;
+};
+// Which frames of a stack are named, and how. See resolveCallsite.
+const NAMED = new Set(['proven', 'platform', 'external']);
+const relationshipVerb = { 'attached-by': 'Inserted by', 'cloned-by': 'Copied by' };
+const componentWords = {
+  'platform-asset': "the portal's own script",
+  'external-resource': 'a script from another site',
+};
+const unnamedWords = {
+  'script-callsite-unmapped': 'a script not found in your sources',
+  'script-callsite-ambiguous': 'a script that matches several of your sources',
+  'script-hash-conflict': 'a script that matches several of your sources',
+  'script-version-unverified': 'a script version that could not be verified',
+};
+const frameWords = (frame) => (frame.component ? componentWords[frame.component.kind] : unnamedWords[frame.reason]);
+// One step of a chain per run of frames in the same place: a proven file and region, or the same component.
+const frameKey = (frame) =>
+  frame.state === 'proven'
+    ? JSON.stringify(['proven', frame.ref.id, frame.region.start])
+    : JSON.stringify([frame.state, frame.component?.key ?? frame.reason]);
+
+/**
+ * The facts of one DOM callsite from its resolved frames (innermost first; `frames[0]` made the DOM call).
+ *
+ * The rule, derivable from the export alone: the developer's code is code the export holds. The creator is the
+ * innermost frame in such code (a "proven" frame: its parsed script maps to a local source). Frames inside it are what
+ * it called to touch the DOM: the portal's own scripts, scripts of other sites, or code the export does not hold; they
+ * are named as "through" steps, frame 0 as the "DOM call". Frames outside it that are named (proven, portal runtime or
+ * another site) are its callers. Without a proven frame, the creator is frame 0 when the portal runtime or another site
+ * made the call; any other unnamed frame 0 leaves the callsite unattributed, since that code may be the developer's.
+ * No library is recognised by name: a library the export holds (a web file) is the developer's code like any other.
+ */
+function callsiteFacts(event, frames) {
+  let at = frames.findIndex((frame) => frame.state === 'proven');
+  if (at < 0) at = NAMED.has(frames[0]?.state) ? 0 : -1;
+  if (at < 0) return null;
+  const id = 'dom:' + event.id;
+  const verb = relationshipVerb[event.relationship] ?? 'Created by';
+  const named = frames[at];
+  // Code that eval or new Function compiled is named by the place of that call.
+  const own = named.evaluated ? 'code that this script evaluated' : 'this script';
+  // A move or a change of an element the parser made is where the element stands or what it shows now, not what it
+  // is: one context row that names the script and what changed. The element stays its template's tag.
+  if (CHANGES.has(event.relationship)) return [changeFact(event, named, id, own)];
+  const facts = [creatorFact(named, id, verb, own)];
+  // Inside the creator: frame 0 made the DOM call, the frames between it and the creator carried it.
+  for (let index = 0, last = null; index < at; index++) {
+    const key = frameKey(frames[index]);
+    if (key === last) continue;
+    last = key;
+    const words = frameWords(frames[index]);
+    if (index === 0) facts.push(stepFact(id, frames[index], index, 'dom-call', 'DOM call in ' + words));
+    else facts.push(stepFact(id, frames[index], index, 'through', 'Through ' + words));
+  }
+  // Outside it: the named callers, once per place.
+  for (let index = at + 1, previous = frameKey(named); index < frames.length; index++) {
+    const frame = frames[index],
+      key = frameKey(frame);
+    if (!NAMED.has(frame.state) || key === previous) continue;
+    previous = key;
+    facts.push(stepFact(id, frame, index, 'called-from', 'Called from ' + callerWords(frame)));
+  }
+  return facts;
+}
+const callerWords = (frame) => (frame.state === 'proven' ? 'this script' : frameWords(frame));
+// The one context row of a move or change (see callsiteFacts).
+function changeFact(event, named, id, own) {
+  const label =
+    (event.relationship === 'moved-by' ? 'Moved by ' : 'Changed by ') +
+    (named.state === 'proven' ? own : componentWords[named.component.kind]) +
+    changeLabel(event);
+  if (named.state !== 'proven')
+    return {
+      id,
+      dimension: 'context',
+      proof: 'observed-dom-callsite',
+      predicate: event.relationship,
+      label,
+      binding: named.component,
+    };
+  return {
+    id,
+    dimension: 'context',
+    proof: 'observed-dom-callsite',
+    predicate: event.relationship,
+    label,
+    sourceRefIds: [named.ref.id],
+    region: named.region,
+    renderSourceRevision: named.sourceRevision,
+  };
+}
+// The creator's fact of a creation, copy or insertion (see callsiteFacts).
+function creatorFact(named, id, verb, own) {
+  if (named.state !== 'proven')
+    return {
+      id,
+      dimension: 'context',
+      proof: 'observed-dom-callsite',
+      binding: named.component,
+      label: verb + ' ' + componentWords[named.component.kind],
+    };
+  return {
+    id,
+    dimension: 'source',
+    proof: 'observed-dom-callsite',
+    sourceRefIds: [named.ref.id],
+    region: named.region,
+    renderSourceRevision: named.sourceRevision,
+    ...(named.evaluated ? { label: verb + ' ' + own } : {}),
+  };
+}
+// One step of a callsite's chain: a frame inside the creator or a named caller.
+function stepFact(id, frame, index, predicate, label) {
+  const fact = {
+    id: id + ':' + predicate + ':' + index,
+    dimension: 'context',
+    proof: 'observed-dom-callsite',
+    predicate,
+    label,
+  };
+  if (frame.state === 'proven')
+    Object.assign(fact, {
+      sourceRefIds: [frame.ref.id],
+      region: frame.region,
+      renderSourceRevision: frame.sourceRevision,
+    });
+  else if (frame.component) fact.binding = frame.component;
+  else fact.reason = frame.reason;
+  return fact;
+}
+
+// The limits of a resolved callsite: a proven frame's truncated source map, or an unnamed frame up to the creator
+// (`open`) that a truncated hash index may have left out.
+function callsiteLimits(record, proven, open) {
+  const reasons = [
+    ...(proven.some((frame) => frame.limited) ? ['script-source-map-truncated'] : []),
+    ...(record.hashIndex?.truncated && open.some((frame) => frame.state === 'unnamed')
+      ? ['script-hash-index-limit']
+      : []),
+  ];
+  return { truncated: reasons.length > 0, reasons };
+}
+// One ref per source, the creator's first: a caller in the same file is located by its own fact's region.
+function callsiteSourceRefs(proven) {
+  const firstRefs = new Map();
+  for (const frame of proven) if (!firstRefs.has(frame.ref.id)) firstRefs.set(frame.ref.id, frame.ref);
+  return [...firstRefs.values()].map((ref, index) => (index === 0 ? ref : { ...ref, relationship: 'called-from' }));
+}
+// The verdict of a callsite that a transport bound left without resolution: it alone is reported as limited.
+const limitedCallsite = (reason) => ({
+  sourceRefs: [],
+  facts: [],
+  reason,
+  limits: { truncated: true, reasons: [reason] },
+});
+
+// The hash index of the export a provider returns, built once per index object and source revision.
+const HASH_INDEXES = 4;
+const NO_INDEX = Object.freeze({ sourceRevision: null, byHash: new Map(), truncated: false });
 
 async function callDomRecord(record, command, functionDeclaration, value, unanswered) {
   const result = await command(
@@ -139,13 +327,20 @@ function storeScriptProof(record, descriptor, request, proof, refs) {
       descriptor.channel === 'lense-script-resource' || descriptor.channel === 'mirage-resource' || proof.external,
   });
 }
-const frameLoaders = (tree) => {
+// The loader of each frame of a frame tree; `urls`, when given, receives each frame's document URL.
+const frameLoaders = (tree, urls = null) => {
   const found = new Map(),
     queue = [tree];
   let visited = 0;
   while (queue.length && visited++ < 256) {
     const item = queue.shift();
-    if (item?.frame?.id) found.set(item.frame.id, item.frame.loaderId);
+    if (item?.frame?.id) {
+      found.set(item.frame.id, item.frame.loaderId);
+      if (urls && typeof item.frame.url === 'string') {
+        if (urls.size >= 256 && !urls.has(item.frame.id)) urls.delete(urls.keys().next().value);
+        urls.set(item.frame.id, item.frame.url);
+      }
+    }
     if (item?.childFrames) queue.push(...item.childFrames.slice(0, Math.max(0, 256 - visited - queue.length)));
   }
   return found;
@@ -161,10 +356,54 @@ export function createDomProvenanceTransport(context, configs) {
   const binding = '__paqviloDomEvent_' + randomBytes(16).toString('hex');
   // Closes a registry without its writer; unlike `secret` it cannot admit evidence.
   const releaseKey = randomBytes(32).toString('hex');
-  const bootstrap = `if(${JSON.stringify([...targets.keys()])}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, notifyKey, binding, releaseKey })});\n//# sourceURL=paqvilo-tool://dom-provenance`;
+  // A same-origin about:blank or srcdoc frame (its location's origin is "null", its own origin the portal's) carries
+  // no marks of its own, but its MutationObserver can watch the portal's document: it gets the response registry's
+  // mark filter alone (markFilterOnly returns before any registry exists). The registry's claim and release methods
+  // are written without the space here, so this bootstrap holds the recorder's signatures exactly once
+  // (registryAccess locates them).
+  const origins = JSON.stringify([...targets.keys()]);
+  const markFilter = installPortalProvenanceRegistry
+    .toString()
+    .replaceAll('claim(value) {', 'claim(value){')
+    .replaceAll('release(value) {', 'release(value){');
+  const bootstrap = `if(${origins}.includes(location.origin))(${installDomProvenance.toString()})(${JSON.stringify({ slot, secret, notifyKey, binding, releaseKey })});else if(location.protocol==="about:"&&${origins}.includes(self.origin))(${markFilter})({markFilterOnly:true});\n//# sourceURL=paqvilo-tool://dom-provenance`;
   const registries = registryAccess({ kind: 'script', slot, bootstrap, secret, releaseKey });
+  // Per target origin: `(route) => portal source index` of the export the developer works on (registerScriptSources).
+  const scriptSources = new Map();
+  const hashIndexes = new Map(),
+    builtIndexes = new WeakMap();
+  // The script hash index of `index`, built lazily: once per index object, and shared by source revision.
+  const hashIndexOf = (index) => {
+    if (!index || typeof index !== 'object' || !index.sources) return null;
+    let built = builtIndexes.get(index);
+    if (built) return built;
+    const revision = typeof index.sourceRevision === 'string' ? index.sourceRevision : null;
+    built = revision !== null ? hashIndexes.get(revision) : null;
+    if (!built) {
+      built = scriptHashIndex(index);
+      if (revision !== null) {
+        if (hashIndexes.size >= HASH_INDEXES) hashIndexes.delete(hashIndexes.keys().next().value);
+        hashIndexes.set(revision, built);
+      }
+    }
+    builtIndexes.set(index, built);
+    return built;
+  };
   return {
     slot,
+    /**
+     * Admits scripts the browser parsed in documents of `origin` by their content hash against the export the
+     * provider returns: `provider(route)` resolves to the portal source index (`sources`, `sourceRevision`) for a
+     * document path, as SourceInspector.sourceIndexFor does. Returns a function that removes the registration.
+     */
+    registerScriptSources(origin, provider) {
+      const key = new URL(origin).origin;
+      if (!targets.has(key) || typeof provider !== 'function') return () => {};
+      scriptSources.set(key, provider);
+      return () => {
+        if (scriptSources.get(key) === provider) scriptSources.delete(key);
+      };
+    },
     async onAttach({ cdp, configure, report, clock = globalThis }) {
       const controller = new AbortController();
       setMaxListeners(0, controller.signal);
@@ -179,6 +418,8 @@ export function createDomProvenanceTransport(context, configs) {
         initial = new Map(),
         script,
         closed = false;
+      // The URL of each frame's current document (its route selects the export's sources).
+      const frameUrls = new Map();
       const { documents, tracking: documentTracking } = trackDefaultDocuments(targets);
       const lost = (error) => {
         if (!closed) report?.(error);
@@ -228,7 +469,9 @@ export function createDomProvenanceTransport(context, configs) {
       // In-flight sideband reads per document (`frameId:loaderId`); a callsite waits for them before it is unmapped.
       const reading = new Map();
       const settled = (record) =>
-        !reading.get(record.frameId + ':' + record.loaderId) && !acknowledgements.waiting(record.frameId);
+        !record.indexing &&
+        !reading.get(record.frameId + ':' + record.loaderId) &&
+        !acknowledgements.waiting(record.frameId);
       // A failed read is a loss only while its target still answers; closing the page, context or browser ends it quietly.
       const readLost = async (message, error) => {
         if (
@@ -261,11 +504,32 @@ export function createDomProvenanceTransport(context, configs) {
         if (matches.length !== 1) return null;
         const mapping = matches[0],
           start = mapping.sourceStart + offset - mapping.generatedStart;
-        return { sourceRefId: mapping.sourceRefId, region: { start, end: start + 1 } };
+        return {
+          sourceRefId: mapping.sourceRefId,
+          region: { start, end: start + 1, ...sourceLine(proof, mapping.sourceRefId, start, line, column) },
+        };
       };
-      const resolveNode = (record, event) => {
-        const frame = event.frames[0];
-        if (!frame || frame.barrier) return { sourceRefs: [], facts: [], reason: 'direct-callsite-unavailable' };
+      // The 1-based line and column of a source offset: from the line starts of the source text when the export's
+      // index has them, else, for a script served as the file is (one mapping, no shift of lines), the callsite's own.
+      const sourceLine = (proof, sourceRefId, start, line, column) => {
+        const starts = proof.sourceLines?.get(sourceRefId) ?? lineIndex?.get(sourceRefId);
+        if (starts?.length) {
+          let low = 0,
+            high = starts.length - 1;
+          while (low < high) {
+            const middle = (low + high + 1) >> 1;
+            if (starts[middle] <= start) low = middle;
+            else high = middle - 1;
+          }
+          return { line: low + 1, column: start - starts[low] + 1 };
+        }
+        return proof.external && proof.mappings.length === 1 ? { line: line + 1, column: column + 1 } : {};
+      };
+      // The line starts of the export's sources by ref id, from the hash index of the document being resolved.
+      let lineIndex = null;
+      // What one stack frame is: a place in a local source (proven), the portal runtime or another site (named by its
+      // address), or code that cannot be named (with the reason).
+      const resolveFrame = (record, event, frame) => {
         const parsed = [...record.scripts.values()].filter((script) => {
           if (!(frame.urlKey ? script.urlKey === frame.urlKey : script.url === frame.url)) return false;
           const line = frame.line - 1,
@@ -292,32 +556,63 @@ export function createDomProvenanceTransport(context, configs) {
             ]),
           ).values(),
         ];
-        if (distinct.length !== 1)
-          return unresolvedCallsite(
-            settled(record),
-            distinct.length > 1 ? 'script-callsite-ambiguous' : 'script-callsite-unmapped',
-          );
+        if (distinct.length > 1) return { state: 'unnamed', reason: 'script-callsite-ambiguous' };
         // An overlapping different script version cannot be attributed by URL alone.
-        if (hasUnverifiedScriptVersion(record, parsed))
-          return unresolvedCallsite(settled(record), 'script-version-unverified');
-        const selected = distinct[0];
-        return {
-          sourceRefs: [selected.ref],
-          limits: {
-            truncated: Boolean(selected.limited),
-            reasons: selected.limited ? ['script-source-map-truncated'] : [],
-          },
-          facts: [
-            {
-              id: 'dom:' + event.id,
-              dimension: 'source',
-              proof: 'observed-dom-callsite',
-              sourceRefIds: [selected.ref.id],
-              region: selected.region,
-              renderSourceRevision: selected.sourceRevision,
-            },
-          ],
-        };
+        if (distinct.length === 1 && hasUnverifiedScriptVersion(record, parsed))
+          return { state: 'unnamed', reason: 'script-version-unverified' };
+        if (distinct.length === 1) return { state: 'proven', ...distinct[0] };
+        if (parsed.some((script) => record.hashConflicts.has(script.scriptId)))
+          return { state: 'unnamed', reason: 'script-hash-conflict' };
+        // Not the export's: the portal runtime (request-classes.mjs, the one rule table) or another site, by address.
+        let address;
+        try {
+          address = new URL(frame.url);
+        } catch {
+          return { state: 'unnamed', reason: 'script-callsite-unmapped' };
+        }
+        if (['http:', 'https:'].includes(address.protocol)) {
+          const rule = platformRule(address, record.origin);
+          // Solution web resources and code component bundles are platform addresses for code the developer ships,
+          // not the portal runtime: without a proof they stay unnamed.
+          if (rule?.class === 'platform-asset' && rule.platform !== 'web-resource')
+            return {
+              state: 'platform',
+              component: { kind: 'platform-asset', key: 'platform-asset:' + rule.platform, name: rule.platform },
+            };
+          if (address.origin !== record.origin && !rule)
+            // Another site's script: named by its origin only (no path or query).
+            return {
+              state: 'external',
+              component: {
+                kind: 'external-resource',
+                key: 'external-resource:' + address.origin,
+                name: address.host,
+              },
+            };
+        }
+        return { state: 'unnamed', reason: 'script-callsite-unmapped' };
+      };
+      const resolveNode = (record, event) => {
+        if (event.limited) return limitedCallsite(event.limited);
+        const first = event.frames[0];
+        if (!first || first.barrier) return { sourceRefs: [], facts: [], reason: 'direct-callsite-unavailable' };
+        const frames = [];
+        lineIndex = record.hashIndex?.sourceLines ?? null;
+        for (const frame of event.frames) {
+          if (frame.barrier) break;
+          const resolved = resolveFrame(record, event, frame);
+          frames.push(frame.evaluated ? { ...resolved, evaluated: true } : resolved);
+        }
+        const creator = frames.findIndex((frame) => frame.state === 'proven');
+        // A frame up to the creator (every frame without one) could still be proved by a proof or an index that is
+        // on its way: the callsite waits for them.
+        const open = frames.slice(0, creator < 0 ? frames.length : creator + 1);
+        if (!settled(record) && open.some((frame) => frame.state !== 'proven')) return null;
+        const facts = callsiteFacts(event, frames);
+        const proven = frames.filter((frame) => frame.state === 'proven');
+        const limits = callsiteLimits(record, proven, open);
+        if (!facts) return { sourceRefs: [], facts: [], reason: frames[0].reason, limits };
+        return { sourceRefs: callsiteSourceRefs(proven), limits, facts };
       };
       /* NOSONAR: single-pass routine, splitting it would change shared state */ const flush = async (record) => {
         record.dirty = true;
@@ -345,13 +640,19 @@ export function createDomProvenanceTransport(context, configs) {
               record.limitSent = true;
             }
             const batch = [];
+            // Callsites the transport had no room for get their verdict first: only they are reported as limited.
+            for (const [id, event] of record.evicted) {
+              if (batch.length >= 64) break;
+              batch.push({ id, proof: resolveNode(record, event) });
+              record.evicted.delete(id);
+            }
             for (const [id, event] of record.nodes) {
+              if (batch.length >= 64) break;
               const proof = resolveNode(record, event);
               if (proof) {
                 batch.push({ id, proof });
                 record.nodes.delete(id);
               }
-              if (batch.length >= 64) break;
             }
             if (!batch.length) break;
             await callDomRecord(
@@ -362,7 +663,7 @@ export function createDomProvenanceTransport(context, configs) {
               unanswered,
             );
             if (record.closed) break;
-            if (record.nodes.size) record.dirty = true;
+            if (record.nodes.size || record.evicted.size) record.dirty = true;
           } while (record.dirty && !closed && !record.closed);
         } finally {
           // Nodes left pending are flushed again when a proof arrives or the last read of their document settles.
@@ -386,7 +687,10 @@ export function createDomProvenanceTransport(context, configs) {
         } catch {
           return false;
         }
-        if (size > 8 * 1024 * 1024) return false;
+        if (size > 8 * 1024 * 1024) {
+          lost(new Error('a script provenance descriptor is larger than 8 MiB, so its scripts are not identified'));
+          return false;
+        }
         const key = frameId + ':' + loaderId;
         if (descriptors.size >= 64 && !descriptors.has(key)) descriptors.delete(descriptors.keys().next().value);
         descriptors.set(key, [...(descriptors.get(key) ?? []), { descriptor, request }].slice(-32));
@@ -402,10 +706,76 @@ export function createDomProvenanceTransport(context, configs) {
               .filter(Boolean)
               .map((ref) => [ref.id, ref]),
           );
+          // Script proofs beyond this bound are not admitted: callsites that stay unproved say so.
+          if (descriptor.scriptProofs.length > 128) record.limitReason ??= 'script-proof-index-limit';
           for (const proof of descriptor.scriptProofs.slice(0, 128))
             storeScriptProof(record, descriptor, request, proof, refs);
         }
         flush(record).catch(() => {});
+      };
+      // A parsed script the transport has no acknowledged proof for is admitted when its hash, reported by the
+      // browser for the code it compiled, is the hash of exactly one place in the export (scriptHashIndex). The page
+      // cannot write that hash; a hash two places share is a conflict and proves nothing.
+      const admitScriptByHash = (record, script) => {
+        const index = record.hashIndex;
+        if (!index || record.hashProofs.has(script.scriptId) || record.hashConflicts.has(script.scriptId)) return;
+        const entry = index.byHash.get(script.hash);
+        if (!entry) return;
+        if (entry.conflict) {
+          if (record.hashConflicts.size >= 512) record.hashConflicts.delete(record.hashConflicts.values().next().value);
+          record.hashConflicts.add(script.scriptId);
+          return;
+        }
+        if (record.hashProofs.size >= 512) {
+          record.limitReason ??= 'script-proof-index-limit';
+          record.hashProofs.delete(record.hashProofs.keys().next().value);
+        }
+        record.hashProofs.set(script.scriptId, {
+          id: 'hash:' + script.scriptId,
+          scriptId: script.scriptId,
+          generatedHash: script.hash,
+          url: script.url,
+          urlKey: script.urlKey,
+          lineStarts: entry.lineStarts,
+          linesTruncated: entry.linesTruncated,
+          mappingsTruncated: false,
+          mappings: entry.mappings,
+          sourceLines: index.sourceLines,
+          refs: new Map([[entry.ref.id, entry.ref]]),
+          sourceRevision: index.sourceRevision,
+          // Bound to this very parsed script by its id: its place in the document needs no second check.
+          external: true,
+        });
+      };
+      // The export's script hash index for a document, read once from the registered provider (registerScriptSources).
+      const indexScripts = (record) => {
+        if (record.hashIndex || record.indexing || closed) return;
+        const provider = scriptSources.get(record.origin);
+        if (!provider) return;
+        let route = '/';
+        try {
+          route = new URL(frameUrls.get(record.frameId)).pathname;
+        } catch {
+          /* The document address is not known yet: the start route selects the sources. */
+        }
+        record.indexing = true;
+        Promise.resolve()
+          .then(() => provider(route))
+          .then(
+            (index) => {
+              record.hashIndex = hashIndexOf(index) ?? NO_INDEX;
+            },
+            () => {
+              record.hashIndex = NO_INDEX;
+              lost(new Error("the export's script sources could not be read to identify parsed scripts"));
+            },
+          )
+          .finally(() => {
+            record.indexing = false;
+            if (closed || record.closed) return;
+            for (const parsedScript of record.scripts.values()) admitScriptByHash(record, parsedScript);
+            flush(record).catch(() => {});
+          });
       };
       // The re-reported context of an unchanged document continues the record of its cleared context. Entries the new
       // context received since it was created are newer and win; each index keeps its bound.
@@ -417,8 +787,12 @@ export function createDomProvenanceTransport(context, configs) {
           ['scripts', 512],
           ['proofs', 256],
           ['nodes', 2048],
+          ['evicted', 16384],
+          ['hashProofs', 512],
         ])
           record[field] = new Map([...previous[field], ...record[field]].slice(-bound));
+        record.hashConflicts = new Set([...previous.hashConflicts, ...record.hashConflicts].slice(-512));
+        record.hashIndex ??= previous.hashIndex;
         record.limitReason ??= previous.limitReason;
         record.limitSent = previous.limitSent;
         return true;
@@ -447,18 +821,27 @@ export function createDomProvenanceTransport(context, configs) {
           return;
         const record = {
           id: execution.id,
+          origin: execution.origin,
           frameId: execution.auxData.frameId,
           loaderId: loaders.get(execution.auxData.frameId),
           objectId: null,
           scripts: new Map(),
           proofs: new Map(),
           nodes: new Map(),
+          // Callsites the node bound pushed out, by id: each still receives its own limited verdict.
+          evicted: new Map(),
+          // Proofs admitted by content hash, by parsed script id, and the scripts whose hash is a conflict.
+          hashProofs: new Map(),
+          hashConflicts: new Set(),
+          hashIndex: null,
+          indexing: false,
           closed: false,
           flushing: false,
         };
         contexts.set(record.id, record);
         (async () => {
-          record.loaderId = frameLoaders((await command('Page.getFrameTree'))?.frameTree).get(record.frameId);
+          const tree = (await command('Page.getFrameTree'))?.frameTree;
+          record.loaderId = frameLoaders(tree, frameUrls).get(record.frameId);
           // A document that was open before the bootstrap was registered has no registry to retire.
           if (record.loaderId && record.loaderId === initial.get(record.frameId)) documents.delete(record.id);
           if (!record.loaderId || record.loaderId === initial.get(record.frameId)) return;
@@ -473,6 +856,7 @@ export function createDomProvenanceTransport(context, configs) {
           }
           record.objectId = writer;
           if (returned) await recover(record);
+          indexScripts(record);
           admitDescriptors(record);
         })().catch(() => {});
       };
@@ -491,15 +875,19 @@ export function createDomProvenanceTransport(context, configs) {
           record.limitReason ??= 'parsed-script-index-limit';
           record.scripts.delete(record.scripts.keys().next().value);
         }
-        record.scripts.set(event.scriptId, {
+        const compiled = {
           ...address,
+          scriptId: event.scriptId,
           hash: event.hash,
           startLine: event.startLine ?? 0,
           startColumn: event.startColumn ?? 0,
           endLine: event.endLine ?? 0,
           endColumn: event.endColumn ?? 0,
           hasSourceURL: Boolean(event.hasSourceURL),
-        });
+        };
+        record.scripts.set(event.scriptId, compiled);
+        admitScriptByHash(record, compiled);
+        indexScripts(record);
         flush(record).catch(() => {});
       };
       const called = (event) => {
@@ -528,10 +916,12 @@ export function createDomProvenanceTransport(context, configs) {
           typeof data.id !== 'string' ||
           !data.id.length ||
           data.id.length > 128 ||
-          !['created-by', 'cloned-by', 'attached-by'].includes(data.relationship) ||
+          !RELATIONSHIPS.has(data.relationship) ||
           !Array.isArray(data.frames)
         )
           return;
+        const what = changeWords(data);
+        if (what === null) return;
         if (
           data.frames.some(
             (frame) =>
@@ -543,7 +933,8 @@ export function createDomProvenanceTransport(context, configs) {
                   !Number.isSafeInteger(frame.line) ||
                   frame.line <= 0 ||
                   !Number.isSafeInteger(frame.column) ||
-                  frame.column <= 0)),
+                  frame.column <= 0 ||
+                  (frame.evaluated !== undefined && frame.evaluated !== true))),
           )
         )
           return;
@@ -555,13 +946,18 @@ export function createDomProvenanceTransport(context, configs) {
                 urlKey: /^[a-f0-9]{64}$/.test(frame.urlKey ?? '') ? frame.urlKey : null,
                 line: frame.line,
                 column: frame.column,
+                ...(frame.evaluated === true ? { evaluated: true } : {}),
               },
         );
-        if (record.nodes.size >= 2048) {
+        if (record.nodes.size >= 2048 && !record.nodes.has(data.id)) {
           record.limitReason ??= 'dom-evidence-transport-limit';
-          record.nodes.delete(record.nodes.keys().next().value);
+          const oldest = record.nodes.keys().next().value;
+          record.nodes.delete(oldest);
+          // Its node is told so on the next flush; beyond this bound only the document-wide limit report remains.
+          if (record.evicted.size >= 16384) record.evicted.delete(record.evicted.keys().next().value);
+          record.evicted.set(oldest, { id: oldest, limited: 'dom-evidence-transport-limit' });
         }
-        record.nodes.set(data.id, { id: data.id, relationship: data.relationship, frames });
+        record.nodes.set(data.id, { id: data.id, relationship: data.relationship, what, frames });
         flush(record).catch(() => {});
       };
       // Chromium ends the contexts of a frame's document before it reports the frame's next document, and announces the
@@ -583,9 +979,14 @@ export function createDomProvenanceTransport(context, configs) {
         // document's own script can be acknowledged before this renderer notification arrives. Each one is admitted into
         // the document its request notification names.
         loaders.set(frame.id, frame.loaderId);
+        if (typeof frame.url === 'string') {
+          if (frameUrls.size >= 256 && !frameUrls.has(frame.id)) frameUrls.delete(frameUrls.keys().next().value);
+          frameUrls.set(frame.id, frame.url);
+        }
       };
       const detached = ({ frameId }) => {
         loaders.delete(frameId);
+        frameUrls.delete(frameId);
         registry.forget(frameId);
         cleared.delete(frameId);
         acknowledgements.forget(frameId);
@@ -724,6 +1125,7 @@ export function createDomProvenanceTransport(context, configs) {
         acknowledgements.clear();
         descriptors.clear();
         reading.clear();
+        frameUrls.clear();
         await Promise.allSettled([
           command('Runtime.removeBinding', { name: binding }),
           command('Runtime.releaseObjectGroup', { objectGroup: slot }),
@@ -732,7 +1134,7 @@ export function createDomProvenanceTransport(context, configs) {
       };
       try {
         await configure('Page.enable');
-        loaders = frameLoaders((await configure('Page.getFrameTree')).frameTree);
+        loaders = frameLoaders((await configure('Page.getFrameTree')).frameTree, frameUrls);
         initial = new Map(loaders);
         for (const [event, handler] of [...tracking, ...listeners]) cdp.on(event, handler);
         await configure('Runtime.addBinding', { name: binding });

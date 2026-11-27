@@ -27,6 +27,11 @@ import { loginPath } from './redirects.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
 import { registrationSnippetText } from './registration-snippet-text.mjs';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import { grantContactRoles } from './site-tables.mjs';
+import { createFederatedSignIn } from './sign-in-federation.mjs';
+import { CLAIM_TYPES, FederationProblem } from './identity-federation.mjs';
+
+import { PROVIDER_PREFIXES as SETTING_PREFIX } from './identity-provider-settings.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -97,7 +102,11 @@ const codeFlow = (provider) =>
     .split(/\s+/)
     .filter(Boolean)
     .join(' ') === 'code';
+/** Sign-in flows of the providers that are not OpenID Connect. */
+const PROTOCOL_FLOWS = { oauth2: 'authorization-code', saml2: 'saml2-web-sso', wsfederation: 'ws-federation-passive' };
 const flowOf = (provider) => {
+  if (provider.protocol === 'oauth1') return 'oauth1-request-token';
+  if (PROTOCOL_FLOWS[provider.type]) return PROTOCOL_FLOWS[provider.type];
   const parts = String(provider.responseType ?? '')
     .trim()
     .toLowerCase()
@@ -132,7 +141,12 @@ const INVITATION_TABLE = 'adx_invitation';
 // statuscode Redeemed 756150001.
 const INVITATION_SINGLE = 756150000;
 const INVITATION_GROUP = 756150001;
+// statuscode New 1, Sent 756150000 (set by the Send Invitation workflow; still redeemable), Redeemed 756150001,
+// Inactive 2 (hosted session F4 AUTH-05d).
 const INVITATION_REDEEMED = 756150001;
+// The one answer of every refused invitation code, re-rendered with 200 (hosted session F4 AUTH-05d).
+const INVALID_INVITATION = 'Invalid invitation code.';
+const REDEMPTION_TABLE = 'adx_inviteredemption';
 const LEDGER_LIMIT = 200;
 const WEB_ROLE_TABLES = new Set(['adx_webrole', 'mspp_webrole', 'powerpagecomponent']);
 
@@ -156,7 +170,7 @@ const scalar = (value) =>
 const lookupId = (value) => key(value && typeof value === 'object' ? (value.id ?? value.value) : value);
 // A lookup column as local rows hold it: { id, logical_name } under its name, or the Web API _<name>_value.
 const lookupOf = (row, name) => lookupId(row?.[name] ?? row?.[`_${name}_value`]);
-const active = (row) => Number(scalar(row?.statecode) ?? 0) === 0;
+const active = (row) => row != null && Number(scalar(row.statecode) ?? 0) === 0;
 const trimPath = (value) => stripTrailingCharacter(String(value ?? ''), '/').toLowerCase() || '/';
 const escapeHtml = (value) =>
   String(value ?? '').replace(
@@ -169,6 +183,16 @@ class SignInProblem extends Error {
     super(message);
     this.code = code;
     this.status = status;
+  }
+}
+
+/** Runs `work`, reporting a federation problem as the sign-in problem it is. */
+async function signInProblems(work) {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof FederationProblem) throw new SignInProblem(error.message, error.code, error.status);
+    throw error;
   }
 }
 
@@ -191,7 +215,7 @@ function pendingExternalHtml(provider, external) {
 /**
  * Create the external sign-in flow of one runtime.
  * - portal(), origin(): the current portal model and the runtime's origin.
- * - csrf: the anti-forgery token /_layout/tokenhtml hands out; adminToken(): the admin console token or null, also
+ * - requestTokens: the token issuer and expected browser verification token; adminToken(): the admin console token or null, also
  *   accepted as a form's anti-forgery field.
  * - sessions: lib/auth-session.mjs createAuthSessions().
  * - store: the DataStore; personas(): active local personas; webRoles(): exported web roles.
@@ -205,12 +229,22 @@ export function createExternalSignIn({
   portal,
   origin,
   csrf,
+  requestTokens = { expected: () => csrf, issue: () => csrf },
   adminToken = () => null,
   sessions,
   store,
+  invitationTransaction = (work) => store.transact(work),
+  // ({ workflowId, contactId }) after a redemption has committed: starts the invitation's redemption workflow, true when it
+  // ran; a throw is reported and never undoes the redemption.
+  redemptionWorkflow = async () => false,
+  // The runtime's local accounts (lib/local-accounts.mjs) for invitation codes, or null: registration() is true when local
+  // registration takes a code; signInPage(req, res, url, { returnUrl, invitationCode }) answers the local sign-in that
+  // redeems a code ("I have an existing account").
+  localAccounts = () => null,
   personas,
   personaCatalog = () => null,
   identityProvider = {},
+  privateSiteSession = () => null,
   webRoles = () => [],
   identity,
   audit,
@@ -288,9 +322,25 @@ export function createExternalSignIn({
     return providerCache.get(current);
   };
   // The page's anti-forgery token, or the admin token when the host configured one (an empty or null admin token matches nothing).
-  const antiForgeryAccepted = (token) => token === csrf || (Boolean(adminToken()) && token === adminToken());
+  const antiForgeryAccepted = (req, token) =>
+    Boolean(token && (token === requestTokens.expected(req, token) || token === adminToken()));
   const redirectUri = (provider) => new URL(provider.callbackPath, origin()).href;
   const settings = () => authenticationSettings(portal());
+  // OAuth 2.0, SAML 2.0 and WS-Federation providers (lib/sign-in-federation.mjs).
+  const federation = createFederatedSignIn({
+    now,
+    origin,
+    identityProvider: () => idp,
+    protect,
+    unprotect,
+    mac,
+    redirectUri,
+    providers: () => providerList(),
+    fetchProvider: (operation, url, init, capture) => providerFetch(operation, url, init, capture),
+    logoutKey: () => clientKeyPair(),
+    readGuardMs: PROVIDER_READ_GUARD_MS,
+  });
+  const claimOptions = (provider) => (provider.claimDefaults ? { defaultPairs: provider.claimDefaults } : {});
 
   // ---- data: contacts, external identities, invitations, ledger ----
   const contactMapping = () => {
@@ -412,9 +462,20 @@ export function createExternalSignIn({
         'REGISTRATION_CONTACT_UNMAPPED',
         409,
       );
-    const fields = contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo });
+    const fields = contactFieldsFromClaims(claims, provider.registrationClaims, {
+      userinfo,
+      ...claimOptions(provider),
+    });
     const email = fields.emailaddress1 ?? emailClaim(claims);
-    if (!fields.lastname) fields.lastname = String(claims.family_name ?? claims.name ?? email ?? claims.sub).trim();
+    if (!fields.lastname)
+      fields.lastname = String(
+        claims.family_name ??
+          claims.name ??
+          claims[CLAIM_TYPES.name] ??
+          email ??
+          claims.sub ??
+          claims[CLAIM_TYPES.nameIdentifier],
+      ).trim();
     const contactId = randomUUID();
     await createRow(mapping.logicalName, {
       [mapping.idColumn]: contactId,
@@ -497,11 +558,18 @@ export function createExternalSignIn({
                   },
                 ]
               : [],
+          // The local stand-in for the site's custom certificate signs SAML 2.0 logout requests.
+          logoutKeys:
+            provider.type === 'saml2' && provider.logoutCertificate
+              ? [{ ...clientKeyPair().publicKey.export({ format: 'jwk' }), kid: provider.logoutCertificate }]
+              : [],
         })),
       users: async (provider) => presetUsers(provider),
       personaCatalog,
       registration: settings,
       settings: identityProvider.settings,
+      siteAdmission: ({ state }) =>
+        state?.startsWith(STATE_PREFIX) && unprotect(state.slice(STATE_PREFIX.length))?.g === true,
       assets: identityProvider.assets,
       fullPicker: origin() + '/_sim/#identity',
       provision,
@@ -513,14 +581,14 @@ export function createExternalSignIn({
         }
       },
     });
-    // Provider settings that cannot be used as written (lib/external-login.mjs oidcOptions).
+    // Provider settings that cannot be used as written (lib/external-login.mjs oidcOptions, openAuthOptions).
     for (const provider of providerList())
       for (const message of provider.problems ?? [])
         diagnostic({
           code: 'EXTERNAL_LOGIN_SETTING_INVALID',
           severity: 'warning',
           provider: provider.key,
-          message: `Authentication/OpenIdConnect/${provider.key}: ${message}`,
+          message: `${SETTING_PREFIX[provider.type] ?? SETTING_PREFIX.openidconnect}${provider.key}: ${message}`,
         });
     return idp;
   }
@@ -638,7 +706,7 @@ export function createExternalSignIn({
     res.writeHead(302, {
       location,
       ...noStore,
-      ...(cookies.length ? { 'set-cookie': cookies } : {}),
+      ...(cookies.length ? { 'set-cookie': cookies.flat() } : {}),
       'x-sim-route': route,
     });
     return res.end();
@@ -646,7 +714,10 @@ export function createExternalSignIn({
   const clearExternal = () => `${externalCookieName()}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
   const readExternal = (req) => {
     const data = unprotect(parseCookies(req.headers.cookie)[externalCookieName()]);
-    return data && now() - Number(data.t) < EXTERNAL_LIFETIME_MS ? data : null;
+    const time = now();
+    return data && time - Number(data.t) < EXTERNAL_LIFETIME_MS && (data.e === undefined || data.e > time)
+      ? data
+      : null;
   };
   const fail = (req, res, url, problem, { returnUrl = '/', invitationCode = null, cookies = [] } = {}) => {
     diagnostic({ code: problem.code, severity: 'warning', message: problem.message, path: url.pathname });
@@ -675,8 +746,13 @@ export function createExternalSignIn({
       prompt = null,
       parameters = {},
       cookies = [],
+      siteAdmission = false,
     },
   ) {
+    if (provider.type !== 'openidconnect')
+      return signInProblems(() =>
+        federation.challenge(res, provider, { returnUrl, invitationCode, cookies }, redirect),
+      );
     const meta = await metadata(provider);
     const nonce = `${now()}.${randomBytes(32).toString('base64url')}`;
     // PKCE for the code flow: the verifier travels in the protected state, as the OWIN
@@ -689,6 +765,7 @@ export function createExternalSignIn({
         r: returnUrl,
         ...(invitationCode ? { i: invitationCode } : {}),
         ...(verifier ? { v: verifier } : {}),
+        ...(siteAdmission ? { g: true } : {}),
         t: now(),
       });
     const params = new URLSearchParams({
@@ -704,8 +781,10 @@ export function createExternalSignIn({
     // login_hint: an ExternalLogin request parameter (Learn); the toolkit panel posts it to
     // pick a preset user without a click.
     if (loginHint) params.set('login_hint', loginHint);
-    // The Prompt site setting takes priority over the request's prompt parameter (Learn).
-    const effectivePrompt = provider.prompt ?? prompt;
+    // The portal's silent prompt cannot start a separate site-admission session in a fresh browser.
+    // For portal sign-in the Prompt site setting takes priority over the request parameter (Learn).
+    const configuredPrompt = provider.prompt ?? prompt;
+    const effectivePrompt = siteAdmission && configuredPrompt === 'none' ? null : configuredPrompt;
     if (effectivePrompt) params.set('prompt', effectivePrompt);
     if (provider.acrValues) params.set('acr_values', provider.acrValues);
     if (verifier) {
@@ -730,6 +809,12 @@ export function createExternalSignIn({
       );
     return challenge(res, resolved, { returnUrl, loginHint, language: languageCode(null), cookies });
   }
+  async function beginSiteAdmission(res, returnUrl, language = null) {
+    const provider = idp && providerList().find((candidate) => candidate.builtIn);
+    if (!provider) return false;
+    await challenge(res, provider, { returnUrl, language: languageCode(language), siteAdmission: true });
+    return true;
+  }
   async function externalLogin(req, res, url, { language }) {
     const bytes = await readBody(req);
     const form = isForm(req) || !req.headers['content-type'] ? formOf(bytes) : {};
@@ -740,7 +825,7 @@ export function createExternalSignIn({
         url.searchParams.get('InvitationCode') ??
         url.searchParams.get('invitationCode'),
     );
-    if (!antiForgeryAccepted(form.__RequestVerificationToken))
+    if (!antiForgeryAccepted(req, form.__RequestVerificationToken))
       return fail(
         req,
         res,
@@ -1060,56 +1145,152 @@ export function createExternalSignIn({
     return { failed: false, cleared };
   }
 
-  async function providerResponse(req, res, url, message) {
-    const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
-    const props = unprotect(raw);
-    const returnUrl = safeReturnUrl(props?.r);
-    const initial = initialProviderResponse(req, res, url, message, props, returnUrl);
-    if (initial.handled) return initial.response;
-    const { provider } = initial;
+  async function providerClaims(provider, message, verifier) {
     // The code flow signs in with the token response's id_token; the hybrid and implicit flows
     // with the front-channel id_token (Learn: hybrid follows the implicit grant).
     let idToken = message.id_token;
     let accessToken = message.access_token;
-    let claims;
-    try {
-      const usesCodeFlow = codeFlow(provider);
-      if (usesCodeFlow && !message.code)
+    if (codeFlow(provider)) {
+      if (!message.code)
         throw new SignInProblem('The sign-in response has no authorization code.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
-      if (usesCodeFlow) {
-        const tokens = await redeemCode(provider, message.code, props.v ?? null);
-        idToken = tokens.id_token;
-        accessToken = tokens.access_token ?? null;
-        if (!idToken)
-          throw new SignInProblem('The token response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID', 502);
-      } else if (!idToken)
-        throw new SignInProblem('The sign-in response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
-      claims = await validateToken(provider, idToken);
-      // OpenID Connect Core 3.2.2.9 and 3.3.2.11: an at_hash binds the access token to the id_token.
-      validateAccessTokenHash(accessToken, claims);
+      const tokens = await redeemCode(provider, message.code, verifier);
+      idToken = tokens.id_token;
+      accessToken = tokens.access_token ?? null;
+      if (!idToken) throw new SignInProblem('The token response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID', 502);
+    } else if (!idToken)
+      throw new SignInProblem('The sign-in response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
+    const claims = await validateToken(provider, idToken);
+    // OpenID Connect Core 3.2.2.9 and 3.3.2.11: an at_hash binds the access token to the id_token.
+    validateAccessTokenHash(accessToken, claims);
+    return { claims, accessToken };
+  }
+
+  function finishSiteAdmission(req, res, url, { provider, subject, returnUrl, cleared }) {
+    const user = provider.builtIn && presetUsers(provider).find((item) => item.subject === subject);
+    const cookie = user && privateSiteSession(user.contactId);
+    if (!cookie)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem(
+          'This local identity does not have access to the private site.',
+          'PRIVATE_SITE_ACCESS_DENIED',
+          403,
+        ),
+        { returnUrl, cookies: [cleared] },
+      );
+    return redirect(res, returnUrl, 'private-site-admission', [cleared, cookie]);
+  }
+
+  function applicationTokenDeadline(provider, claims) {
+    if (!provider.useTokenLifetime) return null;
+    const deadline = claims.exp * 1000;
+    return Number.isFinite(claims.exp) && Number.isSafeInteger(deadline) && deadline > now() ? deadline : Number.NaN;
+  }
+
+  async function providerResponse(req, res, url, message, privateSiteOnly) {
+    const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
+    const props = unprotect(raw);
+    if (privateSiteOnly && props?.g !== true)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('Private site admission is required.', 'PRIVATE_SITE_ACCESS_REQUIRED', 401),
+      );
+    const returnUrl = safeReturnUrl(props?.r);
+    const initial = initialProviderResponse(req, res, url, message, props, returnUrl);
+    if (initial.handled) return initial.response;
+    const { provider } = initial;
+    let validated;
+    try {
+      validated = await providerClaims(provider, message, props.v ?? null);
     } catch (error) {
       if (!(error instanceof SignInProblem)) throw error;
       return fail(req, res, url, error, { returnUrl });
     }
+    const { claims, accessToken } = validated;
     const nonce = validateProviderNonce(req, res, url, message, claims, provider, returnUrl);
     if (nonce.failed) return nonce.response;
     const { cleared } = nonce;
+    if (props.g === true)
+      return finishSiteAdmission(req, res, url, { provider, subject: claims.sub, returnUrl, cleared });
+    const expiresAt = applicationTokenDeadline(provider, claims);
+    if (Number.isNaN(expiresAt))
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('The identity provider session has expired. Sign in again.', 'EXTERNAL_LOGIN_TOKEN_INVALID'),
+        { returnUrl, cookies: [cleared] },
+      );
     const kept = keptClaims(claims, ['nonce', 'c_hash', 'at_hash', 'iat', 'nbf', 'exp', 'aud', 'iss']);
     const userinfoClaims = provider.useUserInfo ? await userInfo(provider, accessToken, claims.sub, url) : null;
+    return issueExternal(res, provider, {
+      subject: claims.sub,
+      claims: kept,
+      expiresAt,
+      userinfo: userinfoClaims,
+      returnUrl,
+      invitationCode: props.i ?? null,
+      cookies: [cleared],
+    });
+  }
+
+  /** The short-lived external sign-in cookie of a validated provider answer, and the redirect to ExternalLoginCallback. */
+  function issueExternal(
+    res,
+    provider,
+    { subject, claims, expiresAt = null, userinfo = null, returnUrl, invitationCode, cookies },
+  ) {
     const external = protect({
       p: provider.slug,
-      s: claims.sub,
-      c: kept,
-      ...(userinfoClaims ? { u: userinfoClaims } : {}),
+      s: subject,
+      c: claims,
+      ...(expiresAt !== null ? { e: expiresAt } : {}),
+      ...(userinfo ? { u: userinfo } : {}),
       t: now(),
     });
     const target =
       `/Account/Login/ExternalLoginCallback?ReturnUrl=${encodeURIComponent(returnUrl)}` +
-      (props.i ? '&InvitationCode=' + encodeURIComponent(props.i) : '');
+      (invitationCode ? '&InvitationCode=' + encodeURIComponent(invitationCode) : '');
     return redirect(res, target, 'external-login-response', [
-      cleared,
+      ...cookies,
       `${externalCookieName()}=${external}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${EXTERNAL_LIFETIME_MS / 1000}`,
     ]);
+  }
+
+  /** The answer of an OAuth 2.0, SAML 2.0 or WS-Federation provider (lib/sign-in-federation.mjs answer). */
+  function federatedResponse(req, res, url, outcome, privateSiteOnly) {
+    if (outcome.kind === 'problem')
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem(outcome.problem.message, outcome.problem.code, outcome.problem.status ?? 400),
+        {
+          returnUrl: outcome.returnUrl,
+          cookies: outcome.cookies,
+        },
+      );
+    if (privateSiteOnly)
+      return fail(
+        req,
+        res,
+        url,
+        new SignInProblem('Private site admission is required.', 'PRIVATE_SITE_ACCESS_REQUIRED', 401),
+        { cookies: outcome.cookies },
+      );
+    if (outcome.kind === 'logout')
+      return redirect(res, outcome.returnUrl, 'sign-out-external-complete', outcome.cookies);
+    return issueExternal(res, outcome.provider, {
+      subject: outcome.subject,
+      claims: keptClaims(outcome.claims),
+      returnUrl: outcome.returnUrl,
+      invitationCode: outcome.invitationCode,
+      cookies: outcome.cookies,
+    });
   }
 
   // ---- mapping the external identity to a contact ----
@@ -1141,11 +1322,12 @@ export function createExternalSignIn({
       key(contactId),
     );
   }
-  async function register(provider, external, invitation = null) {
+  async function register(provider, external, invitation = null, invitationCode = null) {
     const claims = external.c ?? {};
     const userinfo = userinfoOf(provider, external);
     const email =
-      contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo }).emailaddress1 ?? emailClaim(claims);
+      contactFieldsFromClaims(claims, provider.registrationClaims, { userinfo, ...claimOptions(provider) })
+        .emailaddress1 ?? emailClaim(claims);
     if (
       settings().requireUniqueEmail &&
       email &&
@@ -1163,7 +1345,9 @@ export function createExternalSignIn({
       );
     let contactId;
     let externalIdentityId;
-    await store.transact(async () => {
+    const transact = invitation ? (work) => invitationTransaction(work) : (work) => store.transact(work);
+    await transact(async () => {
+      if (invitation) invitation = currentInvitation(invitationCode, invitation);
       contactId = await createContactRow(provider, claims, userinfo);
       externalIdentityId = await createIdentityRow(
         provider,
@@ -1172,8 +1356,9 @@ export function createExternalSignIn({
         invitation ? 'invitation' : 'registration',
         invitation ? { invitationId: invitation.id } : {},
       );
-      if (invitation) await applyInvitation(invitation, contactId);
+      if (invitation) await applyInvitation(invitation, contactId, external.s);
     });
+    if (invitation) await startRedemptionWorkflow(invitation, contactId);
     const origin = invitation ? 'invitation' : 'registration';
     record(
       'registration',
@@ -1204,17 +1389,22 @@ export function createExternalSignIn({
       return null;
     }
   };
+  // Every refusal answers the platform's one message; the reason stays in a diagnostic.
+  const refusedInvitation = (reason) => {
+    diagnostic({ code: 'INVITATION_INVALID', severity: 'info', message: reason });
+    return { problem: INVALID_INVITATION, reason };
+  };
   function findInvitation(code) {
     const mapping = invitationMapping();
     const wanted = text(code);
-    if (!mapping || !wanted) return { problem: 'The invitation code is not valid.' };
+    if (!mapping || !wanted) return refusedInvitation('The invitation code is not valid.');
     const row = tableRows(mapping.logicalName).find(
       (item) =>
         String(item.adx_invitationcode ?? '')
           .trim()
           .toLowerCase() === wanted.toLowerCase(),
     );
-    if (!row || !active(row)) return { problem: 'The invitation code is not valid.' };
+    if (!row || !active(row)) return refusedInvitation('The invitation code is not valid.');
     const expiry = row.adx_expirydate ? new Date(String(scalar(row.adx_expirydate))) : null;
     // adx_expirydate is date-only: the invitation is valid through that day.
     if (
@@ -1222,7 +1412,7 @@ export function createExternalSignIn({
       !Number.isNaN(expiry.getTime()) &&
       now() > Date.UTC(expiry.getUTCFullYear(), expiry.getUTCMonth(), expiry.getUTCDate() + 1)
     )
-      return { problem: 'The invitation has expired.' };
+      return refusedInvitation('The invitation has expired.');
     const type = Number(scalar(row.adx_type) ?? INVITATION_SINGLE) === INVITATION_GROUP ? 'group' : 'single';
     const redemptions = Number(scalar(row.adx_redemptions) ?? 0) || 0;
     const maximum = Number(scalar(row.adx_maximumredemptions) ?? 0) || null;
@@ -1230,12 +1420,12 @@ export function createExternalSignIn({
       type === 'single' &&
       (lookupOf(row, 'adx_redeemedcontact') || Number(scalar(row.statuscode)) === INVITATION_REDEEMED)
     )
-      return { problem: 'The invitation has already been redeemed.' };
+      return refusedInvitation('The invitation has already been redeemed.');
     if (type === 'group' && maximum && redemptions >= maximum)
-      return { problem: 'The invitation has reached its maximum number of redemptions.' };
+      return refusedInvitation('The invitation has reached its maximum number of redemptions.');
     const invited = lookupOf(row, 'adx_invitecontact') || null;
     if (type === 'single' && (!invited || !active(contactById(invited))))
-      return { problem: 'The invited contact is missing or inactive in the local data.' };
+      return refusedInvitation('The invited contact is missing or inactive in the local data.');
     return { invitation: { id: key(row[mapping.idColumn]), mapping, row, type, redemptions, maximum, invited } };
   }
   /** Web roles to assign on redemption: the invitation's web-role association rows. */
@@ -1264,25 +1454,38 @@ export function createExternalSignIn({
       ),
     ].filter((roleId) => known.has(roleId));
   }
-  /** Inside a transaction: the documented redemption effects (account, web roles, redemption state). */
-  async function applyInvitation(invitation, contactId) {
+  /** The adx_inviteredemption activity table (Dataverse reference), when the data does not define it. */
+  const redemptionMapping = () => {
+    const mappings = (store.state.mappings ??= {});
+    mappings[REDEMPTION_TABLE] ??= {
+      entitySet: 'adx_inviteredemptions',
+      entitySetSource: 'dataverse-reference',
+      idColumn: 'activityid',
+      idColumnSource: 'dataverse-reference',
+      nameColumn: 'subject',
+      relationships: {},
+      inferred: true,
+    };
+    store.state.tables ??= {};
+    store.state.tables[REDEMPTION_TABLE] ??= [];
+    return store.resolveMapping(REDEMPTION_TABLE);
+  };
+  /**
+   * Inside a transaction: the documented redemption effects (account, web roles, redemption state) and the
+   * adx_inviteredemption activity regarding the invitation, whose subject names the redeeming user (hosted session F4).
+   */
+  async function applyInvitation(invitation, contactId, subject) {
     const contact = contactMapping();
     const account = lookupOf(invitation.row, 'adx_assigntoaccount');
     if (account && contact)
       await updateRow(contact.logicalName, contactId, { parentcustomerid: { id: account, logical_name: 'account' } });
     const roles = invitationRoles(invitation);
-    if (roles.length) {
-      const simulator = (store.state.simulator ??= {});
-      const existing = new Set(
-        (simulator.contactRoles ?? []).map((item) => `${key(item.contactId)}:${key(item.roleId)}`),
+    if (roles.length)
+      grantContactRoles(
+        portal(),
+        store.state,
+        roles.map((roleId) => ({ contactId: key(contactId), roleId })),
       );
-      simulator.contactRoles = [
-        ...(simulator.contactRoles ?? []),
-        ...roles
-          .filter((roleId) => !existing.has(`${key(contactId)}:${roleId}`))
-          .map((roleId) => ({ contactId: key(contactId), roleId })),
-      ];
-    }
     const redemptions = invitation.redemptions + 1;
     const done = invitation.type === 'single' || (invitation.maximum && redemptions >= invitation.maximum);
     await updateRow(invitation.mapping.logicalName, invitation.id, {
@@ -1298,28 +1501,65 @@ export function createExternalSignIn({
         : {}),
       ...(done ? { statuscode: INVITATION_REDEEMED } : {}),
     });
-    if (lookupOf(invitation.row, 'adx_redemptionworkflow'))
-      diagnostic({
-        code: 'INVITATION_WORKFLOW_NOT_RUN',
-        severity: 'info',
-        message: "The invitation's redemption workflow is a Dataverse process; the local runtime does not run it.",
-        id: invitation.id,
-      });
+    const redemption = redemptionMapping();
+    await createRow(redemption.logicalName, {
+      [redemption.idColumn]: randomUUID(),
+      subject: String(subject ?? contactName(contactById(contactId)) ?? ''),
+      regardingobjectid: { id: invitation.id, logical_name: invitation.mapping.logicalName },
+    });
     return roles;
   }
+
+  /**
+   * After the redemption has committed: the invitation's redemption workflow runs on the redeemed contact. A failure is
+   * reported and keeps the redemption and the sign-in (hosted session F4 AUTH-05d: the failed job leaves both in place).
+   */
+  async function startRedemptionWorkflow(invitation, contactId) {
+    const workflowId = lookupOf(invitation.row, 'adx_redemptionworkflow');
+    if (!workflowId) return;
+    try {
+      if (await redemptionWorkflow({ workflowId, contactId })) return;
+    } catch {
+      // The workflow log keeps the failure; the diagnostic does not repeat a handler's own message.
+      diagnostic({
+        code: 'INVITATION_WORKFLOW_FAILED',
+        severity: 'warning',
+        message: 'The invitation redemption workflow failed; the redemption is kept.',
+        id: invitation.id,
+      });
+      return;
+    }
+    diagnostic({
+      code: 'INVITATION_WORKFLOW_NOT_RUN',
+      severity: 'info',
+      message: "The invitation's workflow has no eligible trusted local contact handler.",
+      id: invitation.id,
+    });
+  }
+
+  function currentInvitation(code, expected) {
+    const found = findInvitation(code);
+    if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID', 200);
+    if (found.invitation.id !== expected.id || found.invitation.type !== expected.type)
+      throw new SignInProblem(INVALID_INVITATION, 'INVITATION_INVALID', 200);
+    return found.invitation;
+  }
+
   async function redeem(provider, external, code) {
     const found = findInvitation(code);
-    if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID');
-    const { invitation } = found;
-    if (invitation.type === 'group') return register(provider, external, invitation);
+    if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID', 200);
+    let { invitation } = found;
+    if (invitation.type === 'group') return register(provider, external, invitation, code);
     let externalIdentityId;
     let roles = [];
-    await store.transact(async () => {
+    await invitationTransaction(async () => {
+      invitation = currentInvitation(code, invitation);
       externalIdentityId = await createIdentityRow(provider, external.s, invitation.invited, 'invitation', {
         invitationId: invitation.id,
       });
-      roles = await applyInvitation(invitation, invitation.invited);
+      roles = await applyInvitation(invitation, invitation.invited, external.s);
     });
+    await startRedemptionWorkflow(invitation, invitation.invited);
     record(
       'registration',
       IDENTITY_TABLE,
@@ -1383,6 +1623,18 @@ export function createExternalSignIn({
     if (flags.invitation) return { invitationRequired: true };
     throw registrationDisabled();
   }
+  function completeExternalSignIn(res, returnUrl, provider, external, outcome) {
+    signedIn(outcome.contactId, provider.id);
+    return redirect(res, returnUrl, outcome.route, [
+      sessions.cookie({
+        contactId: outcome.contactId,
+        provider: provider.slug,
+        ...(external.e !== undefined ? { expiresAt: external.e } : {}),
+      }),
+      clearExternal(),
+    ]);
+  }
+
   async function externalLoginCallback(req, res, url) {
     const returnUrl = safeReturnUrl(returnUrlParameter(url.searchParams));
     const external = readExternal(req);
@@ -1419,11 +1671,7 @@ export function createExternalSignIn({
         `/Account/Login/RedeemInvitation?ReturnUrl=${encodeURIComponent(returnUrl)}`,
         'invitation-required',
       );
-    signedIn(outcome.contactId, provider.id);
-    return redirect(res, returnUrl, outcome.route, [
-      sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
-      clearExternal(),
-    ]);
+    return completeExternalSignIn(res, returnUrl, provider, external, outcome);
   }
 
   // ---- invitation redemption page ----
@@ -1433,13 +1681,15 @@ export function createExternalSignIn({
     const pending = pendingExternalHtml(provider, external);
     const content = [
       `<section class="container paqvilo-mirage-redeem-invitation" style="margin:24px auto;max-width:760px">`,
-      `<h1>Redeem invitation</h1>`,
+      `<h1>Redeem invitation</h1><h2>Sign up with an invitation code</h2>`,
       error ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : '',
       pending,
       `<form method="post" action="/Account/Login/RedeemInvitation?ReturnUrl=${escapeHtml(encodeURIComponent(returnUrl))}">`,
-      `<input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
+      `<input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(requestTokens.issue(req, res))}">`,
       `<div class="form-group"><label for="InvitationCode">Invitation code</label><input class="form-control" id="InvitationCode" name="InvitationCode" type="text" value="${escapeHtml(code)}" required></div>`,
-      `<button type="submit" class="btn btn-primary">Register</button>`,
+      // The platform's MVC check box: a checked box posts its true first, the hidden false always follows.
+      `<div class="checkbox"><label><input id="RedeemByLogin" name="RedeemByLogin" type="checkbox" value="true"> I have an existing account</label><input name="RedeemByLogin" type="hidden" value="false"></div>`,
+      `<button type="submit" class="btn btn-primary" id="submit-redeem-invitation">Register</button>`,
       `</form>`,
       `</section>`,
     ].join('');
@@ -1458,9 +1708,12 @@ export function createExternalSignIn({
         code: text(url.searchParams.get('InvitationCode') ?? url.searchParams.get('invitation')) ?? '',
         returnUrl,
       });
-    const form = formOf(await readBody(req));
+    const bytes = await readBody(req);
+    const form = formOf(bytes);
     const code = text(form.InvitationCode) ?? '';
-    if (!antiForgeryAccepted(form.__RequestVerificationToken))
+    // The first RedeemByLogin value is the check box's (an unchecked box posts only the hidden false).
+    const byLogin = new URLSearchParams(bytes.toString('utf8')).get('RedeemByLogin') === 'true';
+    if (!antiForgeryAccepted(req, form.__RequestVerificationToken))
       return redeemPage(req, res, url, {
         status: 400,
         code,
@@ -1468,16 +1721,36 @@ export function createExternalSignIn({
         error: 'The anti-forgery token is missing or invalid: reload the page and try again.',
       });
     const found = findInvitation(code);
-    if (found.problem) return redeemPage(req, res, url, { status: 400, code, returnUrl, error: found.problem });
+    if (found.problem) return redeemPage(req, res, url, { status: 200, code, returnUrl, error: found.problem });
+    return redeemValidCode(req, res, url, { code, byLogin, returnUrl, language });
+  }
+  // Redeems a valid posted code: through the local sign-in or registration, a provider's sign-in or the pending external
+  // sign-in.
+  async function redeemValidCode(req, res, url, { code, byLogin, returnUrl, language }) {
     const external = readExternal(req);
     const provider = external ? providerList().find((item) => item.slug === external.p) : null;
-    if (!provider) {
-      // No pending external sign-in: sign in with a provider, carrying the code.
-      const providers = providerList();
-      const single = loginButtonProvider(portal(), providers) ?? (providers.length === 1 ? providers[0] : null);
-      if (single) return challenge(res, single, { returnUrl, invitationCode: code, language: languageCode(language) });
-      return renderSignIn(req, res, url, { returnUrl, invitationCode: code });
-    }
+    const local = provider ? null : localAccounts();
+    // "I have an existing account": the local sign-in redeems the code for the contact who signs in.
+    if (local && byLogin) return local.signInPage(req, res, url, { returnUrl, invitationCode: code });
+    // A valid code goes to the local registration page, which redeems it (hosted session F4 AUTH-05d).
+    if (local?.registration())
+      return redirect(
+        res,
+        `/Account/Login/Register?returnUrl=${encodeURIComponent(returnUrl).replaceAll('%2F', '/')}&invitationCode=${encodeURIComponent(code)}`,
+        'redeem-invitation-register',
+      );
+    if (!provider) return redeemThroughProvider(req, res, url, { code, returnUrl, language });
+    return redeemExternal(req, res, url, { provider, external, code, returnUrl });
+  }
+  // No pending external sign-in: sign in with a provider, carrying the code.
+  function redeemThroughProvider(req, res, url, { code, returnUrl, language }) {
+    const providers = providerList();
+    const single = loginButtonProvider(portal(), providers) ?? (providers.length === 1 ? providers[0] : null);
+    if (single) return challenge(res, single, { returnUrl, invitationCode: code, language: languageCode(language) });
+    return renderSignIn(req, res, url, { returnUrl, invitationCode: code });
+  }
+  // The pending external sign-in signs in its linked contact, or redeems the code for a new one.
+  async function redeemExternal(req, res, url, { provider, external, code, returnUrl }) {
     let outcome;
     try {
       if (findIdentity(provider, external.s)) outcome = await resolveLogin(provider, external);
@@ -1486,34 +1759,96 @@ export function createExternalSignIn({
       if (!(error instanceof SignInProblem)) throw error;
       return redeemPage(req, res, url, { status: error.status ?? 400, code, returnUrl, error: error.message });
     }
-    signedIn(outcome.contactId, provider.id);
-    return redirect(res, returnUrl, outcome.route, [
-      sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
-      clearExternal(),
-    ]);
+    return completeExternalSignIn(res, returnUrl, provider, external, outcome);
   }
 
+  /**
+   * Invitation codes for local accounts (lib/local-accounts.mjs): find(code) answers the redeemable invitation or null;
+   * redeem() redeems it for a contact in one transaction with the contact's own fields, then starts the redemption
+   * workflow after the commit.
+   */
+  const invitations = {
+    find(code) {
+      const found = findInvitation(code);
+      if (found.problem) return null;
+      const { id, type, invited } = found.invitation;
+      return { id, type, invited, invitedEmail: text(contactById(invited)?.emailaddress1) };
+    },
+    async redeem({ code, contactId, subject, contactFields = null }) {
+      const found = findInvitation(code);
+      if (found.problem) throw new SignInProblem(found.problem, 'INVITATION_INVALID', 200);
+      let { invitation } = found;
+      const contact = contactMapping();
+      await invitationTransaction(async () => {
+        invitation = currentInvitation(code, invitation);
+        if (contactFields) await updateRow(contact.logicalName, contactId, contactFields);
+        await applyInvitation(invitation, contactId, subject);
+      });
+      await startRedemptionWorkflow(invitation, contactId);
+      record(
+        'registration',
+        contact.logicalName,
+        { contactId, origin: 'invitation', invitationId: invitation.id },
+        contactId,
+      );
+      return { invitationId: invitation.id };
+    },
+  };
+
   // ---- LogOff ----
+  /** A configured sign-out URL moved onto the portal's origin (its path, query and fragment). */
+  const localUrl = (value) => {
+    const target = new URL(value, origin());
+    return new URL(target.pathname + target.search + target.hash, origin()).href;
+  };
+  // Signs out of a SAML 2.0 or WS-Federation provider: the answered response, or false when no logout request was sent
+  // and the site session ends locally.
+  async function federatedSignOut(res, url, { provider, session, returnUrl, signedOut }) {
+    const target = provider.postLogoutRedirectUri
+      ? localUrl(provider.postLogoutRedirectUri)
+      : new URL(returnUrl, origin()).href;
+    const nameId =
+      identityRows().find(
+        (row) =>
+          active(row) &&
+          providerMatches(provider, row.adx_identityprovidername) &&
+          same(lookupOf(row, 'adx_contactid'), session.contactId),
+      )?.adx_username ?? null;
+    const answered = await signInProblems(() =>
+      federation.signOut(res, provider, { nameId, returnUrl, target, cookies: [signedOut] }, redirect),
+    );
+    if (answered !== false) return answered;
+    if (provider.type === 'saml2' && (provider.externalLogout || provider.logoutCertificate))
+      diagnostic({
+        code: 'SAML_LOGOUT_NOT_SENT',
+        severity: 'info',
+        provider: provider.key,
+        message: `${SETTING_PREFIX.saml2}${provider.key}: no logout request was sent; it needs ExternalLogoutCertThumbprint, the contact's external identity and the provider's SingleLogoutService. The site session ended locally.`,
+        path: url.pathname,
+      });
+    return false;
+  }
   async function logOff(req, res, url) {
     if (!identity()?.contactId)
-      // LogOff needs a signed-in user; an anonymous request is sent to the sign-in path.
+      // LogOff needs a signed-in user; an anonymous request is sent to the sign-in path with the log-off path as it is
+      // (hosted session F4, paqvilo-developer hosted-f4 lifecycle runs a and b: /SignIn?ReturnUrl=/Account/Login/LogOff).
       return redirect(
         res,
-        `${loginPath(portal())}?ReturnUrl=${encodeURIComponent(url.pathname)}`,
+        `${loginPath(portal())}?ReturnUrl=${/^[\w./-]+$/.test(url.pathname) ? url.pathname : encodeURIComponent(url.pathname)}`,
         'sign-out-anonymous',
       );
     const returnUrl = safeReturnUrl(returnUrlParameter(url.searchParams));
     const session = sessions.read(req.headers.cookie);
     const provider = session?.provider ? providerList().find((item) => item.slug === session.provider) : null;
     const signedOut = sessions.cookie({ contactId: null });
-    if (provider?.externalLogout && idp) {
+    if (provider && provider.type !== 'openidconnect' && idp) {
+      const answered = await federatedSignOut(res, url, { provider, session, returnUrl, signedOut });
+      if (answered !== false) return answered;
+    }
+    if (provider?.externalLogout && idp && provider.type !== 'saml2' && provider.type !== 'wsfederation') {
       const meta = await metadata(provider);
-      const local = (value) => {
-        const target = new URL(value, origin());
-        return new URL(target.pathname + target.search + target.hash, origin()).href;
-      };
       const target = provider.postLogoutRedirectUri
-        ? local(provider.postLogoutRedirectUri)
+        ? localUrl(provider.postLogoutRedirectUri)
         : new URL(returnUrl, origin()).href;
       return redirect(
         res,
@@ -1565,36 +1900,47 @@ export function createExternalSignIn({
     return provider && idp ? provider : null;
   }
 
+  async function routeProviderReply(req, res, url, path, privateSiteOnly) {
+    if (!callbackPaths().has(path)) return false;
+    let message;
+    // A query answer only where a provider of that reply URL uses response_mode=query.
+    if (['GET', 'HEAD'].includes(req.method)) {
+      const outcome = await federation.answer(req, url, path, Object.fromEntries(url.searchParams));
+      if (outcome) {
+        await federatedResponse(req, res, url, outcome, privateSiteOnly);
+        return true;
+      }
+      message = queryCallbackMessage(url, path);
+    } else if (req.method === 'POST' && isForm(req)) {
+      const bytes = await readBody(req);
+      const fields = formOf(bytes);
+      const outcome = await federation.answer(req, url, path, fields);
+      if (outcome) {
+        await federatedResponse(req, res, url, outcome, privateSiteOnly);
+        return true;
+      }
+      message = providerMessage(fields);
+      if (!message) replayUnrecognizedProviderForm(req, bytes);
+    }
+    if (!message) return false;
+    await providerResponse(req, res, url, message, privateSiteOnly);
+    return true;
+  }
+
   /**
    * Answers the external sign-in routes; false when the request is not one of them.
    * `language`: the request's website language code, when its URL carried one.
    */
-  async function route(req, res, url, { language = null } = {}) {
+  async function route(req, res, url, { language = null, privateSiteOnly = false } = {}) {
     const path = trimPath(url.pathname);
     const account = ACCOUNT_PATH.exec(path)?.[1];
     const accountRoute = ACCOUNT_ROUTES[account];
-    if (accountRoute?.methods.includes(req.method)) {
+    if (!privateSiteOnly && accountRoute?.methods.includes(req.method)) {
       await accountRoute.handle(req, res, url, language);
       return true;
     }
-    if (callbackPaths().has(path)) {
-      // A query answer only where a provider of that reply URL uses response_mode=query.
-      if (['GET', 'HEAD'].includes(req.method)) {
-        const message = queryCallbackMessage(url, path);
-        if (message) {
-          await providerResponse(req, res, url, message);
-          return true;
-        }
-      } else if (req.method === 'POST' && isForm(req)) {
-        const bytes = await readBody(req);
-        const message = providerMessage(formOf(bytes));
-        if (message) {
-          await providerResponse(req, res, url, message);
-          return true;
-        }
-        replayUnrecognizedProviderForm(req, bytes);
-      }
-    }
+    if (await routeProviderReply(req, res, url, path, privateSiteOnly)) return true;
+    if (privateSiteOnly) return false;
     // LoginButtonAuthenticationType: the sign-in page goes straight to the default provider.
     const provider = ['GET', 'HEAD'].includes(req.method) ? autoSignInProvider(req, url, path) : null;
     if (provider) {
@@ -1666,13 +2012,14 @@ export function createExternalSignIn({
         clientId: provider.clientId,
         responseType: provider.responseType,
         responseMode: provider.responseMode,
+        protocol: provider.protocol ?? null,
         flow: flowOf(provider),
         scope: provider.scope,
         // The secret is never reported, only whether one is configured.
         clientSecret: provider.clientSecret ? 'configured' : null,
         tokenAuthMethod: provider.tokenAuthMethod,
         certificateKid: provider.certificateKid,
-        pkce: codeFlow(provider),
+        pkce: provider.type === 'openidconnect' && codeFlow(provider),
         userInfo: {
           enabled: provider.useUserInfo,
           endpoint: provider.userInfoEndpoint,
@@ -1685,6 +2032,15 @@ export function createExternalSignIn({
         externalLogout: provider.externalLogout,
         registration: provider.registration,
         emailMapping: provider.emailMapping,
+        ...(provider.type === 'saml2' || provider.type === 'wsfederation'
+          ? {
+              metadataAddress: provider.metadataAddress,
+              validateAudience: provider.validateAudience,
+              validAudiences: provider.validAudiences,
+              homeRealm: provider.homeRealm,
+              logoutCertificate: provider.logoutCertificate,
+            }
+          : {}),
         default: provider === button,
       })),
       loginButton: { value: flags.loginButton, provider: button?.id ?? null },
@@ -1752,11 +2108,13 @@ export function createExternalSignIn({
     close,
     route,
     begin,
+    beginSiteAdmission,
     acceptsOrigin,
     status,
     identities,
     signInProviders,
     sessionProvider,
+    invitations,
     get identityProvider() {
       return idp;
     },

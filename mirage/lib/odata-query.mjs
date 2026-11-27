@@ -879,6 +879,9 @@ export function compileODataPredicate(ast, mapping, ctx) {
         return (row, rowMapping, scope) => {
           const { rows, mapping: targetMapping } = collection(node.path, row, rowMapping, scope);
           if (!body) return rows.length > 0;
+          // The portal Web API reads all as at least one related row and no row that fails (hosted session F1, API-02b,
+          // two runs: all(c: c/tag eq 'x') left out every item without children); OData's all is true over none.
+          if (node.kind === 'all' && ctx.lambdaAllNeedsRows && rows.length === 0) return false;
           const test = (item) =>
             body(item, targetMapping, new Map([...scope, [node.variable, { row: item, mapping: targetMapping }]]));
           // any: true if one item is true; all: false if one item is false; else

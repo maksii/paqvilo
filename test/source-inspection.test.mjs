@@ -33,11 +33,14 @@ test('the route observer records entity sets and server logic routes from reques
   observer.record('not a url', document);
   const rendered = { assets: [], controls: [], apiSets: ['x_fromPage'] };
   const merged = observer.merge(rendered);
+  // requestPaths (C27): every same-origin request path, pathname only, so web files, server logic and cloud-flow
+  // endpoints the session requested are marked; the query value of the first request is not kept.
   assert.deepEqual(merged, {
     assets: [],
     controls: [],
     apiSets: ['x_fromPage', 'x_things', 'serverlogics'],
     serverLogicPaths: ['/_api/serverlogics/x_logic'],
+    requestPaths: ['/_api/x_things(1)', '/_api/serverlogics/x_logic', '/other'],
   });
   assert.deepEqual(rendered, { assets: [], controls: [], apiSets: ['x_fromPage'] });
   observer.navigationRequested(document);
@@ -240,7 +243,7 @@ test('repeated enrichment keeps unresolved diagnostics stable and rejects absent
   t.after(fx.cleanup);
   fs.appendFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    '{% codecomponent name: "unknown.Control" %}',
+    '{% codecomponent name: unknown.Control %}',
   );
   const inspector = createSourceInspector({ sourceDir: fx.portal }),
     { report } = await inspector.inspect('/');
@@ -467,7 +470,7 @@ test('PCF schema-name references trace literal dataset tables, views and columns
   );
   fs.writeFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    `{% codecomponent name:'fx_Example.Grid', Rows:'child-view' %}{% codecomponent name:'fx_Example.Grid', Rows:page.view %}{% codecomponent name:'fx_example.grid', Rows:'fx_child' %}{% codecomponent name:'fx_Example.Grid', Rows:'Related children' %}`,
+    `{% codecomponent name:fx_Example.Grid, Rows:'child-view' %}{% codecomponent name:fx_Example.Grid, Rows:page.view %}{% codecomponent name:fx_example.grid, Rows:'fx_child' %}{% codecomponent name:fx_Example.Grid, Rows:'Related children' %}`,
   );
   const controlDir = path.join(fx.solution, 'Controls/fx_Example.Grid');
   fs.mkdirSync(controlDir, { recursive: true });
@@ -602,6 +605,12 @@ test('project-selected Solution metadata provides exact FormXml and field paths;
     report.forms[0].formXml.sourceFile,
     path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml'),
   );
+  // The FormXml tabs and sections, by name, for the node observer to prove a rendered tab or section.
+  assert.deepEqual(report.forms[0].formXml.layout, [{ name: 'GENERAL', sections: ['main'] }]);
+  assert.deepEqual(report.componentIndex.forms.find((form) => form.formXml?.id === 'widget-form')?.formXml.layout, [
+    { name: 'GENERAL', sections: ['main'] },
+  ]);
+  assert.equal(report.page.webFormId, null, 'the home page renders no multistep form');
   assert.equal(report.columns[0].name, 'fx_title');
   assert.equal(report.renderedControls[0].field, 'fx_widget.fx_title');
   assert.equal(report.renderedControls[0].sourceFile, path.join(fx.solution, 'Entities/fx_widget/Entity.xml'));
@@ -641,22 +650,25 @@ test('the rendered-page reader runs self-contained in a page realm and keeps onl
       ],
     },
   };
+  // requestPaths (C27) keeps the same-origin request path without its query; the foreign request stays excluded.
   assert.deepEqual(structuredClone(vm.runInNewContext(`(${inspectRenderedPage})()`, page)), {
     assets: [],
     controls: [],
     apiSets: ['fx_widgets'],
+    requestPaths: ['/_api/fx_widgets'],
     ids: [],
     markupTokens: [],
     truncated: false,
   });
 });
 
+// @test-kind observation: Power Pages reads an unquoted codecomponent name as the literal control name (paqvilo-developer pcf-parity summary-D, r1 lq-* pages)
 test('displayed Liquid code and component manifests do not produce component or operation bindings while emitted raw assets remain discoverable', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   fs.writeFileSync(
     path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
-    `{% raw %}{% codecomponent name:'missing.Raw' %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:'missing.Comment' %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:'missing.Manifest' %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`,
+    `{% raw %}{% codecomponent name:missing.Raw %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:missing.Comment %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:missing.Manifest %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`,
   );
   const logicDir = path.join(fx.portal, 'server-logic');
   fs.mkdirSync(logicDir);
@@ -677,7 +689,8 @@ test('displayed Liquid code and component manifests do not produce component or 
     ['VisibleOperation'],
   );
   assert.equal(report.codeComponents.length, 1);
-  assert.equal(report.codeComponents[0].dynamic, true);
+  // Power Pages reads an unquoted name as the control's literal name (paqvilo-developer pcf-parity summary-D, r1).
+  assert.equal(report.codeComponents[0].dynamic, false);
   assert.equal(
     report.assets.some((row) => row.url === '/widget.js'),
     true,
@@ -685,7 +698,8 @@ test('displayed Liquid code and component manifests do not produce component or 
   assert.equal(report.unresolved.filter((row) => row.kind === 'code-component').length, 1);
 });
 
-test('unquoted literal PCF IDs open declared manifest/resources, while dynamic component expressions stay unresolved', async (t) => {
+// @test-kind observation: Power Pages reads an unquoted codecomponent name as the literal control name (paqvilo-developer pcf-parity summary-D, r1 lq-* pages)
+test('unquoted literal PCF IDs open declared manifest/resources, and an unquoted name that matches no control stays unresolved', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const componentId = '10000000-0000-4000-8000-000000000001';
@@ -715,10 +729,12 @@ test('unquoted literal PCF IDs open declared manifest/resources, while dynamic c
   assert.equal(report.codeComponents[0].schemaName, 'fx_Example.Widget');
   assert.equal(report.codeComponents[0].sourceFile, path.join(controlDir, 'ControlManifest.xml'));
   assert.equal(report.codeComponents[0].resources[0].sourceFile, path.join(controlDir, 'bundle.js'));
-  assert.equal(report.codeComponents[1].dynamic, true);
+  // An unquoted name is the literal control name on Power Pages, never a variable (paqvilo-developer pcf-parity summary-D, r1).
+  assert.equal(report.codeComponents[1].dynamic, false);
+  assert.equal(report.codeComponents[1].name, 'page.component');
   assert.equal(report.codeComponents[1].sourceFile, undefined);
   assert.equal(
-    report.unresolved.some((row) => row.kind === 'code-component' && /set at run time/.test(row.reason)),
+    report.unresolved.some((row) => row.kind === 'code-component' && /No code component/.test(row.reason)),
     true,
   );
 });
@@ -816,4 +832,46 @@ test('observed Web API entity sets resolve selected metadata without inventing m
     'observed-api-request',
   );
   assert.equal(withSolution.report.apiReferences.find((row) => row.name === 'unexported_sets').entity, null);
+});
+
+// @test-kind observation: pcf-parity summary-F section 3, live Power Pages capture of unquoted GUID codecomponent names: a braced id halts and cuts off the rest of the page, upper-case and hyphenless ids render
+test('inspection reports a braced code component id as a tag that ends the template', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const id = '0a0a0a0a-3333-4333-8333-000000000001';
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    `{% codecomponent name:${id.replaceAll('-', '').toUpperCase()} %}{% codecomponent name:{${id}} %}`,
+  );
+  const controlDir = path.join(fx.solution, 'Controls/fx_Example.Probe');
+  fs.mkdirSync(controlDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml'),
+    '<manifest><control namespace="Example" constructor="Probe" control-type="standard"><resources><code path="bundle.js" order="1"/></resources></control></manifest>',
+  );
+  fs.writeFileSync(
+    path.join(controlDir, 'ControlManifest.xml.data.xml'),
+    '<CustomControl><Name>fx_Example.Probe</Name></CustomControl>',
+  );
+  fs.writeFileSync(path.join(controlDir, 'bundle.js'), 'window.Example = {};');
+  const { report } = await createSourceInspector({
+    sourceDir: fx.portal,
+    mirageConfig: { solutionRoots: [fx.solution], observed: { codeComponents: { [id]: 'fx_Example.Probe' } } },
+  }).inspect('/');
+  assert.deepEqual(
+    report.codeComponents.map((row) => [row.schemaName, row.refused]),
+    [
+      ['fx_Example.Probe', undefined],
+      ['fx_Example.Probe', 'PCF_LIQUID_NAME_BRACED'],
+    ],
+  );
+  assert.deepEqual(
+    report.unresolved.filter((row) => row.kind === 'code-component').map((row) => [row.expression, row.reason]),
+    [
+      [
+        `{% codecomponent name:{${id}} %}`,
+        'Power Pages renders nothing for a control id in braces and ends the rest of the template: write the id without braces.',
+      ],
+    ],
+  );
 });

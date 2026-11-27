@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { stripTrailingCharacter } from './text-scanning.mjs';
+import { antiXssHtmlEncode } from './liquid-dotnet.mjs';
 
 /*
  * Native Power Pages platform resource manifest.
@@ -208,12 +209,9 @@ export const PLATFORM_RESOURCES = Object.freeze([
   },
 ]);
 
+// One global pass over the markup characters (a double-quoted attribute value: `'` is left as it is).
 const escapeAttribute = (value) =>
-  String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+  String(value ?? '').replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]);
 
 /** Offline notification markup with platform images served from the local origin. */
 export const OFFLINE_NOTIFICATION_BAR = `<div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/web.png'; img.alt = 'web'; img.id = 'web' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/web.png"> <div id="message">You’re offline. This is a read only version of the page.</div> <div id="close" onclick="this.parentElement.style.display='none';"><img alt="close" class="col-3" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/close.png'; img.alt = 'close'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/close.png"></div> </div>`;
@@ -353,6 +351,10 @@ function formResourceMarkup(aspNetScripts, denied, validators, formControls, con
 
 function mapScriptPaths(content) {
   const mapList = /<!--pp-map-list:(\w+)-->/.exec(String(content ?? ''));
+  // A basic form with geolocation loads the Bing Maps control and the platform's bingmap.js (captured, paqvilo-developer
+  // hosted-f2 summary-F2 LIST-02c); the platform's Content Security Policy blocks the control.
+  if (!mapList && String(content ?? '').includes('<!--pp-geolocation-form-->'))
+    return ['https://www.bing.com/api/maps/mapcontrol', '/xrm-adx/js/bingmap.js'];
   return mapList
     ? [
         '/xrm-adx/js/json2.min.js',
@@ -420,12 +422,18 @@ export function webFormsForm({
   // form (the footer) is unaffected.
   const aborted = String(content ?? '').indexOf(RENDER_ABORT_MARKER);
   let trailing = '';
+  // The removals from the content, in the content's own coordinates (onContent): render provenance re-bases on them.
+  const contentEdits = [];
   if (aborted >= 0) {
     trailing = /^(?:\s*<\/[a-z][a-z0-9]*>)*/i.exec(content.slice(aborted + RENDER_ABORT_MARKER.length))?.[0] ?? '';
+    contentEdits.push({ start: aborted, end: content.length, text: '' });
     content = content.slice(0, aborted);
   }
   const componentState = /\sdata-pp-viewstate="([^"]*)"/.exec(String(content ?? ''));
-  if (componentState) content = String(content).replace(componentState[0], '');
+  if (componentState) {
+    contentEdits.push({ start: componentState.index, end: componentState.index + componentState[0].length, text: '' });
+    content = String(content).replace(componentState[0], '');
+  }
   const viewState = componentState
     ? componentState[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')
     : `/wE${stripTrailingCharacter(opaque('viewstate', action), '=')}`;
@@ -458,7 +466,7 @@ export function webFormsForm({
     `<div class="aspNetHidden">\n${hidden('__EVENTTARGET', '')}\n${hidden('__EVENTARGUMENT', '')}\n${hidden('__VIEWSTATE', viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
     `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + '\n' : ''}${onSubmit}`;
-  onContent?.({ offset: prefix.length, length: content.length });
+  onContent?.({ offset: prefix.length, length: content.length, edits: contentEdits });
   const generator = createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase();
   const eventValidationHtml = eventValidation
     ? hidden('__EVENTVALIDATION', `/wE${stripTrailingCharacter(opaque('validation', action), '=')}`) + '\n'
@@ -577,6 +585,9 @@ function rewritePageMain(layout, entityControls, pageMetadata, placements) {
  * metadata and child navigation; WebForm.aspx uses the master as is. Blank.aspx renders the
  * page copy without the server form. Returns null for templates without a rewrite URL or
  * with another legacy page (the caller keeps its own rendering).
+ *
+ * The heading's breadcrumb is the master page's own control ({% mirage_site_map_path %}, `siteMapPathMarkup`), not
+ * the site's Breadcrumbs web template: a site that customises that template sees no change on these pages.
  */
 export function rewritePageLayout(page, pageTemplate) {
   const rewrite = String(pageTemplate?.rewriteUrl ?? '')
@@ -594,13 +605,33 @@ export function rewritePageLayout(page, pageTemplate) {
   }[rewrite];
   if (!layout) return null;
   const components = rewriteComponents(page);
-  const heading = `<div class="page-heading"><div class="container">{% include 'Breadcrumbs' %}<div class="page-header"><h1>{{ page.title | h }}</h1></div><div class="notifications"></div></div></div>`;
+  const heading = `<div class="page-heading"><div class="container">{% mirage_site_map_path %}<div class="page-header"><h1>{{ page.title | h }}</h1></div><div class="notifications"></div></div></div>`;
   const pageMetadata = `<div class="page-metadata clearfix">${snippetDiv('Social Share Widget Code Page Bottom')}</div>`;
   const placements =
     "{% assign poll_placement_name = 'Sidebar' %}{% mirage_poll_placement %}{% assign ad_placement_name = 'Sidebar Bottom' %}{% mirage_ad_placement %}";
   if (layout === 'fullpage') return fullPageLayout(heading, pageMetadata, components);
   const main = rewritePageMain(layout, components.entityControls, pageMetadata, placements);
   return { source: `${heading}<div class="container">${main}</div>`, serverFormId: 'content_form' };
+}
+
+/**
+ * The breadcrumb the WebForms master pages write above a rewrite page layout's title: one linked item per ancestor,
+ * from the home page down, then the page itself as the active item. Every page of the path is listed, also one hidden
+ * from the site map, with its whole title (no shortening, no title attribute), written with the AntiXSS encoder. The
+ * BootstrapV5 build adds the Bootstrap 5 item class; the active item's class value is attribute-encoded there, so
+ * its space reads &#32;. Line ends are the control's.
+ * @param {{ url: string, title: string }[]} ancestors the pages above the current one, the home page first
+ * @param {string} title the current page's title
+ * @param {'BootstrapV5' | 'BootstrapV3'} variant the site's Bootstrap build (`bootstrapVariant`)
+ */
+export function siteMapPathMarkup(ancestors, title, variant) {
+  const v5 = variant === 'BootstrapV5';
+  const item = v5 ? '<li class="breadcrumb-item">' : '<li>';
+  const active = v5 ? '<li class="active&#32;breadcrumb-item">' : '<li class="active">';
+  let markup = '<ul class="breadcrumb">';
+  for (const crumb of ancestors)
+    markup += `${item}<a href="${antiXssHtmlEncode(crumb.url)}">${antiXssHtmlEncode(crumb.title)}</a></li>\r\n`;
+  return `${markup}${active}${antiXssHtmlEncode(title)}</li>\r\n</ul>`;
 }
 
 // Platform bundle ordering used by the local shell, including modal form documents.
@@ -945,6 +976,8 @@ export function platformShell({
       captured: captured.has(bundle.id),
     })),
     headStart: `${resourceManager}${bootstrapMarkup}${slot('head-start')}`,
+    // Where the Bootstrap stylesheet markup sits in headStart (render provenance of a Head/Bootstrap snippet).
+    bootstrapRange: { start: resourceManager.length, end: resourceManager.length + bootstrapMarkup.length },
     headEnd: slot('head-end'),
     controlsStyle: slot('controls-style'),
     bodyOpen: slot('body-open'),
@@ -967,6 +1000,70 @@ function fallback(path, element) {
   const handler = `javascript: var target = event.target; var ${element} = document.createElement('${element}'); ${element}.crossOrigin = target.crossOrigin; ${element}.${attribute} = '/${match[1]}'; ${extra} target.insertAdjacentElement('afterend',${element});`; // NOSONAR: intentional local script execution or generated handler
   return ` onerror="${escapeAttribute(handler)}"`;
 }
+
+/**
+ * The PWAFeature site setting's status ({"status":"enable"} or {"status":"disable"}); null when the setting is absent or
+ * not that JSON. Studio's "Enable PWA" writes the enabled value; the site template ships the disabled one.
+ */
+export function pwaFeatureStatus(value) {
+  try {
+    const text = value && typeof value === 'object' ? value.value : value;
+    const status = JSON.parse(String(text ?? ''))?.status;
+    return status === 'enable' || status === 'disable' ? status : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The service worker URL the enabled PWA registers; the version is a stable id of the website (hosted: a GUID). */
+function pwaServiceWorkerUrl(websiteId) {
+  const hash = createHash('sha256')
+    .update(`pwa:${String(websiteId ?? '').toLowerCase()}`)
+    .digest('hex');
+  const guid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+  return `/js/sw.js?languageCode=/&version=v${guid}`;
+}
+
+/**
+ * The page markup of the PWAFeature setting (hosted session F3, PAGE-06e, two runs): enabled, the manifest link in the
+ * head and the service worker registration at the end of the body; disabled, the script that unregisters every service
+ * worker of the origin. The registration's language code is the captured single-language form (`/`).
+ */
+export function pwaShellMarkup(value, websiteId) {
+  const status = pwaFeatureStatus(value);
+  if (status === 'enable')
+    return {
+      head: '<link rel="manifest" href="/PWAManifest.json">',
+      body:
+        "<script>\r\n\t\t\t\tif ('serviceWorker' in navigator) {\r\n\t\t\t\t\tnavigator.serviceWorker.register('" +
+        pwaServiceWorkerUrl(websiteId) +
+        "', { scope: '/', updateViaCache: 'all' }).then(function (registration) {\r\n\t\t\t\t\t\tconsole.log('Service worker registration succeeded:', registration);\r\n\t\t\t\t\t}, function (error) {\r\n\t\t\t\t\t\tconsole.log('Service worker registration failed:', error);\r\n\t\t\t\t\t});\r\n\t\t\t\t\tnavigator.serviceWorker.addEventListener('message', event => {\r\n\t\t\t\t\t\tshowOfflineNotification();\r\n\t\t\t\t\t});\r\n\t\t\t\t} else {\r\n\t\t\t\t\tconsole.log('Service workers are not supported.');\r\n\t\t\t\t}\r\n\t\t\t</script>",
+    };
+  if (status === 'disable')
+    return {
+      head: '',
+      body: "<script>\r\n\t\t\t\t\tif ('serviceWorker' in navigator) {\r\n\t\t\t\t\t\tnavigator.serviceWorker.getRegistrations().then(function (registrations) {\r\n\t\t\t\t\t\t\tfor (let registration of registrations) {\r\n\t\t\t\t\t\t\t\tregistration.unregister();\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t}).catch(function (err) {\r\n\t\t\t\t\t\t\tconsole.log('Service Worker unregister action failed: ', err);\r\n\t\t\t\t\t\t});\r\n\t\t\t\t\t}\r\n\t\t\t\t</script>",
+    };
+  return { head: '', body: '' };
+}
+
+/**
+ * The local service worker served at /js/sw.js while PWAFeature is enabled. The hosted worker is Microsoft's Workbox 5.1.2
+ * build, which this toolkit cannot ship: the local one registers with the same URL, scope and headers and handles no
+ * request, so pages, files and APIs answer from the simulator as they do without a worker.
+ */
+export const LOCAL_SERVICE_WORKER =
+  '// Paqvilo Mirage: local stand-in for the Power Pages PWA service worker. It handles no requests.\n';
+
+/**
+ * The content region of the Search.aspx rewrite layout, byte for byte as hosted session F3 captured it on an enhanced site
+ * (runs/{a,b}/cs-rewrite-full.json, identical): the content container, a native controls root, the script hiding
+ * `body > section.page_section`, the native search summary control with its two raw attributes and the empty search error
+ * message; no page copy. The script's nonce attribute is left out: the response nonce is added as for other platform
+ * scripts.
+ */
+export const SEARCH_PAGE_CONTENT =
+  '<div id="content-container" class="container wrapper-body" role="main">\r\n\t\t\t<div id="content">\r\n\t\t\t\t\n\n\t<div id="pp-native-controls-react-root"></div>\n\t<script type="text/javascript">\r\n\t\tdocument.querySelector(\'body > section.page_section\').style.display = \'none\'\r\n\t</script>\n\t<div style="padding:32px">\r\n\t\t<pages-native-container>\r\n\t\t\t<pages-search-summary show-search-suggestions=\'{ "raw": "false" }\' enable-streaming=\'{ "raw": "true" }\'></pages-search-summary>\r\n\t\t</pages-native-container>\r\n\t</div>\n\n\t<div id="searchErrorMessage">\n\t\t<h2></h2>\n\t</div>\n\r\n\t\t\t</div>\r\n\t\t</div>';
 
 /** True when a document carries the platform bundles (the platform jQuery/moment provider). */
 export const hasPlatformBundles = (html) =>

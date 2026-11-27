@@ -263,6 +263,58 @@ test('built-in startup metadata scans are bounded across tables and trusted exte
   }
 });
 
+// Full passes over the source component rows while a runtime starts. A pass stamps or revalidates every systemform
+// row once, so each pass reads the first form's settings exactly once.
+async function startupSourcePasses(t, tables) {
+  const forms = 16;
+  const state = emptyState();
+  state.tables.systemform = Array.from({ length: forms }, (_, index) => ({
+    formid: `f-${index}`,
+    name: 'Invented',
+    settings: { marker: `metadata-probe-${index}` },
+  }));
+  state.dataverse = { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } };
+  for (let index = 0; index < tables; index++) {
+    const entity = `x_table${index}`;
+    state.mappings[entity] = { logicalName: entity, entitySet: `${entity}s`, idColumn: `${entity}id` };
+    state.tables[entity] = [];
+  }
+  const store = new DataStore({ state }),
+    overlay = createSolutionMetadataOverlay(),
+    base = { entities: {}, forms: [{ id: 'f-0', entity: 'x_table0', xml: '<form/>' }] };
+  const reads = { rows: 0, passes: 0 };
+  const stringify = JSON.stringify;
+  const mock = t.mock.method(JSON, 'stringify', (value, ...args) => {
+    const marker = value?.marker;
+    if (typeof marker === 'string' && marker.startsWith('metadata-probe-')) {
+      reads.rows++;
+      if (marker === 'metadata-probe-0') reads.passes++;
+    }
+    return stringify(value, ...args);
+  });
+  const organization = await createOrganizationRuntime({
+    store,
+    settings: dataverseSettings({ enabled: false }),
+    metadataFields: (logical) => overlay(base, store.state).entities?.[logical]?.fields,
+    readMetadata: (fn) => overlay.withReadEpoch(fn),
+    extensions: EXTENSIONS,
+  });
+  mock.mock.restore();
+  await organization.close();
+  return { ...reads, forms };
+}
+
+// @test-kind contract: pins the startup source-row work of the built-in extensions structurally (passes, not time): the
+// dataverse-formula install resolves the overlay once and the dataverse-fls install revalidates it once in its own read
+// epoch; no other built-in, rollup included, adds a pass, and the count does not grow with the number of tables
+test('built-in extensions make two source-row passes at startup, independent of the table count', async (t) => {
+  for (const tables of [64, 256]) {
+    const { rows, passes, forms } = await startupSourcePasses(t, tables);
+    assert.equal(passes, 2, `${passes} source passes with ${tables} tables`);
+    assert.equal(rows, passes * forms, 'every pass reads each source row once');
+  }
+});
+
 test('organization seeders checkpoint once, keep existing rows and roll back failed composition', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage storage provider routing and note-body round trips over loopback
 // Portal storage routes (organization-host.mjs providers, dataverse-storage-routing.mjs): note bodies leave state and are read
 // back by the portal readers, web files stored in Azure Blob Storage come from route portalWebFiles, cloud attachments put
 // their bytes on route portalCloudAttachments behind the documented placeholder note, staged uploads are provider blocks,
@@ -257,6 +258,65 @@ test('a cloud attachment puts its bytes on route portalCloudAttachments behind a
   assert.ok(saved.recordId);
 });
 
+// @test-kind contract: the form's exported attachment location controls provider routing
+test('an explicit note location stays in Dataverse and an explicit Azure location uses its provider', async () => {
+  const options = await formFixture();
+  const cloud = guardProvider(createMemoryStorage({ id: 'cloud' }));
+  const save = (fullname) =>
+    submitPortalForm(
+      'entityform',
+      'notes',
+      { values: { fullname }, attachments: [upload] },
+      { ...options, cloudAttachments: () => cloud },
+    );
+  const metadata = options.portal.forms[0].metadata;
+  metadata.adx_attachfilestoragelocation = 756150000;
+  await save('Use Dataverse');
+  const [note] = options.store.state.tables.annotation;
+  assert.equal(note.filename, upload.name);
+  assert.equal(note.documentbody, upload.content);
+
+  delete options.portal.settings['FileStorage/CloudStorageAccount'];
+  metadata.adx_attachfilestoragelocation = 756150001;
+  await save('Use cloud provider');
+  const [, placeholder] = options.store.state.tables.annotation;
+  assert.equal(placeholder.filename, upload.name + '.txt');
+  const { Url } = JSON.parse(Buffer.from(placeholder.documentbody, 'base64').toString());
+  assert.ok(await cloud.get(Url));
+});
+
+test('a partial cloud upload cleans attempted objects and a retry saves only one set of files', async () => {
+  const options = await formFixture();
+  options.portal.forms[0].metadata.adx_attachfileallowmultiple = true;
+  const objects = new Map();
+  let puts = 0;
+  const storage = {
+    async put(key, bytes) {
+      objects.set(key, bytes);
+      if (++puts === 2) throw new Error('Upload result was unavailable');
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+  };
+  const save = () =>
+    submitPortalForm(
+      'entityform',
+      'notes',
+      { values: { fullname: 'Invented' }, attachments: [upload, { ...upload, name: 'Report 2.pdf' }] },
+      { ...options, cloudAttachments: () => storage },
+    );
+  await assert.rejects(save(), /Upload result was unavailable/);
+  assert.equal(objects.size, 0);
+  assert.equal(options.store.state.tables.annotation.length, 0);
+  assert.equal(options.store.state.tables.contact.length, 0);
+
+  await save();
+  assert.equal(objects.size, 2);
+  assert.equal(options.store.state.tables.annotation.length, 2);
+  assert.equal(options.store.state.tables.contact.length, 1);
+});
+
 test('a cloud attachment without route portalCloudAttachments fails the save and stores nothing', async () => {
   const options = await formFixture();
   const diagnostics = [];
@@ -291,7 +351,10 @@ test('the portal Web API reads a stored note body back for documentbody', async 
   const body = await entity.json();
   assert.equal(entity.status, 200, JSON.stringify(body));
   assert.equal(Buffer.from(body.documentbody, 'base64').toString(), 'evidence');
+  // /<column> is refused before any read (hosted session F1 summary-F1 API-02c); /$value answers the stored body.
   const property = await fetch(`${sim.url}/_api/annotations(${NOTE})/documentbody`, { headers });
-  assert.equal(property.status, 200);
-  assert.equal(Buffer.from((await property.json()).value, 'base64').toString(), 'evidence');
+  assert.equal(property.status, 403);
+  const value = await fetch(`${sim.url}/_api/annotations(${NOTE})/documentbody/$value`, { headers });
+  assert.equal(value.status, 200);
+  assert.equal(Buffer.from(await value.text(), 'base64').toString(), 'evidence');
 });

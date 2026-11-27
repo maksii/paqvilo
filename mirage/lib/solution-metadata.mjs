@@ -89,6 +89,7 @@ function parseViewDocument(xml, entity, file, lcid) {
   for (const view of document.name === 'savedquery' ? [document] : descendants(document, 'savedquery')) {
     const fetch = descendants(child(view, 'fetchxml'), 'fetch')[0];
     const layout = child(view, 'layoutxml');
+    const grid = descendants(layout, 'grid')[0];
     views.push({
       id: norm(text(view, 'savedqueryid') ?? path.basename(file, '.xml')),
       entity,
@@ -108,6 +109,8 @@ function parseViewDocument(xml, entity, file, lcid) {
           ...(c.attrs.width == null ? { widthless: true } : {}),
           ...(c.attrs.disableSorting === '1' ? { sortDisabled: true } : {}),
         })),
+      // The exported layout as XML, for services that return the view definition (portal-chart-builder.mjs).
+      ...(grid ? { layoutXml: serialize(grid) } : {}),
       file,
     });
   }
@@ -145,10 +148,14 @@ export function portalMetadataEntities(portal) {
   ];
 }
 
-function notesCell(cell, control, lcid) {
+function notesCell(cell, control, parameters, lcid) {
+  // A notescontrol whose default tab is ActivitiesTab is the activity timeline (FormXmlCellMetadata in the
+  // open-sourced portal code; Learn: view-all-activities-in-portal-timeline, "Default tab").
+  const defaultTab = text(parameters, 'DefaultTabId');
   return {
     type: 'notes',
     id: control.attrs.id,
+    ...(defaultTab ? { defaultTab } : {}),
     label: label(child(cell, 'labels'), lcid) || 'Notes',
     showLabel: cell.attrs.showlabel !== 'false',
     hidden: cell.attrs.visible === 'false',
@@ -176,19 +183,36 @@ function subgridCell(cell, control, parameters, context) {
   const entity = norm(text(parameters, 'TargetEntityType'));
   const viewId = norm(text(parameters, 'ViewId'));
   const view = metadata.views.find((candidate) => candidate.entity === entity && candidate.id === viewId);
+  const viewFields = (entry) =>
+    (entry?.fields ?? []).map((field) => ({ ...metadata.entities[entity]?.fields[field.name], ...field }));
+  // With the view picker on, the subgrid also offers its ViewIds (the default view first): its toolbar draws the view
+  // dropdown (captured on a code component subgrid, paqvilo-developer pcf-parity summary-F section 4).
+  const pickerViews =
+    text(parameters, 'EnableViewPicker') === 'true'
+      ? [
+          ...new Set(
+            String(text(parameters, 'ViewIds') ?? '')
+              .split(',')
+              .map(norm)
+              .map((id) => id.trim()),
+          ),
+        ]
+          .filter((id) => id && id !== viewId)
+          .map((id) => metadata.views.find((candidate) => candidate.entity === entity && candidate.id === id))
+          .filter((entry) => entry?.fetchXml)
+          .map((entry) => ({ id: entry.id, name: entry.name, fetchXml: entry.fetchXml, fields: viewFields(entry) }))
+      : [];
   return {
     type: 'subgrid',
     id: control.attrs.id,
     entity,
     viewId,
+    ...(pickerViews.length ? { pickerViews } : {}),
     relationship: text(parameters, 'RelationshipName'),
     searchEnabled: text(parameters, 'EnableQuickFind') === 'true',
     recordsPerPage: Number(text(parameters, 'RecordsPerPage')) || undefined,
     ...componentBindings(control),
-    fields: (view?.fields ?? []).map((field) => ({
-      ...metadata.entities[entity]?.fields[field.name],
-      ...field,
-    })),
+    fields: viewFields(view),
     fetchXml: view?.fetchXml,
     label: label(child(cell, 'labels'), lcid),
     // A hidden label leaves the subgrid heading empty.
@@ -226,9 +250,17 @@ function quickFormCell(cell, control, quickForms, context) {
   };
 }
 
+/** Identifies a bound column the portal can render as a standard textarea. */
+export function isNativeTextarea(field, type = String(field.dataverseType ?? '').toLowerCase()) {
+  return (
+    /^(memo|ntext)$/.test(type) || field.type === 'textarea' || String(field.format ?? '').toLowerCase() === 'textarea'
+  );
+}
+
 function fieldCell(cell, control, parameters, context, fields) {
   const { metadata, lcid, componentBindings, richTextControls, known, referenceFields } = context;
   const name = norm(control.attrs.datafieldname);
+  const rowspan = Number(cell.attrs.rowspan);
   const lookupViewId = norm(text(parameters, 'DefaultViewId'));
   const lookupView = metadata.views.find((view) => view.id === lookupViewId);
   const controlDefinition = {
@@ -262,8 +294,10 @@ function fieldCell(cell, control, parameters, context, fields) {
         }
       : {}),
     colspan: Number(cell.attrs.colspan) || 1,
-    rowspan: Number(cell.attrs.rowspan) || 1,
+    rowspan: rowspan || 1,
   };
+  // A default one-row table cell can still have a default-height textarea.
+  if (!rowspan && isNativeTextarea(controlDefinition)) controlDefinition.rowspanDefaulted = true;
   fields.push(controlDefinition);
   return controlDefinition;
 }
@@ -276,7 +310,7 @@ function buildFormCell(cell, context, fields) {
     norm(control?.attrs.classid) === '06375649-c143-495e-a496-c962e5b4488e' ||
     control?.attrs.indicationOfNotes === 'true'
   )
-    return notesCell(cell, control, lcid);
+    return notesCell(cell, control, parameters, lcid);
   if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) return webResourceCell(cell, control, parameters, lcid);
   const datasetControl = Boolean(text(parameters, 'TargetEntityType') && text(parameters, 'ViewId'));
   if (control?.attrs.indicationOfSubgrid === 'true' || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl)
@@ -549,10 +583,14 @@ function selectFormTabs(tree, definition, lcid) {
       .update('\0');
   }
   // Table columns come from the merged schema; only tables with exported definitions are listed.
-  const tables = {};
+  // tableCatalog names every table the selected sources define, loaded or not, with its entity set, so a caller can
+  // tell a table these sources lack from one this import did not request (and request it on demand).
+  const tables = {},
+    tableCatalog = {};
   for (const [name, table] of Object.entries(schema.tables)) {
-    if (names && !names.has(name)) continue;
     if (!table.layers?.length && table.origin !== 'dataverse-reference') continue;
+    tableCatalog[name] = { entitySet: table.entitySet ?? null, entitySetSource: table.entitySetSource ?? null };
+    if (names && !names.has(name)) continue;
     tables[name] = {
       entity: name,
       label: table.labels?.[String(lcid)] ?? Object.values(table.labels ?? {})[0],
@@ -570,6 +608,7 @@ function selectFormTabs(tree, definition, lcid) {
       isOptimisticConcurrencyEnabled: table.isOptimisticConcurrencyEnabled,
       primaryIdAttribute: table.primaryIdAttribute,
       primaryNameAttribute: table.primaryNameAttribute,
+      ...(table.isActivity === undefined ? {} : { isActivity: table.isActivity }),
       schemaComplete: table.schemaComplete,
       completeness: table.completeness,
     };
@@ -625,6 +664,9 @@ function selectFormTabs(tree, definition, lcid) {
     roots: scan.inputs.filter((input) => !['missing', 'unsupported'].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,
+    tableCatalog,
+    // The table names this import was limited to (null: every table).
+    requestedTables: names ? [...names] : null,
     forms: dedupe(forms, 'form'),
     views: dedupe(views, 'view'),
     sourceComponents: [
@@ -807,10 +849,10 @@ function mapPortalForms(portal, componentSchemas, diagnostics, resolve) {
     try {
       const diagnosticStart = diagnostics.length;
       const schema = resolve(definition);
-      if (schema) {
-        componentSchemas[definition.id] = schema;
-        componentSchemas[definition.name] = schema;
-      } else if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
+      // Keyed by record ID only: a name is not unique across basic forms and lists, so a name key let a form
+      // without its own FormXml pick up a same-named list's view (or another form's layout).
+      if (schema) componentSchemas[definition.id] = schema;
+      else if (!diagnostics.slice(diagnosticStart).some((item) => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
         diagnostics.push({
           code: 'SYSTEMFORM_UNRESOLVED',
           id: definition.id,
@@ -844,7 +886,6 @@ function mapPortalLists(portal, metadata, componentSchemas, diagnostics) {
         sourceFile: view.file,
       };
       componentSchemas[list.id] = schema;
-      componentSchemas[list.name] = schema;
     } else
       diagnostics.push({
         code: 'SYSTEMVIEW_UNRESOLVED',

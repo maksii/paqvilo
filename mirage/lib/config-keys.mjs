@@ -16,6 +16,8 @@ import { identityProviderSettings } from './identity-provider-settings.mjs';
 import { resolveDeploymentProfiles } from './deployment-profiles.mjs';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
 import { validateLocalOverrides } from './local-overrides.mjs';
+import { pcfSettings } from './pcf-sources.mjs';
+import { implicitGrantSettings } from './implicit-grant-settings.mjs';
 
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
@@ -407,6 +409,13 @@ export const MIRAGE_SETTINGS = Object.freeze({
     doc: 'Platform settings with their evidence.',
     parse: (value, label) => platformConfig(value, label),
   },
+  uploadedAssemblies: {
+    scopes: ['catalogue', 'project'],
+    option: 'uploadedAssemblies',
+    identity: true,
+    doc: 'clr (default) or placeholder: the default mode of a plug-in step whose type is in an uploaded assembly.',
+    parse: choice(['clr', 'placeholder'], 'must be clr or placeholder'),
+  },
   dataverse: {
     scopes: ['catalogue', 'project'],
     option: 'dataverse',
@@ -440,6 +449,14 @@ export const MIRAGE_SETTINGS = Object.freeze({
     option: 'environmentVariables',
     doc: 'Local environment-variable values by schema name.',
     parse: (value) => value,
+  },
+  // Paths only: the key files are read where tokens are signed (auth-token.mjs), never copied into options or state.
+  implicitGrant: {
+    scopes: ['project'],
+    option: 'implicitGrant',
+    identity: true,
+    doc: 'Stable implicit grant token signing keys: signingKeys of { privateKeyFile, thumbprint } (PEM RSA files outside the export; a thumbprint applies when CustomCertificates/ImplicitGrantflow names it).',
+    parse: (value, label, base) => implicitGrantSettings(value, label, base),
   },
   // Contract keys whose validators live in their owning modules (registered when those modules load).
   connections: {
@@ -485,6 +502,14 @@ export const MIRAGE_SETTINGS = Object.freeze({
     contract: 'mirage/docs/canvas-apps.md',
     doc: 'Canvas surface switch (enabled) and project canvas app sources (sources).',
     parse: lazy('canvas', 'canvas-source.mjs'),
+  },
+  pcf: {
+    scopes: ['catalogue', 'project'],
+    option: 'pcf',
+    identity: true,
+    contract: 'mirage/docs/code-components.md',
+    doc: 'Code component build outputs (sources), the per-resource byte cap (maxResourceBytes), local React/ReactDOM/Fluent UI files (platformLibraries) and the Liquid tag dataset binding (liquidDatasetBinding: none, the default as on Power Pages, or view, a local-only explicit view binding through the portal Web API).',
+    parse: (value, label, base) => pcfSettings(value, label, base),
   },
   codeApps: {
     scopes: ['project'],

@@ -1,0 +1,277 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "page-layout",
+  "suite": "rewrite-breadcrumb-bootstrap5",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages",
+    "version": "9.8.9.29",
+    "scope": "Two signed-in page loads on 2026-11-23 of seven invented pages on rewrite page templates (FullPage.aspx, WebForm.aspx, WebFormNoValidation.aspx) of one Enhanced-data-model site with Site/BootstrapV5Enabled true and an invented Breadcrumbs web template in place of the site's own. Establishes the breadcrumb list of these rewrite layouts only, not the rest of the page heading and not Page.aspx or Listing.aspx."
+  },
+  "captures": [
+    {
+      "id": "native-bs5-run-5",
+      "sha256": "d3f4a9f54cb55bb59b275b4869dc0ded522dddcc5d8050a8371134caff5ba25f",
+      "capturedAt": "2026-11-23"
+    },
+    {
+      "id": "native-bs5-run-6",
+      "sha256": "301955aa138c78c94c1d612d79e51186167a202d0cf15ad93cb0b3ced500009c",
+      "capturedAt": "2026-11-23"
+    }
+  ],
+  "cases": [
+    {
+      "id": "bc-root",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/WebFormNoValidation.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-second",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/FullPage.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "Second level é ü ß — ☃",
+            "partialUrl": "second-level",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/FullPage.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">Second level é ü ß &#8212; &#9731;</li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-leaf",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/WebForm.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "Second level é ü ß — ☃",
+            "partialUrl": "second-level",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/FullPage.aspx"
+          },
+          {
+            "title": "Leaf",
+            "partialUrl": "leaf",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebForm.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/second-level/\">Second level é ü ß &#8212; &#9731;</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">Leaf</li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-hidden",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/WebFormNoValidation.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "Hidden from the sitemap",
+            "partialUrl": "hidden",
+            "hiddenFromSitemap": true,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">Hidden from the sitemap</li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-below-hidden",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/WebFormNoValidation.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "Hidden from the sitemap",
+            "partialUrl": "hidden",
+            "hiddenFromSitemap": true,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "Below a hidden page",
+            "partialUrl": "below",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/hidden/\">Hidden from the sitemap</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">Below a hidden page</li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-spaces",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/WebFormNoValidation.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "  Two  spaces   inside and around  ",
+            "partialUrl": "spaces",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">  Two  spaces   inside and around  </li>\r\n</ul>"
+      },
+      "volatile": []
+    },
+    {
+      "id": "bc-characters",
+      "input": {
+        "settings": {
+          "Site/BootstrapV5Enabled": "true"
+        },
+        "rewriteUrl": "~/Pages/FullPage.aspx",
+        "pages": [
+          {
+            "title": "Home",
+            "partialUrl": "/",
+            "hiddenFromSitemap": false
+          },
+          {
+            "title": "Crumbs & <b>Tags</b> \"quoted\" 'single' wider than 24 characters",
+            "partialUrl": "bc",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/WebFormNoValidation.aspx"
+          },
+          {
+            "title": "A B¡C­DſEɏFɐGͯHͰI—J😀K",
+            "partialUrl": "characters",
+            "hiddenFromSitemap": false,
+            "rewriteUrl": "~/Pages/FullPage.aspx"
+          }
+        ],
+        "templates": {
+          "Breadcrumbs": "<ol class=\"bc-site-template-marker\">{% for crumb in page.breadcrumbs %}<li>{{ crumb.title | escape }}</li>{% endfor %}<li>{{ page.title | escape }}</li></ol>"
+        }
+      },
+      "output": {
+        "breadcrumb": "<ul class=\"breadcrumb\"><li class=\"breadcrumb-item\"><a href=\"/\">Home</a></li>\r\n<li class=\"breadcrumb-item\"><a href=\"/bc/\">Crumbs &amp; &lt;b&gt;Tags&lt;/b&gt; &quot;quoted&quot; &#39;single&#39; wider than 24 characters</a></li>\r\n<li class=\"active&#32;breadcrumb-item\">A&#160;B¡C&#173;DſEɏFɐGͯH&#880;I&#8212;J&#128512;K</li>\r\n</ul>"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -33,6 +33,43 @@ test('rendered shape selects unreferenced snippet candidates and declares the ex
   assert.equal(report.elementSourceLimits.truncated, true);
 });
 
+// @test-kind contract: the inspection says when it stopped following web files at its bounds or could not read every page file
+test('input limits report the web-file search and rendered asset bounds that were reached', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const webFile = (name, body) => {
+    fs.writeFileSync(
+      path.join(fx.portal, `web-files/${name}.webfile.yml`),
+      `adx_webfileid: ${name.replace('.', '-')}\nadx_name: ${name}\nadx_partialurl: ${name}\nadx_parentpageid: home\nfilename: ${name}`,
+    );
+    fs.writeFileSync(path.join(fx.portal, 'web-files', name), body);
+  };
+  // A chain of stylesheets ten @import levels deep: the search follows eight.
+  for (let index = 0; index < 10; index++) webFile(`chain-${index}.css`, `@import "/chain-${index + 1}.css";`);
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    '<link rel="stylesheet" href="/chain-0.css">',
+  );
+  const inspector = createSourceInspector({ sourceDir: fx.portal });
+  const chained = (await inspector.inspect('/', {})).report;
+  assert.deepEqual(
+    [chained.inputLimits.roundsTruncated, chained.inputLimits.webFilesTruncated, chained.inputLimits.assetsTruncated],
+    [true, false, false],
+  );
+  // More than a hundred stylesheets: the first hundred are searched; the page read stopped at its 300 files.
+  for (let index = 0; index < 105; index++) webFile(`many-${index}.css`, '.x { color: red; }');
+  fs.writeFileSync(
+    path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'),
+    Array.from({ length: 105 }, (_, index) => `<link rel="stylesheet" href="/many-${index}.css">`).join(''),
+  );
+  inspector.invalidate();
+  const many = (await inspector.inspect('/', { assetsTruncated: true })).report;
+  assert.deepEqual(
+    [many.inputLimits.roundsTruncated, many.inputLimits.webFilesTruncated, many.inputLimits.assetsTruncated],
+    [false, true, true],
+  );
+});
+
 // @test-kind contract: truncated script notes use the same root-relative display path as their source row
 test('truncated script notes use the same root-relative display path as their source row', async (t) => {
   const fx = inspectionFixture();

@@ -1,9 +1,9 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { csdlAttributes } from './lib/csdl-attributes.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, isDeepStrictEqual } from 'node:util';
-import { fileURLToPath } from 'node:url';
 import { parseFailureMessage } from '../lense/cli-options.mjs';
 
 const credentialHeader =
@@ -1106,7 +1106,7 @@ function operatorMessage(error) {
   if (error.code?.startsWith('ERR_PARSE_ARGS_')) return parseFailureMessage(error);
   return 'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.';
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(operatorMessage(error));
     process.exitCode = 1;

@@ -1,5 +1,7 @@
 import { validateCanvasDisplay } from './canvas-display.mjs';
 import { validateDataverseAttributeErrorContexts } from './dataverse-attribute-context.mjs';
+import { isTimeZoneName } from './portal-query-time-zone.mjs';
+import { observedFirewall, observedIpRestrictions } from './edge-access.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
@@ -18,6 +20,8 @@ import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { parseSetting, projectKeys } from './config-keys.mjs';
 import { jsonErrorPosition, withoutContent } from './path-options.mjs';
 import './provider-modules.mjs';
+import { codeComponentGuid } from './code-components.mjs';
+import { readSigningKey } from './auth-token.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -88,8 +92,9 @@ const OBSERVED_CHOICES = {
   webApiInnerError: ['all-errors', 'dataverse-errors'],
   webApiUpdatePermissionQuery: ['native-classic'],
   webApiMutationPermissionText: ['table'],
-  webApiCdsErrorMessage: ['CDS error occurred.', 'Common Data Service error occurred.'],
-  webApiCdsErrorCode: ['innererror', 'cdscode'],
+  // Defaults first: the text of every hosted capture (the demo site, hosted session F1) and the cdscode F1 sent.
+  webApiCdsErrorMessage: ['Common Data Service error occurred.', 'CDS error occurred.'],
+  webApiCdsErrorCode: ['cdscode', 'innererror'],
   webApiAntiForgery: ['cookie-mismatch-403', 'decryption-401'],
   webApiReferenceErrors: ['dataverse', 'unexpected'],
   webApiInvalidDate: ['invalid-format', 'crm-minimum'],
@@ -98,6 +103,11 @@ const OBSERVED_CHOICES = {
   webApiErrorDetails: ['diagnostic', 'odata-wrapper'],
   webApiWriteResponse: ['local', 'portal-classic'],
   webApiReadResponse: ['local', 'jsonnet-indented'],
+  webApiFileDownload: ['portal-range'],
+  // GET routes below an entity: "refused" (hosted session F1: /<column> and navigations to another table answer 403 All
+  // Columns, a collection navigation to the same table names itself; lib/webapi-handler.mjs assertMemberRead) or
+  // "served" (the former local model).
+  webApiMemberReads: ['refused', 'served'],
   webApiRequestBody: ['strict', 'portal-classic'],
   anonymousDataAccess: ['allowed', 'blocked'],
   // Replay a recorded inactive-parent defect only for a site observed to have it.
@@ -111,8 +121,16 @@ const OBSERVED_CHOICES = {
   odataPermissionQueryPipeline: ['modeled', 'native-classic'],
   odataSameTableParentAnchor: ['shared-root'],
   liquidFetchExecution: ['eager', 'lazy-query-drop'],
+  liquidFetchTop: ['drop-valid'],
+  // The portal object model's authoring conversion of Liquid and Web API FetchXML (lib/portal-fetchxml.mjs).
+  portalFetchXmlAuthoring: ['portal-classic'],
+  // eq-userid, ne-userid, eq-businessid and ne-businessid of portal FetchXML evaluate against the site's application user.
+  portalFetchIdentityOperators: ['application-user'],
   liquidFetchRights: ['read-only', 'native-classic'],
   liquidFetchErrorMessage: ['diagnostic', 'target-invocation'],
+  // The environment's SharePoint integration: on with the sharepointDocuments storage route, or "off" as hosted session F7
+  // recorded it (lib/sharepoint-document-table.mjs).
+  sharePointIntegration: ['storage', 'off'],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
   // Other status values are outside this observation and keep their source behavior.
   redirect301: ['configured', 'temporary'],
@@ -120,10 +138,31 @@ const OBSERVED_CHOICES = {
   webFileMimeCharset: ['utf8', 'source'],
   siteMarkerRedirect: ['resolve', 'null-reference'],
   nativeFormTransport: ['json', 'postback'],
+  // Native number boxes of a page culture other than the captured en-US and de-DE: "captured" (default: invariant
+  // numbers, FORM_NUMBER_CULTURE_UNCAPTURED) or "locale-data" (the culture's marks from the locale data, uncaptured).
+  nativeNumberCultures: ['captured', 'locale-data'],
+  // /_services/execute-workflow: "list-action" (Mirage's default: a list's own workflow action, its signed
+  // configuration and read/write access to the record) or "any-on-demand" (hosted session F2 OPS-01f: any on-demand
+  // workflow, run as the site's application user, with no list or secure configuration; lib/native-services.mjs).
+  executeWorkflowAccess: ['list-action', 'any-on-demand'],
+  // Local account registration with a taken user name or address: "generic" (Mirage's default: 409 naming neither) or
+  // "named" (hosted session F4 AUTH-04g: `The username "x" is already taken.`; lib/local-accounts.mjs).
+  registrationDuplicateMessages: ['generic', 'named'],
+  // A local account confirmation link: "one-time" (Mirage's default) or "reusable" (hosted session F4 AUTH-04g).
+  confirmationLinkReuse: ['one-time', 'reusable'],
+  // The private-site admission deadline: "application-cookie" (Mirage's default: the ExpireTimeSpan, 24 hours without
+  // it) or "fixed-day" (24 hours whatever the cookie lifetime; hosted session F4 AUTH-06h held an admission at least
+  // 59 minutes with a 6-minute cookie; lib/external-login.mjs admissionSessionLifetime).
+  privateSiteAdmissionLifetime: ['application-cookie', 'fixed-day'],
+  // A Power Pages cloud flow trigger's declared schema: "enforced" (Mirage's default: input the schema refuses fails the run
+  // with InvalidRequest and reports FLOW_TRIGGER_SCHEMA_ENFORCED) or "not-enforced" (hosted session F8: the flow runs with
+  // what was sent; lib/flow-runtime.mjs validateTriggerInput).
+  powerPagesFlowTriggerSchema: ['enforced', 'not-enforced'],
   // List OData feeds: "removed" (the platform default since June 2026, LIST_ODATA_FEED_REMOVED:
   // /_odata/<feed> answers the Page Not Found page) or "served" (a site observed still serving them).
   listODataFeeds: ['removed', 'served'],
   modalLoadOrdering: ['ready', 'immediate'],
+  modalFormShell: ['signed-in-zero-website', 'signed-in-exported-or-zero-website'],
   subgridLabelMarkup: ['encoded', 'sanitized'],
   webApiErrorStacks: ['diagnostic', 'response-template'],
   dataverseErrorStacks: ['diagnostic', 'response-template'],
@@ -133,10 +172,17 @@ const OBSERVED_CHOICES = {
   // Site visibility (Power Platform admin, not exported): "private" renders the platform's
   // private-site banner first in the layout body (lib/liquid.mjs).
   siteVisibility: ['public', 'private'],
+  // "platform": the site sends the default policy Learn documents for sites created after November 10, 2025 while it
+  // sets no HTTP/Content-Security-Policy (lib/response-headers.mjs sitePolicy). The export does not show it.
+  defaultContentSecurityPolicy: ['none', 'platform'],
+  // Which script elements get the nonce of a nonce policy (lib/render-provenance.mjs): "proven" (the default, fail-closed:
+  // only scripts and handlers the exported source or the platform wrote) or "every-script" (every script element and
+  // inline handler, also those data writes, as hosted session F3 observed).
+  scriptNonceScope: ['proven', 'every-script'],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ['enforced', 'exempt'],
-  webApiLookupFields: ['logical-aliases', 'explicit-wire'],
+  webApiLookupFields: ['explicit-wire', 'logical-aliases'],
   // A site's Liquid math adapter may convert string inputs before decimal multiplication.
   // The pinned DotLiquid contract remains the default; a different result needs site evidence.
   liquidDecimalStringMultiply: ['dotliquid', 'convert'],
@@ -145,6 +191,21 @@ const OBSERVED_CHOICES = {
   liquidServiceTags: ['dotliquid', 'observed'],
   // Records output only; an empty response does not establish the native integration's admin state.
   powerBiOutput: ['empty', 'placeholder'],
+  // Generative AI for site users (Copilot hub governance at tenant, environment or site level; Power Platform admin,
+  // not exported): "disabled" answers the Data Summarization API with 400 90041001 (lib/portal-data-summary.mjs).
+  siteUserGenerativeAi: ['enabled', 'disabled'],
+  // Web pages in a non-visible publishing state in portal search results: "excluded" (Mirage's default for a visitor
+  // who cannot preview unpublished content) or "listed" (hosted session F3 PAGE-04f: a hosted site with Dataverse search
+  // lists them to every visitor; lib/portal-search.mjs).
+  searchUnpublishedPages: ['excluded', 'listed'],
+  // entities.knowledgearticle with KnowledgeManagement/ContentAccessLevel/Enabled: "filtered" (Mirage's default: only an
+  // article that shares a content access level with the visitor) or "unfiltered" (hosted session F3 AUTH-07c: an enhanced
+  // site returns every article through entities; lib/liquid.mjs).
+  knowledgeEntitiesContentAccess: ['filtered', 'unfiltered'],
+  // The stamp of a new row's rollup columns (lib/dataverse-rollup.mjs): "calculated" (Mirage's default and a column created
+  // with its definition through the Web API: state 1, _date the row's createdon) or "not-calculated" (summary-F6 DATA-04c2:
+  // a column saved by the classic rollup designer: state 0, 0 or null, _date its last mass calculation or null).
+  rollupCreateState: ['calculated', 'not-calculated'],
   liquidObjectCompatibility: ['dotliquid', 'observed'],
   liquidHtmlVoidSerialization: ['dotliquid', 'html'],
   liquidHtmlSafeInput: ['excluded', 'observed'],
@@ -158,9 +219,19 @@ const OBSERVED_CHOICES = {
   liquidMissingData: ['diagnostic', 'empty'],
   requestValidation: ['diagnostic', 'aspnet-query'],
   pageErrorPresentation: ['diagnostic', 'generic-error'],
+  // The admin center's "Disable custom errors" site action (not exported): the error page's RTGE01 server log entry
+  // gains the exception message (hosted session F3).
+  customErrors: ['enabled', 'disabled'],
 };
 
 function applyObservedBasics(value, label, observed) {
+  // portalId: the site's hosted portal id (the admin-center id, Microsoft.Dynamic365.Portal.id and a flow's siteId), which
+  // differs from the website record id and is not in an export (hosted session F8 section 1).
+  if (value.portalId != null) {
+    if (typeof value.portalId !== 'string' || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value.portalId))
+      throw new Error(`${label}.portalId must be a GUID`);
+    observed.portalId = value.portalId.toLowerCase();
+  }
   if (value.canvasDisplay !== undefined)
     observed.canvasDisplay = validateCanvasDisplay(value.canvasDisplay, `${label}.canvasDisplay`);
   if (value.webApiFetchXmlTransport != null) {
@@ -180,6 +251,22 @@ function applyObservedBasics(value, label, observed) {
         `${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`,
       );
     observed.webApiFetchXmlTransport = { ...transport };
+  }
+  // A read cache the site was observed with (hosted session F1 follow-up: repeated identical reads were answered from a
+  // cache for at least 195 s and under 415 s), so the lifetime must lie in that window.
+  if (value.webApiReadCache != null) {
+    const cache = value.webApiReadCache;
+    if (
+      !cache ||
+      typeof cache !== 'object' ||
+      Array.isArray(cache) ||
+      Object.keys(cache).some((key) => key !== 'seconds') ||
+      !Number.isInteger(cache.seconds) ||
+      cache.seconds < 195 ||
+      cache.seconds > 414
+    )
+      throw new Error(`${label}.webApiReadCache must be { seconds } with an integer from 195 to 414`);
+    observed.webApiReadCache = { seconds: cache.seconds };
   }
   if (value.webApiTwoDigitYearMax != null) {
     if (
@@ -438,17 +525,22 @@ function applyObservedCodeComponents(value, label, observed) {
     throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
   observed.codeComponents = {};
   for (const [raw, schema] of Object.entries(value.codeComponents)) {
-    const id = raw.replace(/[{}]/g, '').toLowerCase();
-    if (
-      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
-      typeof schema !== 'string' ||
-      !/^[\w.]+$/.test(schema)
-    )
+    const id = codeComponentGuid(raw);
+    if (!id || typeof schema !== 'string' || !/^[\w.]+$/.test(schema))
       throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
     if (Object.hasOwn(observed.codeComponents, id))
       throw new Error(`${label}.codeComponents has a duplicate component GUID`);
     observed.codeComponents[id] = schema;
   }
+}
+
+// The zone portal queries evaluate UserLocal date operators in (lib/portal-query-time-zone.mjs): an IANA zone name or
+// "runtime" (the zone this local runtime is configured for).
+function portalQueryTimeZone(raw, label) {
+  const zone = typeof raw === 'string' ? raw.trim() : '';
+  if (zone !== 'runtime' && !isTimeZoneName(zone))
+    throw new Error(`${label}.portalQueryTimeZone must be an IANA time zone name or runtime`);
+  return zone;
 }
 
 function applyObservedUserSettings(value, label, observed) {
@@ -464,6 +556,8 @@ function applyObservedUserSettings(value, label, observed) {
       throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
     observed.portalApplicationUserId = id;
   }
+  if (value.portalQueryTimeZone != null)
+    observed.portalQueryTimeZone = portalQueryTimeZone(value.portalQueryTimeZone, label);
   if (value.loginPath != null) {
     const loginPath = String(value.loginPath).trim();
     if (!/^\/(?!\/)[^?#\s]*$/.test(loginPath))
@@ -541,6 +635,76 @@ function applyObservedChoices(value, label, observed) {
   }
 }
 
+// RFC 6797 section 6.1: one max-age with a delta-seconds value (optionally quoted), optional includeSubDomains;
+// preload is the common preload-list token. Each directive at most once.
+function applyObservedStrictTransportSecurity(value, label, observed) {
+  if (value.strictTransportSecurity == null) return;
+  const header = typeof value.strictTransportSecurity === 'string' ? value.strictTransportSecurity.trim() : '';
+  const directives = header
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+  const names = directives.map((directive) => directive.split('=')[0].trim().toLowerCase());
+  const valid =
+    header.length <= 256 &&
+    !/[\r\n]/.test(header) &&
+    new Set(names).size === names.length &&
+    names.includes('max-age') &&
+    directives.every((directive) =>
+      /^(?:max-age\s*=\s*(?:\d{1,10}|"\d{1,10}")|includesubdomains|preload)$/i.test(directive),
+    );
+  if (!valid)
+    throw new Error(
+      `${label}.strictTransportSecurity must be the observed header value, such as max-age=31536000; includeSubDomains`,
+    );
+  observed.strictTransportSecurity = header;
+}
+
+// The hosted edge in front of the site: its IP allow list and WAF custom rules (lib/edge-access.mjs).
+function applyObservedEdge(value, label, observed) {
+  if (value.ipRestrictions != null)
+    observed.ipRestrictions = observedIpRestrictions(value.ipRestrictions, `${label}.ipRestrictions`);
+  if (value.firewall != null) observed.firewall = observedFirewall(value.firewall, `${label}.firewall`);
+}
+
+const CORS_PAGE_PATH = /^\/(?:[\w.~!$&'()*+,;=:@%-]+\/)+$/;
+// Authored pages the site was observed sharing across origins (lib/page-cors.mjs): canonical page paths ending in "/".
+function applyObservedCorsPages(value, label, observed) {
+  if (value.corsPages == null) return;
+  const paths = value.corsPages;
+  if (!Array.isArray(paths) || !paths.length || paths.length > 50)
+    throw new Error(`${label}.corsPages must list 1 to 50 exported page paths`);
+  const seen = new Set();
+  for (const path of paths) {
+    if (
+      typeof path !== 'string' ||
+      !CORS_PAGE_PATH.test(path) ||
+      path.split('/').some((segment) => segment === '.' || segment === '..')
+    )
+      throw new Error(`${label}.corsPages entries must be page paths such as /identity-layout/ (not the root)`);
+    if (seen.has(path.toLowerCase())) throw new Error(`${label}.corsPages lists ${path} twice`);
+    seen.add(path.toLowerCase());
+  }
+  // A cross-origin page answer bypasses no private-site gate: the observation must also record a public site
+  // (applyObservedChoices has already read siteVisibility).
+  if (observed.siteVisibility !== 'public')
+    throw new Error(`${label}.corsPages requires siteVisibility public; set both or neither`);
+  observed.corsPages = [...paths];
+}
+
+function applyObservedWildcardExpiry(value, label, observed) {
+  if (!Object.hasOwn(value, 'webApiWildcardExpiresAt')) return;
+  const expires = value.webApiWildcardExpiresAt;
+  const instant = typeof expires === 'string' ? Date.parse(expires) : Number.NaN;
+  if (
+    observed.webApiWildcard !== 'exempt' ||
+    !Number.isFinite(instant) ||
+    new Date(instant).toISOString() !== expires.replace(/(:\d\d)Z$/, '$1.000Z')
+  )
+    throw new Error(`${label}.webApiWildcardExpiresAt requires an exempt wildcard and an ISO UTC timestamp`);
+  observed.webApiWildcardExpiresAt = expires;
+}
+
 /**
  * Observed platform behaviour that the export cannot express, recorded per site with the
  * evidence for it: `{ loginPath?, headers?, webApiInnerError?, anonymousDataAccess?, bootstrapStylesheet?, evidence }`.
@@ -570,12 +734,20 @@ export function observedConfig(value, label = 'observed') {
         'formSubmissionErrorMessage',
         'fetchPreOperationSerialization',
         'webApiGlobalMetadataVersion',
+        'webApiWildcardExpiresAt',
         'tablePermissionGrantOrder',
         'odataPermissionGrantOrder',
         'webApiTwoDigitYearMax',
         'webApiFetchXmlTransport',
+        'webApiReadCache',
         'webApiSelfNnPermissionErrors',
         'dataverseAttributeErrorContexts',
+        'strictTransportSecurity',
+        'ipRestrictions',
+        'firewall',
+        'corsPages',
+        'portalQueryTimeZone',
+        'portalId',
       ].includes(key) &&
       !Object.hasOwn(OBSERVED_CHOICES, key)
     )
@@ -607,6 +779,10 @@ export function observedConfig(value, label = 'observed') {
   applyObservedAuthority(value, label, observed);
   applyObservedSelfNnErrors(value, label, observed);
   applyObservedChoices(value, label, observed);
+  applyObservedWildcardExpiry(value, label, observed);
+  applyObservedCorsPages(value, label, observed);
+  applyObservedStrictTransportSecurity(value, label, observed);
+  applyObservedEdge(value, label, observed);
   if (!Object.keys(observed).length) return null;
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)
@@ -853,6 +1029,40 @@ function resolveProjectSettings(raw, runtime, base, diagnostics) {
   return settings;
 }
 
+const inside = (root, file) => {
+  const relative = path.relative(root, file);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+// Each configured implicit grant signing key file must read as a usable key and stay outside every portal export and
+// Solution folder, so a source checkout or a pac upload never carries it. A failure names the file and the reason only.
+async function validateImplicitGrantKeys(settings, portals, solutions) {
+  const keys = settings.implicitGrant?.signingKeys ?? [];
+  if (!keys.length) return;
+  const roots = await Promise.all(
+    [...portals.map((portal) => portal.sourceDir), ...solutions.map((solution) => solution.root)].map((root) =>
+      fs.realpath(root).catch(() => path.resolve(root)),
+    ),
+  );
+  for (const [index, key] of keys.entries()) {
+    const label = `implicitGrant.signingKeys[${index}].privateKeyFile`;
+    try {
+      readSigningKey(key.privateKeyFile);
+    } catch (error) {
+      throw Object.assign(new Error(`${label}: ${error.message}`), {
+        code: error.code ?? 'IMPLICIT_GRANT_SIGNING_KEY_INVALID',
+      });
+    }
+    const file = await fs.realpath(key.privateKeyFile);
+    if (roots.some((root) => inside(root, file)))
+      throw Object.assign(
+        new Error(
+          `${label}: ${key.privateKeyFile} is inside a portal export or Solution folder; keep signing keys outside the sources.`,
+        ),
+        { code: 'IMPLICIT_GRANT_SIGNING_KEY_INVALID' },
+      );
+  }
+}
+
 function validateModelDrivenTargets(settings, references) {
   const targetOrigins = new Set();
   for (const target of settings.modelDriven?.targets ?? []) {
@@ -914,6 +1124,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
   validateEnvironmentVariables(environmentVariables);
   const settings = resolveProjectSettings(raw, runtime, base, diagnostics);
   validateModelDrivenTargets(settings, references);
+  if (checkSources) await validateImplicitGrantKeys(settings, portals, solutions);
   return {
     configFile: absoluteConfig,
     stateNamespace: createHash('sha256')

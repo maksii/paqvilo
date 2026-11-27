@@ -18,6 +18,7 @@ import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { relationshipsOf, standardGlobalOptionSets } from './dataverse-standard.mjs';
 import { assertElasticManyToMany, assertElasticOneToMany, isElastic, partitionColumnOf } from './dataverse-elastic.mjs';
 import { metadataComponentId } from './dataverse-metadata.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 import { SCHEMA_NAME, schemaNameError } from './dataverse-metadata-tables.mjs';
 
 const ROUTE = /^\/api\/data\/v[\d.]+\/(RelationshipDefinitions|GlobalOptionSetDefinitions)(?:\(([^()]*)\))?\/?$/i;
@@ -416,6 +417,31 @@ function lookupField(lookup, targets, dataverseType) {
   };
 }
 
+// A parental relationship: any one of Assign, Delete, Reparent, Share or Unshare cascades. Learn "Microsoft Dataverse table
+// relationships" (Parental table relationships): "any 1:N table relationship where one of the cascading options in the
+// Parental column ... is true" (Cascade All, Active or User-owned; Delete: Cascade All), and no new relationship may
+// have such an action when its related table is already related through one. The hosted probe covers only a second
+// relationship with every action Cascade; a single cascading action follows Learn.
+const PARENTAL_ACTIONS = ['assign', 'delete', 'reparent', 'share', 'unshare'];
+const CASCADING = new Set(['Cascade', 'Active', 'UserOwned']);
+const parental = (cascade) => PARENTAL_ACTIONS.some((action) => CASCADING.has(cascadeAction(cascade, action)));
+
+// A table has one parental relationship: a second one through another lookup is refused (native, hosted probe 2026-11-26:
+// 400 0x80047007 MultipleParentsNotSupported with this text, naming the existing parent table by its MetadataId). The
+// lookups of one polymorphic or customer column are one relationship each and may all be parental (Learn).
+function assertSingleParent(api, referencingLogical, referencedLogical, lookupName, cascade) {
+  if (!parental(cascade)) return;
+  for (const [parent, references] of api.store.referencesByTable({ admin: true }))
+    for (const reference of references)
+      if (reference.entity === referencingLogical && reference.column !== lookupName && parental(reference.cascade))
+        throw new DataError(
+          `Entity: ${referencingLogical} is parented to Entity with id: ${metadataComponentId(orgId(api), 'entity', parent)} and name ${parent}. Cannot create another parental relation with Entity: ${referencedLogical}`,
+          400,
+          'MultipleParentsNotSupported',
+          { innerCode: '0x80047007' },
+        );
+}
+
 // Validates one 1:N relationship and returns the plan. Nothing is written here. The lookup lands on the referencing table,
 // so that table must be writable; the referenced table may be any table.
 function planOneToMany(api, body, { lookupName, referencingNav }) {
@@ -430,6 +456,7 @@ function planOneToMany(api, body, { lookupName, referencingNav }) {
   const referencedAttribute = lower(body.ReferencedAttribute ?? referenced.idColumn); // assumed default: the key
   const referencedNav = identifierOf(body.ReferencedEntityNavigationPropertyName ?? schemaName, 'Navigation property');
   if (entriesOf(api, schemaName).length) throw bad(`A relationship named ${schemaName} already exists.`);
+  assertSingleParent(api, referencingLogical, referencedLogical, lookupName, cascade ?? body.CascadeConfiguration);
   if (!hasField(referenced, referencedAttribute))
     throw missing(`Attribute ${referencedLogical}.${referencedAttribute}`);
   if (hasField(referencing, lookupName)) throw bad(`${referencingLogical}.${lookupName} already exists.`);

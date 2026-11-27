@@ -165,6 +165,8 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   assert.equal(selected.element.tag, 'iframe');
   assert.equal(selected.identity.forms.length, 0);
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /open the frame in its own tab/);
+  // The card says why the frame's controls cannot be selected: the browser boundary, not a missed click.
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /^Frame outside Inspect: the browser keeps/);
   const popupPromise = page.waitForEvent('popup');
   await page.locator('#paqvilo-xray').getByRole('button', { name: 'Open frame in new tab' }).click();
   const popup = await popupPromise;
@@ -178,6 +180,8 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
     evidence.controls.some((row) => row.formId === 'X'),
     false,
   );
+  // The page read counts the frame it could not enter, so Inspect can say that part of the page was not read.
+  assert.equal(evidence.inaccessibleFrames, 1);
   assert.doesNotMatch(JSON.stringify(evidence), /PRIVATE_VALUE|PRIVATE_TEXT|PRIVATE_QUERY|token=/);
 });
 
@@ -225,21 +229,26 @@ test('inherited-origin srcdoc controls work while sandboxed frames remain inacce
       const f = document.createElement('iframe');
       f.id = id;
       if (sandbox) f.setAttribute('sandbox', '');
-      f.srcdoc = '<form data-formid="A"><input id="title"></form>';
+      // A typed basic form wrapper EntityFormControl_<form id>, as the portal renders it (form A).
+      f.srcdoc = '<div id="EntityFormControl_a"><input id="title"></div>';
       f.style.cssText = 'position:absolute;left:100px;top:' + (sandbox ? 850 : 550) + 'px;height:180px';
       document.body.append(f);
     }
   });
   await page.frameLocator('#srcdoc').locator('#title').waitFor();
   const selected = await pick(page, page.frameLocator('#srcdoc').locator('#title'));
-  assert.ok(
-    selected.identity.evidence.candidates.some(
-      (row) => row.component.entity === 'fx_a' && row.component.name === 'title',
-    ),
-  );
+  // The wrapper's ID identifies the form, so the column is the owner (an invented data-formid only gave a candidate).
+  const named = [
+    selected.identity.evidence.owner.component,
+    ...selected.identity.evidence.candidates.map((row) => row.component),
+  ];
+  assert.ok(named.some((component) => component?.entity === 'fx_a' && component?.name === 'title'));
   const boundary = await pick(page, page.locator('#sandbox'));
   assert.equal(boundary.element.tag, 'iframe');
   assert.equal(boundary.identity.forms.length, 0);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /^Frame outside Inspect: the browser keeps/);
+  // The sandboxed frame and the fixture's cross-origin frame are the two the page read could not enter.
+  assert.equal((await page.evaluate(inspectRenderedPage)).inaccessibleFrames, 2);
 });
 
 test('frame scrolling follows controls and clips highlights to the visible embedded viewport', async (t) => {
@@ -676,4 +685,55 @@ test('focus cannot stay in closed-shadow-root or cross-origin frames while inspe
   );
   await boundary.page.keyboard.press('Enter');
   assert.equal(await actions(boundary.page), 0);
+});
+
+// @test-kind contract: a frame inserted after its document loaded and still loading when X-ray installs is read only once it has loaded
+test('a frame still loading when X-ray first walks a loaded document is read after its load, not before', async (t) => {
+  const page = await newPage(t, { viewport: { width: 1200, height: 900 } });
+  const held = Promise.withResolvers();
+  await page.context().route('**/*', async (route) => {
+    const u = new URL(route.request().url());
+    if (u.pathname === '/held') await held.promise;
+    return route.fulfill({
+      contentType: 'text/html',
+      body: u.pathname === '/held' ? '<input id="inside">' : '<p>Loaded page</p>',
+    });
+  });
+  const data = { origin: 'http://127.0.0.1:11113', token: 'frame-gate-test' };
+  await page.goto(data.origin);
+  // Every read of a frame's document before its load is counted: X-ray must not be one of them.
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
+    window.earlyReads = 0;
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {
+      ...descriptor,
+      get() {
+        if (this.id === 'late' && !window.lateLoaded) window.earlyReads++;
+        return descriptor.get.call(this);
+      },
+    });
+    const frame = document.createElement('iframe');
+    frame.id = 'late';
+    frame.src = '/held';
+    // Registered before X-ray's own capturing load listener, so it runs first.
+    frame.addEventListener('load', () => (window.lateLoaded = true), { capture: true });
+    document.body.append(frame);
+  });
+  await page.evaluate(xrayUi, data);
+  await page.evaluate((data) => {
+    const api = document.getElementById('paqvilo-xray').__px;
+    api.update(data, {});
+    api.toggle(true);
+  }, data);
+  assert.equal(await page.evaluate(() => document.readyState), 'complete');
+  assert.equal(await page.evaluate(() => window.earlyReads), 0, 'the loading frame is not read');
+  held.resolve();
+  await page.waitForFunction(() => window.lateLoaded);
+  // Once loaded, the frame is X-ray's like any other: its element is a live selection.
+  await page.waitForFunction(() => {
+    const api = document.getElementById('paqvilo-xray').__px;
+    api.select(document.getElementById('late').contentDocument.getElementById('inside'));
+    return api.selectedNode() !== null;
+  });
+  assert.equal(await page.evaluate(() => window.earlyReads), 0);
 });

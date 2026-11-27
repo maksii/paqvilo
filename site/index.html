@@ -77,8 +77,8 @@
             ><a class="text-link" href="guide.html">Open the developer guide →</a>
           </div>
           <p class="small">
-            Free and open source (AGPL-3.0-only) · Node.js 26 · Edge or Chrome · Windows and Linux · no Power Pages
-            account needed for the demo
+            Free and open source (AGPL-3.0-only) · Node.js 26 · Edge or Chrome · Windows, macOS and Linux · no Power
+            Pages account needed for the demo
           </p>
         </div>
         <div class="hero-art">
@@ -146,9 +146,9 @@
           <li>
             <h3>Dataverse plug-ins</h3>
             <p>
-              Run the plug-in steps of your Solution in a local pipeline as mocks or JavaScript models, or, on Windows
-              with the Dataverse SDK assemblies installed, load your original .NET Framework assembly and attach the VS
-              Code debugger, without the Plug-in Profiler.
+              Run the plug-in steps of your Solution in a local pipeline as mocks or JavaScript models, or, with the
+              Dataverse SDK assemblies installed, load your original .NET Framework assembly (Windows, or .NET 10+ on
+              macOS and Linux) and attach the VS Code debugger on Windows, without the Plug-in Profiler.
             </p>
             <a href="coverage.html#plugins">Local plug-in debugging →</a>
           </li>
@@ -164,8 +164,8 @@
           <li>
             <h3>PCF code components</h3>
             <p>
-              Host your built controls on local portal pages, portal form fields and (with trusted extensions enabled)
-              model-driven forms and subgrids, bound to local records instead of mock inputs.
+              Host your built controls on local portal pages, form fields, lists and subgrids and (with trusted
+              extensions enabled) model-driven forms and subgrids, bound to local records instead of mock inputs.
             </p>
             <a href="coverage.html#pcf">PCF local hosting →</a>
           </li>
@@ -316,7 +316,7 @@ npx --no-install paqvilo mirage demo</code></pre>
           <li>
             <strong>Some features are opt-in.</strong> Beside a portal you switch the Dataverse API endpoint on in
             configuration, model-driven scripts and PCF need trusted extensions, original .NET plug-in assemblies load
-            on Windows only, and portal pages do not host React (virtual) PCF controls.
+            on Windows only, and React (virtual) PCF controls need React, ReactDOM and Fluent UI files you supply.
           </li>
           <li>
             <strong>Deployment and licensing are unchanged.</strong> Lense and Mirage do not deploy or host production

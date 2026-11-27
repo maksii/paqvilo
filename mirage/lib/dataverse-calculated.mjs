@@ -19,19 +19,21 @@ import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs'
 //   <Not>, <IsNull>
 //   <AddDays|AddHours|AddWeeks|AddMonths|AddYears> date, amount;  <DiffInDays|DiffInHours|DiffInMinutes|DiffInWeeks|
 //   DiffInMonths|DiffInYears> from, to
-// The designer's native FormulaDefinition is Windows Workflow XAML (ActivityReference / EvaluateExpression with VB
-// expressions). It is outside this subset, so an exported designer formula reports CALCULATED_UNSUPPORTED; a pack override
-// supplies its value.
+// The designer's native FormulaDefinition is Windows Workflow XAML (an Activity root: ConditionSequence, EvaluateExpression,
+// GetEntityProperty / SetEntityProperty). calculated-xaml.mjs compiles its supported subset and runs it on read; a designer
+// formula outside that subset reports CALCULATED_UNSUPPORTED, and a pack override supplies its value.
+// The computed value keeps the column's type (native, hosted captures 2026-11-26, two runs): a decimal or money column is
+// rounded to its precision (Accuracy, default 2; half away from zero is assumed), a whole number column to an integer.
 // Expressions nest at most 64 deep; a deeper definition reports CALCULATED_UNSUPPORTED (parse and evaluation recurse).
-// describe(api) is contract: the subset above is the simulator's own grammar, not the designer's XAML. It is behaviour only when
-// the installed api's pack calculatedColumns cover every calculated column of the store.
+// describe(api) is contract: the designer subset reproduces the captured formulas only; it is behaviour only when the installed
+// api's pack calculatedColumns cover every calculated column of the store.
 // Arithmetic and comparison of numbers are exact decimals (exact-numeric.mjs), as Dataverse decimal and money columns are.
-import { DataError } from './data-error.mjs';
-import { compareNumeric, isExactNumeric } from './exact-numeric.mjs';
+import { compareNumeric, isExactNumeric, roundNumeric } from './exact-numeric.mjs';
 import { FxError, decimalArithmetic } from './power-fx.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
+import { compileCalculatedXaml, isCalculatedXaml, isUnsupported, runCalculatedXaml } from './calculated-xaml.mjs';
 
 const CALCULATED = 1;
 const MAX_DEPTH = 64;
@@ -152,9 +154,13 @@ function parseNode(node, depth = 0) {
   return { kind, args };
 }
 
-/** Parses a FormulaDefinition into { ast } or { unsupported: reason }. Exported for tests and the model-driven host. */
+/**
+ * Parses a FormulaDefinition into { ast } (the subset grammar), { program } (designer XAML, calculated-xaml.mjs) or
+ * { unsupported: reason }. Exported for tests and the model-driven host.
+ */
 export function parseCalculatedFormula(text) {
   if (!text || !String(text).trim()) return { unsupported: 'The column has no FormulaDefinition.' };
+  if (isCalculatedXaml(text)) return compileCalculatedXaml(text);
   try {
     let root = parseSolutionXml(text);
     if (localName(root.name) === 'formula') {
@@ -320,16 +326,6 @@ export function validateCalculatedColumns(map) {
 
 // ---- Extension
 
-// The native refusal of a value for a calculated column (IsValidForCreate/IsValidForUpdate are false) is not known; the
-// payload reader's invalid-property shape (0x80048d19) stands in.
-const writeRefused = (mapping, column) =>
-  new DataError(
-    `The attribute '${column}' of entity '${mapping.logicalName}' is a calculated field and cannot be set.`,
-    400,
-    'InvalidRequest',
-    { innerCode: '0x80048d19' },
-  );
-
 const states = new WeakMap();
 
 function stateOf(api) {
@@ -361,11 +357,12 @@ function storedRow(store, logical, id) {
 
 // The parent row behind a lookup column of the row: the lookup's own logical_name first, else the N:1 relationship.
 // The platform computes calculated columns itself, so the parent is read without the caller's read privilege (assumed).
-function relatedRow(store, mapping, row, lookup) {
+function relatedRow(store, mapping, row, lookup, table = null) {
   const value = row[lookup];
   if (value === null || value === undefined) return null;
   const target =
     (typeof value === 'object' && value.logical_name) ||
+    table ||
     Object.values(mapping.relationships ?? {}).find((rel) => rel.many === false && rel.from === lookup)?.entity;
   return target ? storedRow(store, target, value) : null;
 }
@@ -395,6 +392,24 @@ function lookupTargets(api, table, lookup) {
   return [...targets];
 }
 
+// The [table, column] pairs a parsed formula reads: the row's own columns and, through a lookup, the related table's.
+function readsOf(api, logical, { ast, program }) {
+  const reads = [];
+  const related = (lookup, table, column) => {
+    for (const target of table ? [table] : lookupTargets(api, logical, lookup)) reads.push([target, column]);
+  };
+  for (const read of program?.reads ?? [])
+    if (read.lookup === null) reads.push([logical, read.column]);
+    else related(read.lookup, read.table, read.column);
+  const collect = (node) => {
+    if (node.kind === 'field') reads.push([logical, node.column]);
+    if (node.kind === 'parent') related(node.lookup, null, node.column);
+    for (const arg of node.args ?? []) collect(arg);
+  };
+  if (ast) collect(ast);
+  return reads;
+}
+
 // The number of calculated columns in the longest chain a column reads through, itself included (a pack override or an
 // unsupported formula counts as one); a cycle is Infinity. Memoised per table revision (metadata and mappings).
 function chainDepth(api, state, table, column) {
@@ -408,15 +423,9 @@ function chainDepth(api, state, table, column) {
     if (visiting.has(key)) return Infinity;
     visiting.add(key);
     const calculated = calculatedColumnsOf(api, logical);
-    const { ast } = state.overrides[key] ? {} : parsedFormula(state, logical, name, calculated[name]);
-    const reads = [];
-    const collect = (node) => {
-      if (node.kind === 'field') reads.push([logical, node.column]);
-      if (node.kind === 'parent')
-        for (const target of lookupTargets(api, logical, node.lookup)) reads.push([target, node.column]);
-      for (const arg of node.args ?? []) collect(arg);
-    };
-    if (ast) collect(ast);
+    const reads = state.overrides[key]
+      ? []
+      : readsOf(api, logical, parsedFormula(state, logical, name, calculated[name]));
     let depth = 1;
     for (const [target, read] of reads)
       if (Object.hasOwn(calculatedColumnsOf(api, target), read)) depth = Math.max(depth, 1 + depthOf(target, read));
@@ -435,7 +444,7 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
     table,
     column,
     user: c.user ?? null,
-    related: (lookup) => cloneStateData(relatedRow(api.store, mapping, row, lookup)),
+    related: (lookup, hint = null) => cloneStateData(relatedRow(api.store, mapping, row, lookup, hint)),
   };
   const override = state.overrides[`${table}.${column}`];
   if (override) {
@@ -468,14 +477,23 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
   state.depth++;
   try {
     if (parsed.unsupported) unsupported(parsed.unsupported);
-    return evaluate(parsed.ast, row, ctx) ?? null;
+    const value = parsed.program
+      ? runCalculatedXaml(parsed.program, { ...ctx, row, now: () => api.store.clock.now() })
+      : evaluate(parsed.ast, row, ctx);
+    return typedValue(api, table, column, value ?? null);
   } catch (error) {
-    if (!(error instanceof Unsupported)) throw error;
+    // A value outside the subset names its reason. Any other evaluation failure is confined to this column of this row:
+    // a stored value one caller wrote never fails another caller's read of the table (the text of the error is not
+    // reported, since it can carry row data).
+    const reason =
+      error instanceof Unsupported || isUnsupported(error)
+        ? error.message
+        : `The formula could not be evaluated for a row (${error?.name ?? 'Error'}).`;
     report(state, {
       code: 'CALCULATED_UNSUPPORTED',
       table,
       column,
-      message: `${error.message} The column reads as null; supply a pack calculatedColumns['${table}.${column}'] function.`,
+      message: `${reason} The column reads as null; supply a pack calculatedColumns['${table}.${column}'] function.`,
     });
     return null;
   } finally {
@@ -483,11 +501,35 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
   }
 }
 
-// Sorting is disabled on a calculated column that references a parent
-// column or another calculated column (the subset has no Now() or logical-column node); such an order is ignored.
+// A computed number in the column's type: decimal and money rounded to the column's precision (Accuracy), whole numbers to
+// an integer. A plain number stays a plain number; an exact decimal stays exact.
+function typedValue(api, table, column, value) {
+  if (typeof value !== 'number' && !isExactNumeric(value)) return value;
+  const definition = api.store.fieldDefinitions(table, api.metadataFields)?.[column] ?? {};
+  const facts = { ...definition, ...definition.columnMetadata };
+  const type = String(facts.dataverseType ?? facts.type ?? '').toLowerCase();
+  let places;
+  if (['int', 'integer', 'bigint', 'whole'].includes(type)) places = 0;
+  else if (type === 'decimal' || type === 'money') {
+    const precision = Number(facts.precision ?? facts.Precision ?? 2);
+    const most = type === 'money' ? 4 : 10;
+    places = Number.isInteger(precision) ? Math.min(most, Math.max(0, precision)) : 2;
+  } else return value;
+  // roundNumeric answers a plain number when it holds the digits exactly, else an exact decimal.
+  const rounded = roundNumeric(value, places, type === 'money' ? 'Money' : 'Decimal');
+  if (!isExactNumeric(rounded)) return rounded;
+  return typeof value === 'number' || places === 0 ? Number(rounded.value) : rounded;
+}
+
+// Sorting is disabled on a calculated column that references a parent column, another calculated column or Now()
+// (Learn "Define calculated columns"); such an order is ignored.
 function sortable(api, state, logical, column) {
   const calculated = calculatedColumnsOf(api, logical);
-  const { ast } = parsedFormula(state, logical, column, calculated[column]);
+  const { ast, program } = parsedFormula(state, logical, column, calculated[column]);
+  if (program)
+    return (
+      !program.usesNow && program.reads.every((read) => read.lookup === null && !Object.hasOwn(calculated, read.column))
+    );
   const blocked = (node) =>
     node.kind === 'parent' ||
     (node.kind === 'field' && Object.hasOwn(calculated, node.column)) ||
@@ -531,8 +573,19 @@ function install(api, options = {}) {
   api.recordHooks.add('beforeWrite', (c, mapping, { operation, data }) => {
     if (operation === 'delete' || !data) return;
     const calculated = calculatedColumnsOf(api, mapping.logicalName);
-    const column = Object.keys(data).find((key) => Object.hasOwn(calculated, key.toLowerCase()));
-    if (column) throw writeRefused(mapping, column);
+    // Native (captured 2026-11-23, Dataverse Web API and the portal /_api): a create or update that includes a
+    // calculated column answers 204 and ignores its value; an update with only calculated columns changes no stored
+    // column, though modifiedon and versionnumber advance as for an empty update. The value is computed on read.
+    for (const column of Object.keys(data)) {
+      if (!Object.hasOwn(calculated, column.toLowerCase())) continue;
+      delete data[column];
+      report(state, {
+        code: 'CALCULATED_WRITE_IGNORED',
+        table: mapping.logicalName,
+        column,
+        message: 'A write included this calculated column; its value was ignored, as the platform ignores it.',
+      });
+    }
   });
 }
 

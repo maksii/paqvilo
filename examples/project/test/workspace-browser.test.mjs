@@ -326,6 +326,35 @@ test('custom workspaces search and page lookups, retain selections and edit rela
   await search.fill('');
   await search.press('Enter');
   await page.waitForFunction(() => document.querySelectorAll('#Contacts tbody tr[data-id]').length === 2);
+  // The form's own script names the parent account when the form document is ready, which is after its fields exist.
+  // A script added to the end of that document is held until the test has seen the fields, so every run reads the
+  // name across that gap.
+  let releaseFormDocument;
+  const formDocumentHeld = new Promise((resolve) => {
+    releaseFormDocument = resolve;
+  });
+  const holdScript = async (route) => {
+    await formDocumentHeld;
+    await route.fulfill({ contentType: 'text/javascript', body: '' });
+  };
+  const endWithHeldScript = async (route) => {
+    const request = route.request();
+    if (request.resourceType() !== 'document' || request.frame() === page.mainFrame()) return route.fallback();
+    // route.fetch() sends the request from Playwright without the Fetch Metadata the browser sends with this
+    // same-origin frame navigation; Mirage binds the form's request token to the browser only on a browser request.
+    const response = await route.fetch({
+      headers: {
+        ...request.headers(),
+        'sec-fetch-dest': 'iframe',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+    const body = (await response.text()).replace('</body>', '<script src="/held-form-script.js"></script></body>');
+    return route.fulfill({ response, body });
+  };
+  await page.route('**/held-form-script.js', holdScript);
+  await page.route('**/*', endWithHeldScript);
   await page.getByText('New contact', { exact: true }).click();
   const modal = page.locator('.modal-form-insert:visible');
   await modal.waitFor();
@@ -335,6 +364,15 @@ test('custom workspaces search and page lookups, retain selections and edit rela
   );
   const createFrame = page.frameLocator('.modal-form-insert iframe');
   await createFrame.locator('#lastname').waitFor();
+  assert.equal(await createFrame.locator('#parentcustomerid_name').inputValue(), '', 'the form document is not ready');
+  releaseFormDocument();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.modal-form-insert iframe')?.contentDocument?.querySelector('#parentcustomerid_name')
+        ?.value,
+  );
+  await page.unroute('**/*', endWithHeldScript);
+  await page.unroute('**/held-form-script.js', holdScript);
   assert.equal(
     await createFrame.locator('#parentcustomerid').inputValue(),
     account,

@@ -1,3 +1,4 @@
+// @test-kind contract: the bindings Mirage's render trace gives rendered elements: which source and region, by what was actually written to the output
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiquidEngine, LiquidContext } from '../mirage/lib/liquid-engine.mjs';
@@ -114,7 +115,20 @@ test('raw/comment/whitespace control and mixed start tags are distinguished by a
   assert.match(result.fragment.text, /<p>\{\{ literal \}\}<\/p>/);
   assert.deepEqual(names(result), [
     ['p', 'Main'],
+    ['div', 'Main'],
     ['em', 'Main'],
+  ]);
+  // A start tag with Liquid inside it is the source's tag, from its `<` to its `>`, marked as carrying an output; a
+  // tag that is literal throughout is not marked.
+  const source = result.index.templates.get('main').text;
+  const tags = result.provenance.bindings.map((binding) => [
+    source.slice(binding.region.start, binding.region.end),
+    binding.dynamic === true,
+  ]);
+  assert.deepEqual(tags, [
+    ['<p>', false],
+    ['<div class="{{ cls }}">', true],
+    ['<em>', false],
   ]);
 });
 
@@ -287,4 +301,193 @@ test('inert template contents require their private original template identity a
   assert.ok(
     result.provenance.bindings.every((binding) => binding.sourceRefId === result.index.templates.get('main').id),
   );
+});
+
+test('content of a template element whose own tag has no source is still bound, and its script is not taken as run', () => {
+  const source = '<b id="inner">inner</b><script>window.inert = true;</script>';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  // The template tags come from a source the export does not hold: no interval covers them.
+  const open = '<template id="held">';
+  const fragment = {
+    text: open + source + '</template>',
+    intervals: [
+      {
+        start: open.length,
+        end: open.length + source.length,
+        sourceRefId: ref.id,
+        sourceSpan: { start: 0, end: source.length },
+        mapping: 'literal',
+      },
+    ],
+  };
+  const result = finalizePortalProvenance({ fragment, index });
+  assert.deepEqual(
+    result.provenance.bindings.map((binding) => [binding.tag, binding.mapping, binding.inertTemplateId]),
+    [
+      ['b', 'literal', undefined],
+      ['script', 'literal', undefined],
+    ],
+  );
+  assert.equal(result.provenance.scriptProofs.length, 0, 'a script inside a template element does not run on load');
+  assert.equal(result.provenance.unbound, 1, 'the template element itself has no source');
+});
+
+test('a marker never changes an unquoted attribute value that ends in a solidus', () => {
+  const source = '<a href=/contact/>Write</a><br/><img src=/pixel/ alt="">';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  const fragment = {
+    text: source,
+    intervals: [
+      {
+        start: 0,
+        end: source.length,
+        sourceRefId: ref.id,
+        sourceSpan: { start: 0, end: source.length },
+        mapping: 'literal',
+      },
+    ],
+  };
+  const result = finalizePortalProvenance({ fragment, index });
+  const tree = parse(result.html);
+  const body = tree.childNodes[0].childNodes[1];
+  const attribute = (node, name) => node.attrs.find((attr) => attr.name === name)?.value;
+  const [anchor, , image] = body.childNodes.filter((node) => node.tagName);
+  assert.equal(attribute(anchor, 'href'), '/contact/');
+  assert.equal(attribute(image, 'src'), '/pixel/');
+  assert.equal(
+    body.childNodes.filter((node) => node.tagName).every((node) => attribute(node, 'data-paqvilo-source')),
+    true,
+  );
+  assert.match(result.html, /<br data-paqvilo-source="[^"]+"\/>/, 'a solidus that closes the tag stays last');
+});
+
+test('the content of a declared shadow root is live markup: bound without a template identity, and its script is run', () => {
+  const source =
+    '<div id="host"><template shadowrootmode="open"><p id="inside">Shadow</p><script>window.shadow = true;</script></template></div>';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  const fragment = {
+    text: source,
+    intervals: [
+      {
+        start: 0,
+        end: source.length,
+        sourceRefId: ref.id,
+        sourceSpan: { start: 0, end: source.length },
+        mapping: 'literal',
+      },
+    ],
+  };
+  const result = finalizePortalProvenance({ fragment, index });
+  assert.deepEqual(
+    result.provenance.bindings.map((binding) => [binding.tag, binding.inertTemplateId]),
+    [
+      ['div', undefined],
+      ['template', undefined],
+      ['p', undefined],
+      ['script', undefined],
+    ],
+  );
+  assert.equal(result.provenance.scriptProofs.length, 1);
+  assert.equal(result.provenance.unbound, 0);
+  // A closed shadow root is read by nothing outside its component: its content carries no mark at all.
+  const closed = source.replace('shadowrootmode="open"', 'shadowrootmode="closed"');
+  const sealed = finalizePortalProvenance({
+    fragment: {
+      text: closed,
+      intervals: [{ ...fragment.intervals[0], end: closed.length, sourceSpan: { start: 0, end: closed.length } }],
+    },
+    index: buildPortalSourceIndex({ portal: fixture({ Main: closed }) }),
+  });
+  const inside = sealed.html.slice(sealed.html.indexOf('<template'), sealed.html.indexOf('</template>'));
+  // The host element opens the output and carries exactly its id and its mark, in whichever order they are written.
+  assert.match(sealed.html, /^<div[\s>]/);
+  const host = parse(sealed.html).childNodes[0].childNodes[1].childNodes[0];
+  const hostAttributes = Object.fromEntries(host.attrs.map(({ name, value }) => [name, value]));
+  assert.equal(host.tagName, 'div');
+  assert.deepEqual(Object.keys(hostAttributes).sort(), ['data-paqvilo-source', 'id']);
+  assert.equal(hostAttributes.id, 'host');
+  assert.match(hostAttributes['data-paqvilo-source'], /^[^"]+$/);
+  assert.doesNotMatch(inside.slice(inside.indexOf('>') + 1), /data-paqvilo-/);
+});
+
+test('the elements of a closed declared shadow root are bound by their place under the host, without a mark', () => {
+  const source =
+    '<div id="host">\n<template shadowrootmode="closed">\n<p id="first">One</p>\n<section><b id="deep">Two</b></section>\n<script>window.inside = true;</script>\n</template>\n</div>';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  const result = finalizePortalProvenance({
+    fragment: {
+      text: source,
+      intervals: [
+        {
+          start: 0,
+          end: source.length,
+          sourceRefId: ref.id,
+          sourceSpan: { start: 0, end: source.length },
+          mapping: 'literal',
+        },
+      ],
+    },
+    index,
+  });
+  const host = result.provenance.bindings.find((binding) => binding.tag === 'div');
+  const sealed = result.provenance.bindings.filter((binding) => binding.sealed);
+  // Each element of the root names the host's binding and its element index path from the root, with its own line.
+  assert.deepEqual(
+    sealed
+      .map((binding) => [binding.tag, binding.sealed.host === host.id, binding.sealed.path, binding.region.line])
+      .sort((left, right) => (left[2] < right[2] ? -1 : 1)),
+    [
+      ['p', true, '0', 3],
+      ['section', true, '1', 4],
+      ['b', true, '1.0', 4],
+      ['script', true, '2', 5],
+    ],
+  );
+  // No mark and no script proof inside the root: only its component could read them.
+  const inside = result.html.slice(result.html.indexOf('<template'), result.html.indexOf('</template>'));
+  assert.doesNotMatch(inside.slice(inside.indexOf('>') + 1), /data-paqvilo-/);
+  assert.equal(result.provenance.scriptProofs.length, 0);
+});
+
+// @test-kind security: a binding id read off one element (a page script can read one while the parser inserts it) says nothing about any other element's id: 64 random bits each, unique in the document, never the proof's id or a counter
+test('binding ids are random per element: none derivable from another or from the proof', () => {
+  const rows = 5000;
+  const source = '<table><tbody>' + '<tr><td>x</td></tr>'.repeat(rows) + '</tbody></table>';
+  const portal = fixture({ Main: source });
+  const index = buildPortalSourceIndex({ portal });
+  const ref = index.templates.get('main');
+  const span = { start: 0, end: source.length, sourceRefId: ref.id, sourceSpan: { start: 0, end: source.length } };
+  const render = () =>
+    finalizePortalProvenance({ fragment: { text: source, intervals: [{ ...span, mapping: 'literal' }] }, index });
+  const first = render(),
+    second = render();
+  const ids = first.provenance.bindings.map((binding) => binding.id);
+  assert.ok(ids.length > rows * 2, 'every row and cell is bound: ' + ids.length);
+  for (const id of ids) assert.match(id, /^[A-Za-z0-9_-]{11}$/);
+  assert.equal(new Set(ids).size, ids.length, 'unique in the document');
+  assert.equal(
+    ids.some((id) => id.includes(first.provenance.proofId.slice(0, 8))),
+    false,
+    'nothing of the proof id',
+  );
+  // Neighbouring elements share no more than chance would: no common prefix of two or more characters in order.
+  const shared = ids.slice(1).filter((id, i) => id.slice(0, 2) === ids[i].slice(0, 2)).length;
+  assert.ok(shared < ids.length / 100, 'neighbouring ids share prefixes ' + shared + ' times');
+  // Another response of the same document carries none of the same ids.
+  const again = new Set(second.provenance.bindings.map((binding) => binding.id));
+  assert.equal(
+    ids.some((id) => again.has(id)),
+    false,
+  );
+  // Each stamp in the markup is its element's binding id.
+  const stamped = [...first.html.matchAll(/ data-paqvilo-source="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(stamped.sort(), [...ids].sort());
 });

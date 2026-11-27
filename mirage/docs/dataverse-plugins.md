@@ -146,7 +146,10 @@ differ from native. Stage 30 is the main operation, not a general extensibility 
 - **Order of checks on Create.** The table-level grant gate precedes all handlers; then stages 10 and 20, declarative
   rules and their effects, the portal row-scope check (after stage 20, so local rules can establish a relationship
   first), then stage 40. A row-scope denial also revokes the request's independent PreValidation SDK writes. Scoped
-  denials report permission name, scope and relationship.
+  denials report permission name, scope and relationship. On Create and Update the Append/AppendTo check covers the
+  lookups the request sends: a lookup that only a server-side step sets or changes is not checked against the
+  visitor's table permissions, as natively (captured 2026-11-23 for Create and Update: the portal checks the request
+  before Dataverse runs the pipeline; the same lookup sent by the client is refused with 403 `90040106`).
 - **Transactions.** Top-level PreValidation runs outside the transaction (`IsInTransaction` false), and its SDK writes
   commit independently and survive a later rejection. Nested PreValidation and stages 20 and 40 join the caller's
   transaction. An SDK write that fails inside a synchronous plug-in invalidates the enclosing transaction; catching the
@@ -317,7 +320,16 @@ dictionaries and `OrganizationRequest`/`Response` keep their SDK types; unknown 
 `LocalPluginStateMutationUnsupported`.
 
 **Portal context.** An explicit trusted portal transport supplies `IsPortalsClientCall` and `PortalsContactId` from the
-active local Contact; nested SDK operations clear both. Evidence-qualified `context.interfaceVersion: 7` supplies
+active local Contact; nested SDK operations clear both. A portal call (basic and multistep form writes, multistep
+session rows, Web API) reports `IsPortalsClientCall` true and `PortalsContactId` the signed-in contact, and its `UserId`
+and `InitiatingUserId` are the site's host application user when one exists, in its synchronous steps, its
+asynchronous jobs and its web hook contexts, with enhanced authorization enabled (state 3) or not (state 0), as both
+hosted captures show: the caller is the application user, not the visitor's mapped user. A real-time classic workflow
+that runs inside a portal call (an interpreted designer workflow triggered by the call's write) keeps
+`IsPortalsClientCall` true and `PortalsContactId` the contact on its writes at depth 2, while a plug-in's own SDK
+calls clear both; a background workflow job's operations report false and the empty GUID. The workflow's reads of
+its records do not reach the plug-in pipeline, and a trusted pack handler's writes are its own API calls, so neither
+carries the portal facts. Evidence-qualified `context.interfaceVersion: 7` supplies
 environment id, tenant id, application-user status and user-agent presence.
 
 ## SDK calls from plug-ins
@@ -442,6 +454,14 @@ trust step (mode `clr`; pack handlers, web hooks and a `/_sim/` choice keep prec
 registered plug-in. A custom API main operation whose type is in such an assembly runs the same way. This is a local
 contract: the host is the local CLR host described below, not the platform sandbox.
 
+A project that models this logic itself, or runs without the SDK, sets `uploadedAssemblies: placeholder` in the
+catalogue's `mirage` section or the project file ([configuration](../../docs/configuration.md)): such steps then start
+as placeholders in every state, `/_sim/api/operations` reports them with `defaultMode: "placeholder"` and
+`defaultModeSource: "uploadedAssemblies"`, and a `/_sim/` choice still selects `clr` for one step. Pack handlers and
+web hooks keep their precedence; preflight names the setting as each step's `resolution.modeSource` (`runtime state`
+once a `/_sim/` choice replaces it). A custom API main operation on such bytes answers as a custom API without a
+plug-in type: its registered steps run and it returns no output values of its own.
+
 On first run Mirage writes the stored bytes, with the package's other `lib/` assemblies of the same target framework,
 into an owned directory under the project's ignored `.paqvilo/plugin-assemblies`, and compiles the host there. Steps on
 the same content share it; changed content is prepared again; a deleted step, assembly or package closes its runtime and
@@ -454,9 +474,22 @@ the newest `microsoft.crmsdk.coreassemblies/<version>/lib/net462` in the NuGet p
 `npm run ci:prepare`). A `Microsoft.Crm.Sdk.Proxy.dll` beside it is supplied too. Microsoft assemblies are not
 distributed with the toolkit.
 
-When the assembly cannot run (no SDK, not Windows .NET Framework, host compilation failure, a type that cannot load or
-construct) the step fails with 400 `0x80040224` naming the type and assembly (local wording), its operation rolls back,
-and `PLUGIN_CLR_LOAD_FAILED` records the cause. Choose mock or disabled in `/_sim/` to run without the CLR host.
+The host is a small C# program. On Windows the .NET Framework 4 compiler builds it and it runs on the .NET Framework, as
+Dataverse runs plug-ins. On macOS and Linux a [.NET SDK](https://dot.net) 10 or later builds it and it runs on .NET 10
+or any later runtime: the original .NET Framework assembly and `Microsoft.Xrm.Sdk.dll` load unchanged. The SDK is found
+through `DOTNET_ROOT`, `PATH` or its standard install folders; the first build restores the .NET 10 reference pack and
+the WCF client (`System.ServiceModel.Primitives`) from NuGet, and later builds run offline. Every host runs in UTC with
+the sandbox's en-US culture.
+
+On modern .NET a plug-in that calls a .NET Framework-only API (`System.Web` serializers, `ConfigurationManager`,
+`AppDomain` or remoting) fails with the missing type or method, and text formatted with a culture the plug-in creates
+itself uses ICU data (for example a narrow no-break space before AM/PM). Run such plug-ins, and
+[debugging](#debug-original-c-in-vs-code), on Windows.
+
+When the assembly cannot run (no SDK, neither .NET Framework nor a .NET 10 SDK, host compilation failure, a type that
+cannot load or construct) the step fails with 400 `0x80040224` naming the type and assembly (local wording), its
+operation rolls back, and `PLUGIN_CLR_LOAD_FAILED` records the cause. Choose mock or disabled in `/_sim/` to run without
+the CLR host.
 
 ## Original assembly registration
 
@@ -572,7 +605,7 @@ and SDK savepoint rollbacks; nothing else does. If saving the trace also fails, 
 | Context                 | Typed inputs, outputs, shared variables, images, formatted values, complete ParentContext, Depth, correlation | Locally generated ids and timestamps differ; image attribute order follows the stored row; equal-rank order follows step id               |
 | SDK                     | CRUD, reads, relationships, bulk, typed queries, ExecuteMultiple/Transaction, metadata reads, custom APIs     | Unsupported messages, query facets and value types fail with `LocalPluginSdkUnsupported`; fault codes without a capture use the Web API's |
 | Asynchronous            | Durable committed jobs, retry, cancellation, restart recovery                                                 | No cloud scheduling, service protection or back-off timing; fixed start delay                                                             |
-| Runtime                 | Original CLR on Windows .NET Framework, uploaded content by default, debugging                                | Not a security sandbox; flow Recurrence triggers run on the local scheduler ([operations](operations.md#execution-boundary))              |
+| Runtime                 | Original CLR on Windows .NET Framework or .NET 10+, uploaded content by default, debugging on Windows         | Not a security sandbox; flow Recurrence triggers run on the local scheduler ([operations](operations.md#execution-boundary))              |
 
 A passing local pipeline does not prove native parity: native system logic absent from the export (currency validation,
 server-side extensions) stays absent. Facts marked "as recorded natively" are `observation` evidence; only replay

@@ -720,6 +720,19 @@ test('notes cells without datafieldname survive exported systemform parsing', as
   assert.equal(metadata.componentSchemas['basic-form'].fields.length, 1);
 });
 
+// @test-kind unproven: a notescontrol with DefaultTabId ActivitiesTab is the activity timeline, as the open-sourced portal code reads it (FormXmlCellMetadata) and Learn's "Default tab: Activities" timeline step describes; no native capture.
+test('a notes cell keeps the timeline default tab of its control parameters', async (t) => {
+  const timeline =
+    '<row><cell><labels><label description="Timeline" languagecode="1033"/></labels><control id="notescontrol" classid="{06375649-C143-495E-A496-C962E5B4488E}"><parameters><DefaultTabId>ActivitiesTab</DefaultTabId></parameters></control></cell></row>';
+  const root = await fixture(t, {
+    'Entities/contact/Entity.xml': entity,
+    'Entities/contact/FormXml/main/{form-id}.xml': form('Name').replace('</rows>', timeline + '</rows>'),
+  });
+  const metadata = await importSolutionMetadata(root, { portal: portal() });
+  const cell = formCells(metadata.componentSchemas['basic-form']).find((c) => c.type === 'notes');
+  assert.equal(cell.defaultTab, 'ActivitiesTab');
+});
+
 test('hidden sections keep an empty place; subgrid and web resource cells resolve by control class; lookup views carry their query type', async (t) => {
   const base = form('Name');
   const sections = `<section name="secret" visible="false" showlabel="true"><labels><label description="Secret" languagecode="1033"/></labels><rows><row><cell><labels><label description="Hidden name" languagecode="1033"/></labels><control id="hidden-name" datafieldname="fullname"/></cell></row></rows></section><section name="extras" showlabel="true"><labels><label description="Extras" languagecode="1033"/></labels><rows><row><cell rowspan="4"><labels><label description="Related" languagecode="1033"/></labels><control id="related_grid" classid="{E7A81278-8635-4D9E-8D4D-59480B391C5B}"><parameters><TargetEntityType>contact</TargetEntityType><ViewId>{view-id}</ViewId><RelationshipName>contact_children</RelationshipName></parameters></control></cell></row><row><cell showlabel="false" rowspan="2"><labels><label description="Logo" languagecode="1033"/></labels><control id="WebResource_logo" classid="{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}"><parameters><Url>acme_logo.svg</Url><Scrolling>no</Scrolling><Border>true</Border></parameters></control></cell></row></rows></section>`;

@@ -1,0 +1,503 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "demo-raw-bodies-20261108",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API",
+    "version": "2026-11-08",
+    "scope": "Two signed-in browser runs on the demo site sending raw JSON roots (strings, literals, numbers, arrays, encoded objects) as portal Web API PATCH bodies to an owned account and reading its name back. Establishes status, error code and message and whether the row changed. It does not establish inner error texts. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "portal-batched-1794144140507",
+      "sha256": "2998df2a7c743c3845f06bf8d414c569dff200045e3cec57ea9347943c5b955f",
+      "capturedAt": "2026-11-08"
+    },
+    {
+      "id": "portal-batched-1794144234893",
+      "sha256": "fa908bb8872ddc9b188b7a46e10541f6226b1710b19e1e460ab686316767554c",
+      "capturedAt": "2026-11-08"
+    }
+  ],
+  "cases": [
+    {
+      "id": "lexer.string-4",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"true\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-5",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"false\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-6",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"null\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-7",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"True\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-8",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"False\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-9",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"Null\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-10",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"  text\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-11",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"17\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-12",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"-17\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-13",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"1.5\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-14",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"[]\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-15",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"[1]\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-16",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"{}\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 204,
+        "error": null,
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-18",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"\\\"nested\\\"\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.string-19",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "\"\"",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.raw-0",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "true",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.raw-1",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "false",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.raw-2",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "null",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.raw-3",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "17",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    },
+    {
+      "id": "lexer.raw-4",
+      "input": {
+        "entity": "account",
+        "method": "PATCH",
+        "rawBody": "[]",
+        "csrf": "present",
+        "readFields": ["name"],
+        "before": {
+          "name": "webapi-fixture Account",
+          "accountnumber": "PQIN-20261010"
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred."
+        },
+        "readStatus": 200,
+        "persisted": "webapi-fixture Account"
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -18,7 +18,8 @@ const text = { dataverseType: 'nvarchar' },
 const FETCH =
   '<fetch><entity name="x_item"><attribute name="x_name"/><attribute name="x_secret"/><attribute name="x_code"/>' +
   '<link-entity name="x_parent" from="x_parentid" to="x_parentid" alias="p"><attribute name="x_name"/></link-entity></entity></fetch>';
-// The exact query the notes control and the attachment count run (native-services.mjs annotationRows, platform.mjs).
+// A notes read of every note column regarding the item (the notes control's own read, native-services.mjs annotationRows,
+// selects only the columns it shows), so the masking of notetext is checked on a full-row read.
 const NOTES = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${ITEM}"/></filter><order attribute="createdon"/></entity></fetch>`;
 const CONDITION =
   '<fetch><entity name="x_item"><attribute name="x_name"/><filter><condition attribute="x_secret" operator="eq" value="XS-1234"/></filter></entity></fetch>';

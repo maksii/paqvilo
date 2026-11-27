@@ -13,7 +13,8 @@ import { processIdentity } from '../lense/process-identity.mjs';
 
 const variable = 'PAQ_CI_WORKSPACE_LEASE';
 function checkout(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-ci-lease-'));
+  // The physical path, as the lease records it (macOS's /var is a link into /private).
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-ci-lease-')));
   ownedFixture(t).remove(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
@@ -425,4 +426,41 @@ test('a lane joins the lease when the membership guard is released while its own
   assert.equal(refused, 1);
   await finish();
   await release();
+});
+
+test('a release waits out a refused move of its folders while another run reads their holder record', async (t) => {
+  const directory = checkout(t),
+    environment = {};
+  const release = await acquireCiWorkspaceLease(directory, environment);
+  const lock = path.join(directory, '.paqvilo', 'ci', 'workspace.lock');
+  // Windows refuses to move a folder while a file inside it is open, as it is while a waiting run reads the holder
+  // record: each move aside is refused once here, as that read would refuse it.
+  const move = fs.renameSync,
+    refused = [];
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    const name = path.basename(String(to));
+    if (name.includes('.released-') && !refused.includes(String(from))) {
+      refused.push(String(from));
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return move(from, to);
+  });
+  const member = await acquireCiWorkspaceLease(directory, { ...environment }, { inherit: true });
+  await member();
+  assert.deepEqual(refused, [path.join(lock, 'membership')], 'the member moved its membership guard after one refusal');
+  assert.deepEqual(fs.readdirSync(path.join(lock, 'members')), []);
+  await release();
+  assert.deepEqual(refused, [path.join(lock, 'membership'), lock], 'the owner moved its guard and its lease');
+  assert.equal(fs.existsSync(lock), false);
+  // A refusal that is not a sharing refusal stays an error.
+  const next = await acquireCiWorkspaceLease(directory, {});
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from) === lock && path.basename(String(to)).includes('.released-'))
+      throw Object.assign(new Error('EIO: invented failure, rename'), { code: 'EIO' });
+    return move(from, to);
+  });
+  await assert.rejects(next(), { code: 'EIO' });
+  t.mock.method(fs, 'renameSync', move);
+  await next();
+  assert.equal(fs.existsSync(lock), false);
 });

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import YAML from 'yaml';
@@ -252,9 +253,12 @@ const run = (file, args, options) =>
 // Runs a script with a preload that reports, at exit, every toolkit module file the process loaded (no extension).
 async function recorded(t, directory, script, rest, options = {}) {
   const preload = path.join(directory, 'record-loads.mjs');
+  // The record goes to a file of its own: written to stderr at exit it can be cut short, because macOS pipes are
+  // asynchronous (and a synchronous write to a full non-blocking pipe may be partial).
   await fs.writeFile(
     preload,
     `import { registerHooks } from 'node:module';
+import { writeFileSync } from 'node:fs';
 const seen = new Set();
 registerHooks({
   load(url, context, nextLoad) {
@@ -262,15 +266,21 @@ registerHooks({
     return nextLoad(url, context);
   },
 });
-process.on('exit', () => process.stderr.write('\\nLOADED:' + JSON.stringify([...seen]) + '\\n'));
+process.on('exit', () => writeFileSync(process.env.PAQ_TEST_LOADED_MODULES, JSON.stringify([...seen])));
 `,
   );
+  const record = path.join(directory, `loaded-${crypto.randomUUID()}.json`);
   const result = await run(
     script,
     { preload: ['--import', pathToFileURL(preload).href], rest },
-    { cwd: directory, signal: t.signal, ...options },
+    {
+      cwd: directory,
+      signal: t.signal,
+      ...options,
+      env: { ...(options.env ?? process.env), PAQ_TEST_LOADED_MODULES: record },
+    },
   );
-  const urls = JSON.parse(/\nLOADED:(.*)\n/.exec(result.stderr)?.[1] ?? 'null');
+  const urls = JSON.parse(await fs.readFile(record, 'utf8').catch(() => 'null'));
   assert.ok(urls, `the process reported its modules: ${result.stderr}`);
   const modules = urls
     .map((url) => path.relative(ROOT, fileURLToPath(url)).replaceAll('\\', '/'))

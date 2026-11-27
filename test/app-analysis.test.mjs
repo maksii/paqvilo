@@ -55,6 +55,30 @@ test('PCF identities and control-type are checked without inferring a host', () 
   }
   assert.ok(has(pcf(control(undefined, 'control-type="other"')), 'APP-PCF-002'));
 });
+// @test-kind contract: Power Pages eligibility hints follow Microsoft Learn's Power Pages code component limits, with invented manifests
+test('PCF Power Pages eligibility rules name required features, unsupported APIs, bound types and dependencies', () => {
+  const resource = '<resources><code path="index.ts"/></resources>';
+  const features = (items) =>
+    `<feature-usage>${items.map(([name, required]) => `<uses-feature name="${name}" required="${required}"/>`).join('')}</feature-usage>`;
+  assert.ok(has(pcf(control(resource + features([['WebAPI', 'true']]))), 'APP-PCF-013'));
+  assert.equal(has(pcf(control(resource + features([['WebAPI', 'false']]))), 'APP-PCF-013'), false);
+  const device = pcf(control(resource + features([['Device.captureImage', 'false']])));
+  assert.ok(has(device, 'APP-PCF-014'));
+  assert.equal(has(device, 'APP-PCF-013'), false);
+  const lookup = '<property name="target" of-type="Lookup.Simple" usage="bound"/>';
+  assert.ok(has(pcf(control(resource + lookup)), 'APP-PCF-015'));
+  const text = '<property name="value" of-type="SingleLine.Text" usage="bound"/>';
+  assert.equal(has(pcf(control(resource + text)), 'APP-PCF-015'), false);
+  const group =
+    '<type-group name="mixed"><type>Lookup.Simple</type><type>SingleLine.Text</type></type-group><property name="value" of-type-group="mixed" usage="bound"/>';
+  assert.equal(has(pcf(control(resource + group)), 'APP-PCF-015'), false, 'a group with a supported type passes');
+  assert.ok(has(pcf(control(resource + text + text.replace('"value"', '"second"'))), 'APP-PCF-016'));
+  assert.equal(has(pcf(control(resource + text)), 'APP-PCF-016'), false);
+  const dependency =
+    '<resources><code path="index.ts"/><dependency type="control" name="inv_Invented.Library" load-type="onDemand"/></resources>';
+  assert.ok(has(pcf(control(dependency)), 'APP-PCF-017'));
+  assert.deepEqual(ids(pcf()), [], 'a minimal control raises none of them');
+});
 test('PCF code resource cardinality is a manifest contract', () => {
   for (const content of [
     '',

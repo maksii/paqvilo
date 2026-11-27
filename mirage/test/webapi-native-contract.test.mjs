@@ -139,37 +139,52 @@ async function navigationGet(t, permissions) {
   };
 }
 
-// @test-kind security: a navigation count reads the related table, so it is refused where the navigation read is refused, and counts only the rows a self-scope read shows
-test('a navigation $count answers 403 where the navigation read is refused, and counts only visible rows', async (t) => {
+const NAVIGATION_COUNT_REFUSED = {
+  status: 400,
+  body: '{"error":{"code":"9004010A","message":"An unexpected error occurred while processing the request"}}',
+};
+
+// @test-kind security+observation: a navigation $count answers one constant refusal, 400 9004010A, whether or not the caller can read the related rows, so its status and body tell nothing about them (hosted session F1 follow-up 2026-11-27 (paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup navcount-*: collection-valued and single-valued, ordinary and provider-backed targets, Contact and Global scope))
+test('a navigation $count answers 400 9004010A whether or not the navigation read is refused', async (t) => {
   const parentOnly = [
     { id: 'account-read', entity: 'account', scope: 'global', roles: ['Writer'], operations: ['read'] },
   ];
   const refusedGet = await navigationGet(t, parentOnly);
-  const refusedCount = await refusedGet(`${NAVIGATION}/$count`);
   assert.equal((await refusedGet(NAVIGATION)).status, 403);
-  assert.equal(refusedCount.status, 403);
-  assert.equal(JSON.parse(refusedCount.body).error.code, '90040120');
+  assert.deepEqual(await refusedGet(`${NAVIGATION}/$count`), NAVIGATION_COUNT_REFUSED);
 
   const selfScoped = [
     ...parentOnly,
     { id: 'contact-read', entity: 'contact', scope: 'self', roles: ['Writer'], operations: ['read'] },
   ];
   const visibleGet = await navigationGet(t, selfScoped);
-  const visibleCount = await visibleGet(`${NAVIGATION}/$count`);
-  assert.equal(visibleCount.status, 200);
-  assert.equal(visibleCount.body, '1');
+  assert.deepEqual(await visibleGet(`${NAVIGATION}/$count`), NAVIGATION_COUNT_REFUSED);
 });
 
-// @test-kind security: a single-valued navigation's $count is refused as its GET is, so a caller who cannot read the related table cannot tell the cardinality from the status
-test('a single-valued navigation $count answers the refusal its GET answers, not a 404', async (t) => {
+// @test-kind observation: a navigation $count answers 400 9004010A with or without an authored $filter (hosted session F1 follow-up 2026-11-27 (paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup navcount-*: collection-valued and single-valued, ordinary and provider-backed targets, Contact and Global scope))
+test('a navigation $count answers 400 9004010A with authored filters too', async (t) => {
+  const get = await navigationGet(t, [
+    { id: 'account-read', entity: 'account', scope: 'global', roles: ['Writer'], operations: ['read'] },
+    { id: 'contact-read', entity: 'contact', scope: 'self', roles: ['Writer'], operations: ['read'] },
+  ]);
+  for (const name of ['Ada', 'Bob', 'Unmatched']) {
+    const params = new URLSearchParams({ $filter: 'fullname eq @name', '@name': `'${name}'` });
+    assert.deepEqual(await get(`${NAVIGATION}/$count?${params}`), NAVIGATION_COUNT_REFUSED);
+  }
+});
+
+// @test-kind security+observation: a single-valued navigation's $count answers the same constant refusal whether or not the caller can read the related table, so a caller cannot tell the cardinality from it (hosted session F1 follow-up 2026-11-27 (paqvilo-developer hosted-f1 summary-F1, runs/a and runs/b nav-followup navcount-*: collection-valued and single-valued, ordinary and provider-backed targets, Contact and Global scope))
+test('a single-valued navigation $count answers 400 9004010A whatever the caller can read', async (t) => {
   const SINGLE = `/_api/contacts(${G(11)})/parentcustomerid`;
   const contactOnly = [
     { id: 'contact-read', entity: 'contact', scope: 'self', roles: ['Writer'], operations: ['read'] },
   ];
   const refused = await navigationGet(t, contactOnly);
-  const get = await refused(SINGLE);
-  const count = await refused(`${SINGLE}/$count`);
-  assert.equal(get.status, 403);
-  assert.equal(count.status, get.status);
-  assert.equal(JSON.parse(count.body).error.code, JSON.parse(get.body).error.code);
+  assert.equal((await refused(SINGLE)).status, 403);
+  assert.deepEqual(await refused(`${SINGLE}/$count`), NAVIGATION_COUNT_REFUSED);
+  const readable = await navigationGet(t, [
+    ...contactOnly,
+    { id: 'account-read', entity: 'account', scope: 'global', roles: ['Writer'], operations: ['read'] },
+  ]);
+  assert.deepEqual(await readable(`${SINGLE}/$count`), NAVIGATION_COUNT_REFUSED);
 });

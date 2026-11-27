@@ -251,14 +251,14 @@ test("Dataverse tables follow the portal's site settings and table permissions",
       endpoints: [],
     },
   });
-  const portal = async (settings, permissions) => {
+  const portal = async (settings, permissions, fields = 'fullname,businessunitid,_businessunitid_value') => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-gating-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Gating\n');
     if (settings)
       await fs.writeFile(
         path.join(directory, 'sitesetting.yml'),
-        "- adx_name: Webapi/systemuser/enabled\n  adx_value: 'true'\n- adx_name: Webapi/systemuser/fields\n  adx_value: 'fullname,businessunitid'\n",
+        `- adx_name: Webapi/systemuser/enabled\n  adx_value: 'true'\n- adx_name: Webapi/systemuser/fields\n  adx_value: '${fields}'\n`,
       );
     const app = await createSimulator({
       sourceDir: directory,
@@ -288,7 +288,13 @@ test("Dataverse tables follow the portal's site settings and table permissions",
     code: '90040120',
     message: "You don't have permission to read the systemuser table.",
   });
-  // Enabled with a grant: seeded rows, and the lookup alias of an allowed lookup column.
+  // Enabled with a grant: seeded rows, and an allowed lookup's _x_value once the list names it. The logical name alone
+  // does not enable it (hosted session F1, paqvilo-developer hosted-f1 summary-F1 API-02c, runs a and b).
+  get = await portal(true, read, 'fullname,businessunitid');
+  assert.deepEqual((await get('/_api/systemusers?$select=fullname,_businessunitid_value')).body.error, {
+    code: '90040101',
+    message: 'Attribute _businessunitid_value in table systemuser is not enabled for Web Api.',
+  });
   get = await portal(true, read);
   const users = await get('/_api/systemusers?$select=fullname,_businessunitid_value');
   assert.equal(users.status, 200);

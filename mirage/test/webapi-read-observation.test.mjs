@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of portal read observation, CDS error envelopes and native-adapter admission on invented fixtures; no recorded case is replayed
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -107,7 +108,8 @@ test('API transport marks observer reads explicitly without making direct SDK re
     '/_api/widgets?fetchXml=' +
       encodeURIComponent('<fetch><entity name="widget"><attribute name="title"/></entity></fetch>'),
   );
-  await request(store, `/_api/widgets(${recordId})/title`);
+  // A raw value read (/<column> answers 403 before any read: hosted session F1 summary-F1 API-02c).
+  await request(store, `/_api/widgets(${recordId})/title/$value`);
   assert.deepEqual([...new Set(calls.map(([kind]) => kind))].sort(), ['fetchXml', 'get', 'query']);
   assert.ok(calls.every(([, options]) => options.portalRequest === true));
 });
@@ -124,6 +126,7 @@ test('permission-generated Dataverse query limits retain a CDS execution error e
   }
 });
 
+// @test-kind observation: hosted session F1 (paqvilo-developer hosted-f1 summary-F1 API-02c, two runs) sent error.cdscode on a Dataverse failure without the inner error setting; the observed innererror shape is the former local model
 test('evidenced CDS code shape preserves the platform code without enabling inner error details', () => {
   const failure = new DataError('Bounded query budget exceeded', 400, 'UnsupportedQuery', { innerCode: '0x8004430d' });
   const response = webApiErrorResponse(failure, {
@@ -134,7 +137,8 @@ test('evidenced CDS code shape preserves the platform code without enabling inne
     error: { code: '9004010D', message: 'Common Data Service error occurred.', cdscode: '0x8004430d' },
   });
   assert.equal(response.status, 400);
-  assert.equal(webApiErrorResponse(failure).body.error.cdscode, undefined);
+  assert.equal(webApiErrorResponse(failure).body.error.cdscode, '0x8004430d');
+  assert.equal(webApiErrorResponse(failure, { cdsErrorCode: 'innererror' }).body.error.cdscode, undefined);
   assert.throws(() => observedConfig({ webApiCdsErrorCode: 'cdscode' }), /evidence/);
 });
 

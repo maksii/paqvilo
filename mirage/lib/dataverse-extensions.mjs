@@ -76,6 +76,7 @@ import { EXTENSION as addonFlows } from './dataverse-addon-flows.mjs';
 import { EXTENSION as addonPva } from './dataverse-addon-pva.mjs';
 import { EXTENSION as hierarchy } from './dataverse-hierarchy.mjs';
 import { EXTENSION as sharepointDocuments } from './sharepoint-documents.mjs';
+import { EXTENSION as sharepointDocumentTable } from './sharepoint-document-table.mjs';
 import { EXTENSION as storageRouting } from './dataverse-storage-routing.mjs';
 import { EXTENSION as calculated } from './dataverse-calculated.mjs';
 import { EXTENSION as formula } from './dataverse-formula.mjs';
@@ -158,6 +159,8 @@ export const EXTENSIONS = [
   storageRouting,
   // Document locations keep their bytes in the storage provider the files module routes.
   sharepointDocuments,
+  // The sharepointdocument rows of those locations (reads only).
+  sharepointDocumentTable,
   { name: 'dataverse-predefined', install: installPredefined, reset: resetPredefined, describe: describePredefined },
   { name: 'dataverse-audit', install: installAudit, reset: resetAudit, describe: describeAudit },
   {

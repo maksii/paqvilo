@@ -592,6 +592,15 @@ function refuseBulkTargets(mapping, message, targets) {
   }
 }
 
+// The more-records annotation (when included) and the paging cookie of a FetchXML page.
+function addFetchPagingAnnotations(c, body, fetched, info) {
+  if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
+  // The paging cookie is answered without a Prefer header.
+  if (fetched.more_records && fetched.paging_cookie) {
+    body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
+  }
+}
+
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
@@ -2037,6 +2046,19 @@ export function createRecordHandlers({
     }
     assertFetchOperands(c, xml);
   }
+  // A FetchXML page's count annotations, in the order Dataverse answers them; a platform service collection
+  // (`service`) answers the total -1 and the limit flag false. The metadata version sits after the count.
+  function addFetchCountAnnotations(c, body, xml, fetched, service) {
+    // returntotalrecordcount="true" answers the count (capped like $count) and, when included, the total and its limit flag.
+    const counted =
+      /<fetch\b[^>]*?\breturntotalrecordcount\s*=\s*["']true["']/i.test(xml) && fetched.total_record_count >= 0;
+    if (counted) body['@odata.count'] = Math.min(fetched.total_record_count, PAGE_CAP);
+    addMetadataVersion(c, body);
+    if ((counted || service) && c.include?.(RECORD_COUNT))
+      body[`@${RECORD_COUNT}`] = counted ? fetched.total_record_count : -1;
+    if ((counted || service) && c.include?.(RECORD_LIMIT))
+      body[`@${RECORD_LIMIT}`] = counted && Boolean(fetched.total_record_count_limit_exceeded);
+  }
   function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
     validateFetchXmlRequest(c, mapping, xml);
     const fetched = store.fetchXml(xml, c.identity, { metadata: readFieldsOf, ...rowsOptionsOf(c) });
@@ -2049,16 +2071,13 @@ export function createRecordHandlers({
     // A saved query's columns keep the saved attribute order; the id stays last when it is not listed.
     const ordered =
       order === 'attribute' ? columns : [...columns].sort(/* NOSONAR: preserve default string coercion */);
-    const listed = columns.length ? `(${ordered.join(',')})` : '';
+    // A table whose RetrieveMultiple a platform service answers (mapping.serviceCollectionAnswer) answers FetchXML as a
+    // collection: no column list in the context and the total record count annotations -1 and false (hosted session
+    // F7, dv-reads documents-fetch-plain, sharepointdocument).
+    const service = mapping.serviceCollectionAnswer === true;
+    const listed = columns.length && !service ? `(${ordered.join(',')})` : '';
     const body = { '@odata.context': contextFor(c, `${mapping.entitySet}${listed}`) };
-    // returntotalrecordcount="true" answers the count (capped like $count) and, when included, the total and its limit flag.
-    const counted =
-      /<fetch\b[^>]*?\breturntotalrecordcount\s*=\s*["']true["']/i.test(xml) && fetched.total_record_count >= 0;
-    if (counted) body['@odata.count'] = Math.min(fetched.total_record_count, PAGE_CAP);
-    addMetadataVersion(c, body);
-    if (counted && c.include?.(RECORD_COUNT)) body[`@${RECORD_COUNT}`] = fetched.total_record_count;
-    if (counted && c.include?.(RECORD_LIMIT))
-      body[`@${RECORD_LIMIT}`] = Boolean(fetched.total_record_count_limit_exceeded);
+    addFetchCountAnnotations(c, body, xml, fetched, service);
     body.value = fetched.entities.map((row) =>
       withoutNulls(
         keepAnnotations(
@@ -2067,11 +2086,7 @@ export function createRecordHandlers({
         ),
       ),
     );
-    if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
-    // The paging cookie is answered without a Prefer header.
-    if (fetched.more_records && fetched.paging_cookie) {
-      body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
-    }
+    addFetchPagingAnnotations(c, body, fetched, info);
     // Only a FetchXML with a link-entity answers its JSON type with charset=utf-8.
     const joined = /<link-entity\b/i.test(xml);
     return {
@@ -2138,6 +2153,9 @@ export function createRecordHandlers({
     const { mapping, url } = c;
     authorize(c, mapping.logicalName, 'read', mapping);
     await source(c, mapping, { single: false, id: null });
+    // A table whose count the platform answers itself (sharepoint-document-table.mjs).
+    const counted = await firstAnswer('count', c, mapping);
+    if (counted !== undefined) return counted;
     if (url.searchParams.has('$deltatoken')) {
       assertTableTracking(c, mapping, filterOf(c, mapping));
       const { changed, deleted } = await deltaChanges(c, mapping);
@@ -4164,67 +4182,71 @@ export function createRecordHandlers({
     projectInternal,
     projectFetchedInternal,
     secureInternal,
-    async handle(ctx) {
-      checkQuery(ctx.url, { nativeSyntax: Boolean(ctx.dataverseHttpReader) });
-      const mapping = mappingForSet(ctx.route.set);
-      const c = {
-        ...ctx,
-        mapping,
-        unmasked: ctx.url.searchParams.get('UnMaskedData') === 'true',
-        include: ctx.prefer.annotations == null ? null : annotationMatcher(ctx.prefer.annotations),
-        // Money formatted values carry the organization currency symbol, "$" when none is configured.
-        formatter: createWebApiFormatter({
-          store,
-          identity: ctx.identity,
-          metadata: readFieldsOf,
-          formatting: {
-            ...store.state.settings,
-            currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? '$',
-          },
-        }),
-      };
-      if (isElastic(mapping)) {
-        const alternate = ctx.route.key == null ? null : parseKey(ctx.route.key)?.alternate;
-        const raw = ctx.url.searchParams.get('partitionId');
-        const parameter = raw?.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1).replaceAll("''", "'") : raw;
-        c.partitionId =
-          alternate?.partitionid ??
-          (ctx.method === 'GET' || ctx.method === 'DELETE' ? parameter : ctx.body?.partitionid) ??
-          null;
-      }
-      const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
-      const tracing = store.traces?.enabled === true;
-      const response = await traced(
-        c,
-        operation,
-        mapping.logicalName,
-        tracing ? routeRecordId(c.route) : null,
-        { dispatch: true },
-        tracing ? () => dispatchInput(c) : undefined,
-        async (span) => {
-          bypassEvents(span, c);
-          // A read whose Retrieve or RetrieveMultiple steps run gets a read-operation boundary: a step's SDK write commits
-          // on its own even when the read later fails (recorded native readNested), as the portal's reads do. An independent
-          // read never waits behind, or borrows, another operation's transaction: while one is open the read runs at once
-          // and a step's SDK write commits in a transaction of its own, queued behind the open ones (data.mjs openReadLane).
-          const readSteps =
-            ctx.method === 'GET' &&
-            typeof store.readOperation === 'function' &&
-            !store.transactionPending?.() &&
-            ['retrieve', 'retrievemultiple'].some((operation) =>
-              store.pluginPipelineActive?.({ entity: mapping.logicalName, operation }),
-            );
-          const answer = await (readSteps ? store.readOperation(() => dispatch(c)) : dispatch(c));
-          dispatchAnswer(span, c, mapping, answer);
-          return answer;
-        },
-      );
-      if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
-        response.headers = {
-          ...response.headers,
-          'x-ms-session-token': `mirage:${mapping.logicalName}:${store.state.rowVersion ?? 0}`,
+    // Each request reads in its own row scope (data.mjs withRequestRows): rows a source hook lists stay with it.
+    handle(ctx) {
+      const run = async () => {
+        checkQuery(ctx.url, { nativeSyntax: Boolean(ctx.dataverseHttpReader) });
+        const mapping = mappingForSet(ctx.route.set);
+        const c = {
+          ...ctx,
+          mapping,
+          unmasked: ctx.url.searchParams.get('UnMaskedData') === 'true',
+          include: ctx.prefer.annotations == null ? null : annotationMatcher(ctx.prefer.annotations),
+          // Money formatted values carry the organization currency symbol, "$" when none is configured.
+          formatter: createWebApiFormatter({
+            store,
+            identity: ctx.identity,
+            metadata: readFieldsOf,
+            formatting: {
+              ...store.state.settings,
+              currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? '$',
+            },
+          }),
         };
-      return response;
+        if (isElastic(mapping)) {
+          const alternate = ctx.route.key == null ? null : parseKey(ctx.route.key)?.alternate;
+          const raw = ctx.url.searchParams.get('partitionId');
+          const parameter = raw?.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1).replaceAll("''", "'") : raw;
+          c.partitionId =
+            alternate?.partitionid ??
+            (ctx.method === 'GET' || ctx.method === 'DELETE' ? parameter : ctx.body?.partitionid) ??
+            null;
+        }
+        const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
+        const tracing = store.traces?.enabled === true;
+        const response = await traced(
+          c,
+          operation,
+          mapping.logicalName,
+          tracing ? routeRecordId(c.route) : null,
+          { dispatch: true },
+          tracing ? () => dispatchInput(c) : undefined,
+          async (span) => {
+            bypassEvents(span, c);
+            // A read whose Retrieve or RetrieveMultiple steps run gets a read-operation boundary: a step's SDK write commits
+            // on its own even when the read later fails (recorded native readNested), as the portal's reads do. An independent
+            // read never waits behind, or borrows, another operation's transaction: while one is open the read runs at once
+            // and a step's SDK write commits in a transaction of its own, queued behind the open ones (data.mjs openReadLane).
+            const readSteps =
+              ctx.method === 'GET' &&
+              typeof store.readOperation === 'function' &&
+              !store.transactionPending?.() &&
+              ['retrieve', 'retrievemultiple'].some((operation) =>
+                store.pluginPipelineActive?.({ entity: mapping.logicalName, operation }),
+              );
+            const answer = await (readSteps ? store.readOperation(() => dispatch(c)) : dispatch(c));
+            dispatchAnswer(span, c, mapping, answer);
+            return answer;
+          },
+        );
+        if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
+          response.headers = {
+            ...response.headers,
+            'x-ms-session-token': `mirage:${mapping.logicalName}:${store.state.rowVersion ?? 0}`,
+          };
+        return response;
+      };
+      return typeof store.withRequestRows === 'function' ? store.withRequestRows(run) : run();
     },
     // Unsubscribes the change log from the store; the API calls it when it closes.
     close: () => {

@@ -161,6 +161,7 @@ export async function importSolutionData(
       // unshare, rollupView }, CascadeType names as exported), on the relationship and on
       // both navigation sides; absent when the source states none (standard fallbacks).
       ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      ...(rel.polymorphic ? { polymorphic: true } : {}),
       source: rel.source,
       ...(rel.sources?.length > 1 ? { sources: rel.sources } : {}),
       ...(rel.standardFallback ? { standardFallback: true } : {}),
@@ -176,6 +177,7 @@ export async function importSolutionData(
       type: 'many-to-one',
       partner: rel.referencedNavigation,
       ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      ...(rel.polymorphic ? { polymorphic: true } : {}),
       ...(rel.isHierarchical ? { hierarchical: true } : {}),
     };
     parent.relationships[rel.referencedNavigation] = {
@@ -187,6 +189,7 @@ export async function importSolutionData(
       type: 'one-to-many',
       partner: rel.referencingNavigation,
       ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+      ...(rel.polymorphic ? { polymorphic: true } : {}),
       ...(rel.isHierarchical ? { hierarchical: true } : {}),
     };
     return;

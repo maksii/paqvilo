@@ -1,3 +1,4 @@
+// @test-kind security+contract: native first postbacks bind the view state to the issuing browser and preserve form state.
 // Auto-generated steps over the WebForms postback: Next/Previous re-render another tab without a
 // save, the earlier tabs' values travel in __VIEWSTATE and the last tab's Insert saves them all.
 import test from 'node:test';
@@ -8,6 +9,7 @@ import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { client } from './support/external-sign-in.mjs';
 
 test('auto-generated steps post back tab by tab and save every tab on Insert', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'auto-steps-http-'));
@@ -37,6 +39,7 @@ test('auto-generated steps post back tab by tab and save every tab on Insert', a
   const app = await createSimulator({
     sourceDir: root,
     watch: false,
+    identityProvider: { pairedBrowserTokens: true },
     initial: {
       mappings: {
         sample: {
@@ -166,4 +169,23 @@ test('auto-generated steps post back tab by tab and save every tab on Insert', a
     [ids.names + 'NextButton', 'Next tab'],
   ]);
   assert.equal(unkeyed.status, 403);
+
+  const browser = client(app);
+  const another = client(app);
+  const html = await (await browser.request('/')).text();
+  await (await another.request('/')).text();
+  const browserPost = (visitor) =>
+    visitor.request('/', {
+      method: 'POST',
+      body: new URLSearchParams([
+        ['__EVENTTARGET', ''],
+        ['__VIEWSTATE', viewStateOf(html)],
+        [ids.names + 'title', 'Paired view state'],
+        [ids.names + 'NextButton', 'Next tab'],
+      ]),
+    });
+  assert.equal((await browserPost(another)).status, 403);
+  const firstPost = await browserPost(browser);
+  assert.equal(firstPost.status, 200);
+  assert.match(await firstPost.text(), /<h2 class="tab-title">second<\/h2>/);
 });

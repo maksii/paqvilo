@@ -290,6 +290,20 @@ export function createFlowRunStore({
       return view(id);
     },
 
+    /** Records that an open run's Power Pages caller no longer waits for its Response (exported-operations.mjs): kept with the
+     * run, so the run's Response action fails also on a resume after a restart (flow-runtime.mjs context.responseClosed). */
+    closeResponse(runId) {
+      return write(() => {
+        const entry = runs()[runId],
+          row = table()[indexOf(runId)];
+        if (entry && row && !TERMINAL.has(row.status)) entry.responseClosed = true;
+      });
+    },
+    /** Whether closeResponse recorded the run. */
+    responseClosed(runId) {
+      return runs()[runId]?.responseClosed === true;
+    },
+
     /** The AbortSignal of an open run (created on first use); cancel() aborts it. */
     signalOf(runId) {
       if (!controllers.has(runId)) controllers.set(runId, new AbortController());
@@ -553,7 +567,67 @@ export function createHostFlowRuns({
     approvals,
     stateDirectory,
   });
+  // Requests held for a waiting run's Response (exported-operations.mjs awaitPortalFlowResponse): runId -> settle callbacks.
+  const responseWaiters = new Map();
+  const settleWaiters = (runId, value) => {
+    const waiters = responseWaiters.get(runId);
+    responseWaiters.delete(runId);
+    for (const settle of waiters ?? []) settle(value);
+  };
+  // The open runs whose Power Pages caller no longer waits for their Response (its request timed out, or it never waited):
+  // their Response action fails (flow-runtime.mjs context.responseClosed). The mark is in process memory at once and in the
+  // run's state entry (the store's closeResponse), so a resume after a restart fails that Response too.
+  const closedResponses = new Set();
+  const storeCloseResponse = runs.closeResponse,
+    storeResponseClosed = runs.responseClosed;
+  const closeResponse = (runId) => {
+    closedResponses.add(String(runId));
+    return Promise.resolve(storeCloseResponse(runId)).catch((error) =>
+      diagnostic({
+        code: 'FLOW_RUN_RESPONSE_CLOSE_FAILED',
+        runId,
+        error: { code: error?.code ?? 'FlowRunWriteFailed', message: error?.message },
+      }),
+    );
+  };
+  const responseClosed = (runId) => closedResponses.has(String(runId)) || storeResponseClosed(runId);
+  /**
+   * The answer of the run's next resume that answers its Response or ends it, or { status: 'TimedOut' } once timeoutMs
+   * passed on the store scheduler (the runtime clock). The run itself keeps running after a timeout, and its Response action
+   * then fails: the request no longer waits for it.
+   */
+  function awaitResponse(runId, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const waiters = responseWaiters.get(runId) ?? new Set();
+      responseWaiters.set(runId, waiters);
+      let handle = null;
+      const settle = (value) => {
+        if (handle !== null) runs.scheduler().cancel(handle);
+        handle = null;
+        resolve(value);
+      };
+      waiters.add(settle);
+      handle = runs.scheduler().schedule(
+        () => {
+          handle = null;
+          waiters.delete(settle);
+          if (!waiters.size && responseWaiters.get(runId) === waiters) responseWaiters.delete(runId);
+          // closeResponse reports a failed write itself; a failure of that report rejects the wait, so it surfaces.
+          closeResponse(runId).then(() => resolve({ status: 'TimedOut' }), reject);
+        },
+        timeoutMs,
+        { name: 'flow-response-timeout' },
+      );
+    });
+  }
   async function resumeRun(runId, outcome) {
+    const answer = await resumeOnce(runId, outcome);
+    // A run that waits again without having answered keeps its held requests; any other answer (a Response, the run's end,
+    // a failed resume as null) settles them.
+    if (answer?.status !== 'Waiting' || answer.response) settleWaiters(runId, answer ?? { status: 'Failed' });
+    return answer;
+  }
+  async function resumeOnce(runId, outcome) {
     try {
       const run = runs.get(runId),
         flow = run ? flowOf(run.processId) : null;
@@ -600,9 +674,24 @@ export function createHostFlowRuns({
   }
   runs.setResumeRun(resumeRun);
   const closeTimers = runs.close;
+  const cancelRun = runs.cancel;
+  const completeRun = runs.complete;
   return Object.assign(runs, {
     flowOf,
     resumeRun,
+    awaitResponse,
+    closeResponse,
+    responseClosed,
+    async complete(runId, outcome) {
+      closedResponses.delete(String(runId));
+      return completeRun(runId, outcome);
+    },
+    // A cancelled run answers the requests held for it as cancelled.
+    async cancel(runId) {
+      const cancelled = await cancelRun(runId);
+      if (cancelled) settleWaiters(runId, { status: 'Cancelled' });
+      return cancelled;
+    },
     attach(api) {
       // The resumed run owns the change slot (runOwned), so a custom API it calls joins its transaction (no self-wait).
       if (typeof api?.change === 'function') change = (fn) => api.change(() => runOwned(fn));

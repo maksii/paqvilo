@@ -10,7 +10,11 @@ using System.Runtime.CompilerServices;
 using System.ServiceModel;
 using System.Diagnostics;
 using System.Threading;
+#if PAQVILO_CORECLR
+using System.Text.Json;
+#else
 using System.Web.Script.Serialization;
+#endif
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 
@@ -395,7 +399,26 @@ public static class PaqviloPluginHost {
  [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]struct BasicInformation{public IntPtr ExitStatus,PebBaseAddress,AffinityMask,BasePriority,UniqueProcessId,InheritedFromUniqueProcessId;}
  [System.Runtime.InteropServices.DllImport("ntdll.dll")]static extern int NtQueryInformationProcess(IntPtr process,int informationClass,ref BasicInformation information,int length,out int returned);
  // The PID that created this host (ProcessBasicInformation): independent of wall-clock creation times.
- static long CreatorId(){var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
+ static long WindowsCreatorId(){var info=new BasicInformation();int returned;using(var self=Process.GetCurrentProcess())return NtQueryInformationProcess(self.Handle,0,ref info,System.Runtime.InteropServices.Marshal.SizeOf(typeof(BasicInformation)),out returned)==0?info.InheritedFromUniqueProcessId.ToInt64():-1;}
+#if PAQVILO_CORECLR
+ [System.Runtime.InteropServices.DllImport("libc",EntryPoint="getppid")]static extern int MacParentProcessId();
+ // Modern .NET on macOS and Linux: the parent the dotnet command was started by (it runs the host in its own process).
+ // Linux reads /proc/self/stat (field 4, after the parenthesised command name, which may itself contain spaces or
+ // parentheses); macOS asks libSystem. Both are independent of wall-clock creation times.
+ static long CreatorId(){if(OperatingSystem.IsWindows())return WindowsCreatorId();if(OperatingSystem.IsLinux()){var stat=File.ReadAllText("/proc/self/stat");var fields=stat.Substring(stat.LastIndexOf(')')+2).Split(' ');return Int64.Parse(fields[1],CultureInfo.InvariantCulture);}return MacParentProcessId();}
+#else
+ static long CreatorId(){return WindowsCreatorId();}
+#endif
+#if PAQVILO_CORECLR
+ // Modern .NET puts every assembly beside the host on its default load path, the runtime's copy of the plug-in included.
+ // As .NET Framework's LoadFrom does, the plug-in loads from the path it is given (its execution snapshot) while every
+ // assembly it references binds through the default context: the SDK and dependencies of the verified runtime.
+ sealed class PluginLoadContext:System.Runtime.Loader.AssemblyLoadContext{protected override Assembly Load(AssemblyName name){return null;}}
+ static readonly Dictionary<string,Assembly> Plugins=new Dictionary<string,Assembly>(StringComparer.Ordinal);
+ static Assembly LoadPlugin(string file){var full=Path.GetFullPath(file);lock(Plugins){Assembly loaded;if(!Plugins.TryGetValue(full,out loaded))Plugins[full]=loaded=new PluginLoadContext().LoadFromAssemblyPath(full);return loaded;}}
+#else
+ static Assembly LoadPlugin(string file){return Assembly.LoadFrom(file);}
+#endif
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
   // A trailing `--label <text>` names the host in a debugger's process picker; the host ignores its value.
@@ -418,15 +441,30 @@ public static class PaqviloPluginHost {
  }
  // The online sandbox runs plug-ins in en-US and UTC (native sandbox body.sandbox, both captures: culture and uiCulture en-US,
  // timeZone UTC, utcOffsetMinutes 0). Threads the plug-in starts inherit the default cultures.
+ #if PAQVILO_CORECLR
+ static readonly CultureInfo SandboxEnUs=SandboxCultureInfo();
+ static void SandboxCulture(){var culture=SandboxEnUs;CultureInfo.DefaultThreadCurrentCulture=culture;CultureInfo.DefaultThreadCurrentUICulture=culture;Thread.CurrentThread.CurrentCulture=culture;Thread.CurrentThread.CurrentUICulture=culture;PinUtc();}
+#else
  static void SandboxCulture(){var culture=CultureInfo.GetCultureInfo("en-US");CultureInfo.DefaultThreadCurrentCulture=culture;CultureInfo.DefaultThreadCurrentUICulture=culture;Thread.CurrentThread.CurrentCulture=culture;Thread.CurrentThread.CurrentUICulture=culture;PinUtc();}
+#endif
+#if PAQVILO_CORECLR
+ // Modern .NET reads the zone from TZ (the launcher already sets TZ=UTC): the host sets it again and clears the cached
+ // zone before each invocation, since a plug-in may change either; the legacy TimeZone.CurrentTimeZone keeps its own
+ // cache and is replaced as on .NET Framework.
+ static void PinUtc(){if(Environment.GetEnvironmentVariable("TZ")!="UTC")Environment.SetEnvironmentVariable("TZ","UTC");if(TimeZoneInfo.Local.Id!="UTC")TimeZoneInfo.ClearCachedData();var zone=typeof(TimeZone).GetField("currentTimeZone",BindingFlags.NonPublic|BindingFlags.Static);if(zone!=null)zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
+ // ICU (modern .NET on macOS and Linux) separates a time from AM/PM with a narrow no-break space; the .NET Framework en-US
+ // culture of the Dataverse sandbox uses a plain space, which formatted values and traces then show.
+ static CultureInfo SandboxCultureInfo(){var culture=(CultureInfo)CultureInfo.GetCultureInfo("en-US").Clone();var format=culture.DateTimeFormat;Func<string,string> plain=pattern=>pattern.Replace('\u202F',' ').Replace('\u00A0',' ');foreach(var kind in new[]{'t','T'})format.SetAllDateTimePatterns(format.GetAllDateTimePatterns(kind).Select(plain).Distinct().ToArray(),kind);format.FullDateTimePattern=plain(format.FullDateTimePattern);return CultureInfo.ReadOnly(culture);}
+#else
  // .NET Framework has no public setter for the local zone: TimeZoneInfo.Local, the DateTime.Now offset cache and
  // TimeZone.CurrentTimeZone are replaced by UTC, again before each invocation (a plug-in may call ClearCachedData).
  static void PinUtc(){const BindingFlags S=BindingFlags.NonPublic|BindingFlags.Static,I=BindingFlags.NonPublic|BindingFlags.Instance;var cached=typeof(TimeZoneInfo).GetField("s_cachedData",S);var data=cached==null?null:cached.GetValue(null);var type=data==null?null:data.GetType();var local=type==null?null:type.GetField("m_localTimeZone",I);var year=type==null?null:type.GetField("m_oneYearLocalFromUtc",I);var rule=typeof(TimeZoneInfo).GetNestedType("OffsetAndRule",BindingFlags.NonPublic);var zone=typeof(TimeZone).GetField("currentTimeZone",S);if(local==null||year==null||rule==null||zone==null)throw new InvalidOperationException("The CLR host cannot pin the sandbox time zone to UTC on this .NET Framework.");lock(data){local.SetValue(data,TimeZoneInfo.Utc);year.SetValue(data,Activator.CreateInstance(rule,I|BindingFlags.Public,null,new object[]{DateTime.UtcNow.Year,TimeSpan.Zero,null},null));}zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
+#endif
  sealed class UtcZone:TimeZone {public override string StandardName{get{return TimeZoneInfo.Utc.StandardName;}}public override string DaylightName{get{return TimeZoneInfo.Utc.DaylightName;}}public override DaylightTime GetDaylightChanges(int year){return new DaylightTime(DateTime.MinValue,DateTime.MinValue,TimeSpan.Zero);}public override TimeSpan GetUtcOffset(DateTime time){return TimeSpan.Zero;}}
  static int ExecuteLine(Dictionary<string,object> input){
   InvocationLease lease=null;bool pluginExecuting=false;var invocationId=Get(input,"invocationId") as string;try{
    PinUtc();var context=Map(Get(input,"context")).ToDictionary(p=>p.Key,p=>Decode(p.Value));context["InputParameters"]=Decode(Get(input,"inputParameters"));context["OutputParameters"]=Decode(Get(input,"outputParameters"));context["SharedVariables"]=Decode(Get(input,"sharedVariables"));context["PreEntityImages"]=Images(Get(input,"preImages"));context["PostEntityImages"]=Images(Get(input,"postImages"));
-   lease=new InvocationLease(context,invocationId);var assembly=Assembly.LoadFrom(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw Unsupported("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw Unsupported("The configured original type does not implement IPlugin.");
+   lease=new InvocationLease(context,invocationId);var assembly=LoadPlugin(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw Unsupported("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw Unsupported("The configured original type does not implement IPlugin.");
    // Debug is a trusted local descriptor opt-in. Gate before construction so constructor and Execute breakpoints bind.
    if(Object.Equals(Get(input,"debug"),true)&&!Debugger.IsAttached){Send(new {kind="debug-wait",invocationId=invocationId,pid=Process.GetCurrentProcess().Id});while(!Debugger.IsAttached)Thread.Sleep(50);}
    object plugin;var ctor=type.GetConstructor(new[]{typeof(string),typeof(string)});if(ctor!=null)plugin=ctor.Invoke(new object[]{Get(input,"unsecureConfiguration"),Get(input,"secureConfiguration")});else{ctor=type.GetConstructor(new[]{typeof(string)});plugin=ctor!=null?ctor.Invoke(new object[]{Get(input,"unsecureConfiguration")}):Activator.CreateInstance(type);}
@@ -438,4 +476,27 @@ public static class PaqviloPluginHost {
 // The platform's internal managed-identity contract its ManagedIdentityServiceProvider implements (sandbox 'services' block);
 // it declares nothing a plug-in can call.
 namespace Microsoft.Xrm.Sdk {interface IInternalManagedIdentityService {}}
+#endif
+
+#if PAQVILO_CORECLR
+// Modern .NET has no System.Web.Extensions. The protocol's JSON goes through System.Text.Json with JavaScriptSerializer's
+// object model: an object is a Dictionary<string,object>, an array an object[], a whole number an int, else a long, else a
+// decimal, and any other number a decimal when it has no exponent, else a double.
+sealed class JavaScriptSerializer {
+ public int MaxJsonLength{get;set;}
+ public int RecursionLimit{get;set;}=100;
+ public string Serialize(object value){return JsonSerializer.Serialize<object>(value,new JsonSerializerOptions{MaxDepth=RecursionLimit});}
+ public object DeserializeObject(string input){using(var document=JsonDocument.Parse(input,new JsonDocumentOptions{MaxDepth=RecursionLimit}))return Read(document.RootElement);}
+ static object Read(JsonElement element){
+  switch(element.ValueKind){
+   case JsonValueKind.Object:{var map=new Dictionary<string,object>();foreach(var property in element.EnumerateObject())map[property.Name]=Read(property.Value);return map;}
+   case JsonValueKind.Array:return element.EnumerateArray().Select(Read).ToArray();
+   case JsonValueKind.String:return element.GetString();
+   case JsonValueKind.True:return true;
+   case JsonValueKind.False:return false;
+   case JsonValueKind.Number:{int whole;if(element.TryGetInt32(out whole))return whole;long wide;if(element.TryGetInt64(out wide))return wide;var raw=element.GetRawText();decimal exact;if(raw.IndexOfAny(new[]{'e','E'})<0&&Decimal.TryParse(raw,NumberStyles.Number,CultureInfo.InvariantCulture,out exact))return exact;return element.GetDouble();}
+   default:return null;
+  }
+ }
+}
 #endif

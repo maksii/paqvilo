@@ -13,6 +13,9 @@ import { guidKey } from './dataverse-values.mjs';
 import { contentDisposition, fileNameHeader } from './response-headers.mjs';
 import { authorizeGrant, validateServiceProfile } from './local-organization-service.mjs';
 import { denied as fieldDenied } from './dataverse-fls.mjs';
+import { jpegThumbnail } from './portal-jpeg.mjs';
+import { pngThumbnail } from './portal-png.mjs';
+import { bmpThumbnail, gifThumbnail } from './portal-image-formats.mjs';
 
 const CHUNK_SIZE = 4194304;
 const BLOCK_LIMIT = 4194304; // The docs say a block is under 4 MB; the exact native bound is a guess.
@@ -214,7 +217,8 @@ const MIME_BY_EXTENSION = {
   mp3: 'audio/mpeg',
   mp4: 'video/mp4',
 };
-const mimeOfName = (name) => {
+/** The MIME type the built-in map gives a file name's extension, or null (file columns and the Azure file Web API). */
+export const mimeOfName = (name) => {
   const text = String(name ?? '');
   const extension = text.includes('.') ? text.slice(text.lastIndexOf('.') + 1).toLowerCase() : '';
   return Object.hasOwn(MIME_BY_EXTENSION, extension) ? MIME_BY_EXTENSION[extension] : null;
@@ -799,24 +803,44 @@ export function install(api) {
     // canStoreFullImage defaults to false, as the metadata does, so size=full answers 204 unless the column stores full images.
     if (kind === 'image' && c.url.searchParams.get('size') === 'full' && def?.canStoreFullImage !== true)
       return { status: 204 };
-    const size = entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size;
+    // The bare portal image route, the record projection and the organization $value route use the same thumbnail bytes
+    // (hosted session F2 thumbs runs a and b: the Dataverse $value read answered the portal's thumbnail); the internal
+    // file seam reads the stored bytes unless it asks for the portal image.
+    const thumbnail = kind === 'image' && c.url.searchParams.get('size') !== 'full';
+    const shrinks = c.portalImage || c.route?.kind === 'value';
+    const shrink = {
+      'image/png': pngThumbnail,
+      'image/jpeg': jpegThumbnail,
+      'image/gif': gifThumbnail,
+      'image/bmp': bmpThumbnail,
+    };
+    const preview =
+      shrinks && thumbnail && Object.hasOwn(shrink, entry.mimeType)
+        ? shrink[entry.mimeType](await readStoredBytes(api, entry))
+        : null;
+    const size =
+      preview?.length ?? (entry.data != null ? Buffer.from(String(entry.data), 'base64').length : entry.size);
+    // The type of the bytes served: a thumbnail keeps its source format (hosted session F2), so it is the stored type,
+    // read from the re-encoded bytes when there are any.
+    const servedType = preview ? (sniffImage(preview) ?? entry.mimeType) : entry.mimeType;
     // Simple token names retain the organization file-column wire format. Other
     // names use the RFC 6266 fallback so Unicode and punctuation stay safe.
     const base = {
       'x-ms-file-size': String(size),
       'x-ms-file-name': fileNameHeader(entry.name),
-      mimetype: entry.mimeType,
+      mimetype: servedType,
       'Content-Disposition': contentDisposition('inline', entry.name, { tokenFilename: true }),
       'Access-Control-Expose-Headers': EXPOSE,
     };
-    const range = header(c, 'range');
+    // A portal thumbnail read ignores Range and answers the whole thumbnail (hosted session F1 files runs a and b).
+    const range = c.portalImage && thumbnail ? undefined : header(c, 'range');
     // An image without size=full answers the thumbnail with no file headers at all.
-    const thumbnail = kind === 'image' && c.url.searchParams.get('size') !== 'full';
     if (range === undefined)
       return {
         status: 200,
         headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) },
-        body: await readStoredBytes(api, entry),
+        body: preview ?? (await readStoredBytes(api, entry)),
+        contentType: servedType,
       };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
     if (!match) throw plain(invalid('The Range header must be bytes=start-end.'));
@@ -843,7 +867,8 @@ export function install(api) {
         'OData-Version': '4.0',
         'Content-Range': `bytes ${start}-${end}/${size}`,
       },
-      body: await readStoredBytes(api, entry, { start, end }),
+      body: preview ? preview.subarray(start, end + 1) : await readStoredBytes(api, entry, { start, end }),
+      contentType: servedType,
     };
   }
 
@@ -874,10 +899,12 @@ export function install(api) {
     id,
     column,
     size = /** @type {unknown} */ (null),
+    range = /** @type {unknown} */ (null),
     content = null,
     fileName = null,
     contentType = null,
     defaultName = false,
+    portalImage = false,
   } = {}) {
     validateServiceProfile(principal);
     const mapping = store.resolveMapping(entity);
@@ -893,19 +920,23 @@ export function install(api) {
       return { statusCode: (await clear({ authorized: true }, { mapping, id, ...found })).status, body: {} };
     const url = new URL(`http://localhost/${download && size === 'full' ? '?size=full' : ''}`);
     if (download) {
-      const answer = await downloadFile({ authorized: true, url, headers: {} }, { mapping, id, ...found });
+      const headers = typeof range === 'string' ? { range } : {};
+      const answer = await downloadFile({ authorized: true, url, headers, portalImage }, { mapping, id, ...found });
       if (answer.status === 204) return { statusCode: 204, body: {} };
       const entry = filesRead(store)[row[column]];
       const bytes = Buffer.from(answer.body ?? []);
+      // The served bytes' type (a re-encoded thumbnail's format), not the stored type.
+      const type = answer.contentType ?? entry?.mimeType ?? 'application/octet-stream';
       // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
       return {
-        statusCode: 200,
-        body: { '$content-type': entry?.mimeType ?? 'application/octet-stream', $content: bytes.toString('base64') },
+        statusCode: answer.status,
+        body: { '$content-type': type, $content: bytes.toString('base64') },
         file: {
           name: entry?.name ?? column,
-          size: bytes.length,
-          mimeType: entry?.mimeType ?? 'application/octet-stream',
+          size: answer.status === 206 ? Number(answer.headers['x-ms-file-size']) : bytes.length,
+          mimeType: type,
         },
+        ...(answer.status === 206 ? { headers: answer.headers } : {}),
       };
     }
     const shaped =
@@ -914,9 +945,14 @@ export function install(api) {
     if (raw == null) throw invalid('The file content is required.');
     const bytes =
       Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), 'base64');
-    // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
-    // The name the platform stores for a nameless portal upload is a guess.
-    const name = fileName || (defaultName ? (filesRead(store)[row[column]]?.name ?? `${column}.bin`) : null);
+    // The stored image is the upload byte for byte, Exif included: size=full answers it unchanged and only the thumbnail
+    // applies the Exif orientation (hosted sessions F1 files and F2 thumbs, runs a and b).
+    if (portalImage && found.kind === 'image') assertSize(found.kind, maxBytes(found.kind, found.def), bytes.length);
+    // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else Untitled.txt for
+    // an image (hosted session F1 files runs a and b: a nameless image PUT downloads as Untitled.txt) and <column>.bin for
+    // a file, whose nameless name is a guess.
+    const fallback = found.kind === 'image' ? 'Untitled.txt' : `${column}.bin`;
+    const name = fileName || (defaultName ? (filesRead(store)[row[column]]?.name ?? fallback) : null);
     if (!name) throw invalid('x-ms-file-name is required.');
     const type = shaped ? content['$content-type'] : contentType;
     const answer = await upload(

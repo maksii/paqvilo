@@ -1,3 +1,4 @@
+// @test-kind unproven: local models of the demo's exported plug-in steps on its invented data; the error text is the hosted one (hosted session F1 summary-F1 API-02c)
 import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,7 +56,7 @@ test('exported plugin steps use explicit local models for validation, normalizat
     assert.equal(response.status, 400, await response.clone().text());
     const { error } = await response.json();
     assert.equal(error.code, '9004010D');
-    assert.equal(error.message, 'CDS error occurred.');
+    assert.equal(error.message, 'Common Data Service error occurred.');
     assert.equal(error.innererror.message, message);
   };
   await reject('accounts', 'POST', { name: 'AB' }, 'Account name must contain at least 3 characters.');

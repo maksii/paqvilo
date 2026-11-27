@@ -42,7 +42,7 @@ test('draft text, cancel confirmation, retained edits and reopen reset match the
   };
   await write(
     'portal/website.yml',
-    'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 1\n',
+    'adx_websiteid: 77777777-7777-4777-8777-777777777777\nadx_name: Invented\nadx_enhancedauthorization: 3\n',
   );
   await write('portal/web-pages/home/Home.webpage.yml', 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n');
   for (const [file, body] of Object.entries(canvasDraftInputFiles)) await write('apps/invented/' + file, body);

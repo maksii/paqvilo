@@ -19,6 +19,11 @@
     if (size >= 1024) return (size / 1024).toFixed(1) + ' KB';
     return size + ' bytes';
   };
+  // The remaining file count the server rendered; 0 when the record's notes use every slot.
+  const maxFiles = () => {
+    const count = Number.parseInt(byId('AttachFile_HiddenField_MaxFile')?.value ?? '', 10);
+    return Number.isInteger(count) && count >= 0 ? count : 1;
+  };
   const chosen = [];
   const uploaded = [];
   let retainedCount = 0,
@@ -35,7 +40,7 @@
     }
     if (Array.isArray(retained)) uploaded.push(...retained.filter((id) => typeof id === 'string'));
     retainedCount = uploaded.length;
-    if (retainedCount >= (Number(byId('AttachFile_HiddenField_MaxFile')?.value) || 1)) {
+    if (retainedCount >= maxFiles()) {
       const button = byId('UploadButton');
       if (button) button.disabled = true;
     }
@@ -111,9 +116,20 @@
     const input = byId('AttachFile');
     const info = byId('newdivforfileinfo');
     if (!input || !info) return;
-    const max = Number(byId('AttachFile_HiddenField_MaxFile')?.value) || 1;
-    for (const file of input.files ?? []) {
-      if (retainedCount + chosen.length >= max) break;
+    const max = maxFiles();
+    // A selection is taken only as a whole: more files than the remaining count upload none (hosted session F2, attach
+    // runs b/e, i/j and k/l, max2-admin:two-files: "None of the files could be uploaded. You can upload a maximum of N
+    // files." and no upload request).
+    const offered = [...(input.files ?? [])];
+    if (retainedCount + chosen.length + offered.length > max) {
+      const body = byId('file-limit');
+      if (body) body.textContent = `None of the files could be uploaded. You can upload a maximum of ${max} files.`;
+      const modal = byId('ModalToShowErrorForFileLimit');
+      if (modal) modal.style.display = 'block';
+      input.value = '';
+      return;
+    }
+    for (const file of offered) {
       chosen.push(file);
       const item = document.createElement('div');
       item.className = 'custom-button';

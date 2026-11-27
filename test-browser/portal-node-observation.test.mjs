@@ -8,12 +8,29 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { observePortalNode } from '../lense/portal-node-observation.mjs';
 import { resolveInspectionEvidence } from '../lense/inspection-evidence.mjs';
 
+// The shapes are Power Pages' own: a basic form wrapper EntityFormControl_<form id> holding its form view and the
+// layout span (data-form-layout), whose Id the portal renders as the empty GUID.
+// The shapes are Power Pages' own: a basic form wrapper EntityFormControl_<form id> holding its form view and the
+// layout span (data-form-layout), whose Id the portal renders as the empty GUID.
 test('actual portal node joins use rendered component scope and never navigation defaults, page forms or values', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
+  const empty = '00000000-0000-0000-0000-000000000000';
+  const layout = (table) => `<span data-form-layout='{"Id":"${empty}","EntityName":"${table}"}'></span>`;
+  // A form cell as the portal renders it: a control names its column only inside the platform's own cell.
+  const cell = (inner) => `<table class="section"><tbody><tr><td class="cell">${inner}</td></tr></tbody></table>`;
   const html =
-    '<form id="form" data-formid="form-a" data-entityname="sample_entry"><label id="caption" for="title">Title</label><input id="title" name="title" value="PRIVATE_VALUE"><button id="submit">Save</button><div id="child" data-formid="form-b" data-entityname="sample_child"><input id="other" name="title"></div></form><input id="outside" name="title"><iframe id="frame"></iframe>';
+    '<div id="EntityFormControl_forma"><div id="EntityFormControl_forma_EntityFormView">' +
+    layout('sample_entry') +
+    cell(
+      '<div class="table-info"><label id="caption" for="title">Title</label></div><div class="control" data-logical-name="title"><input id="title" name="title" value="PRIVATE_VALUE"></div>',
+    ) +
+    '<button id="submit">Save</button>' +
+    '<div id="EntityFormControl_formb"><div id="EntityFormControl_formb_EntityFormView">' +
+    layout('sample_child') +
+    cell('<div class="control" data-logical-name="title"><input id="other" name="title"></div>') +
+    '</div></div></div></div><input id="outside" name="title"><iframe id="frame"></iframe>';
   await page.route('http://127.0.0.1:11888/**', (route) => route.fulfill({ contentType: 'text/html', body: html }));
   await page.goto('http://127.0.0.1:11888/');
   await page.evaluate(() =>
@@ -82,8 +99,9 @@ test('actual portal node joins use rendered component scope and never navigation
   await page.evaluate(() => {
     const native = document.createElement('div');
     native.id = 'EntityFormControl_forma_EntityFormView';
+    native.className = 'appended';
     native.innerHTML =
-      '<span data-form-layout=\'{"Id":"form-a","EntityName":"sample_entry"}\'></span><input id="native-title" name="title">';
+      '<span data-form-layout=\'{"Id":"form-a","EntityName":"sample_entry"}\'></span><table class="section"><tbody><tr><td class="cell"><input id="native-title" name="title"></td></tr></tbody></table>';
     document.body.append(native);
   });
   assert.equal(
@@ -91,29 +109,18 @@ test('actual portal node joins use rendered component scope and never navigation
     'exact',
     'native wrapper IDs and direct child layout resolve nonhex export IDs',
   );
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
-    .evaluate((node) =>
-      node.setAttribute(
-        'data-form-layout',
-        JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: 'sample_entry' }),
-      ),
-    );
+  const nativeView = page.locator('body > .appended');
+  const nativeLayout = page.locator('body > .appended > [data-form-layout]');
+  await nativeLayout.evaluate(
+    (node, id) => node.setAttribute('data-form-layout', JSON.stringify({ Id: id, EntityName: 'sample_entry' })),
+    empty,
+  );
   assert.equal(
     (await inspect('#native-title')).owner.status,
     'exact',
     'a native empty layout ID cannot erase the independently observed basic-form wrapper',
   );
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView')
-    .evaluate((node) => node.setAttribute('data-formid', '00000000-0000-0000-0000-000000000000'));
-  assert.equal(
-    (await inspect('#native-title')).owner.status,
-    'unavailable',
-    'an explicit unknown component ID remains a boundary',
-  );
-  await page.locator('#EntityFormControl_forma_EntityFormView').evaluate((node) => {
-    node.removeAttribute('data-formid');
+  await nativeView.evaluate((node) => {
     node.id = 'EntityFormControl_EntityFormView';
   });
   assert.equal(
@@ -121,47 +128,39 @@ test('actual portal node joins use rendered component scope and never navigation
     'unavailable',
     'a generic wrapper and empty layout ID cannot invent a basic-form identity',
   );
-  await page.locator('#EntityFormControl_EntityFormView').evaluate((node) => {
+  await nativeView.evaluate((node) => {
     node.id = 'EntityFormControl_forma_EntityFormView';
   });
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
-    .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
+  await nativeLayout.evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
   assert.equal(
     (await inspect('#native-title')).owner.status,
     'conflicting',
     'a known native wrapper and different known layout cannot silently choose one',
   );
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView > [data-form-layout]')
-    .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-a-xml' })));
+  await nativeLayout.evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-a-xml' })));
   assert.equal(
     (await inspect('#native-title')).owner.status,
     'exact',
     'native wrapper and its FormXml layout alias agree',
   );
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView')
-    .evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
+  await nativeView.evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
   assert.equal(
     (await inspect('#native-title')).owner.status,
     'conflicting',
     'a wrapper layout cannot hide its different child layout',
   );
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView')
-    .evaluate((node) => node.removeAttribute('data-form-layout'));
-  await page
-    .locator('#EntityFormControl_forma_EntityFormView')
-    .evaluate((node) => (node.id = 'EntityFormControl_unexported_EntityFormView'));
+  await nativeView.evaluate((node) => node.removeAttribute('data-form-layout'));
+  await nativeView.evaluate((node) => (node.id = 'EntityFormControl_unexported_EntityFormView'));
   assert.equal(
     (await inspect('#native-title')).owner.status,
     'unavailable',
     'a known child layout cannot conceal an unknown enclosing native instance',
   );
-  await page.locator('#form').evaluate((form) => {
+  const outer = page.locator('#EntityFormControl_forma');
+  const view = page.locator('#EntityFormControl_forma > #EntityFormControl_forma_EntityFormView');
+  await outer.evaluate((form) => {
     const inner = document.createElement('div');
-    inner.setAttribute('data-formid', 'not-exported');
+    inner.id = 'EntityFormControl_notexported';
     inner.innerHTML = '<input id="unknown-inner" name="title">';
     form.append(inner);
   });
@@ -172,47 +171,37 @@ test('actual portal node joins use rendered component scope and never navigation
     'an unexported inner component cannot borrow the known outer form',
   );
   assert.equal(unknownInner.enclosing.length, 0);
-  await page.locator('#form').evaluate((form) => form.setAttribute('data-viewid', 'not-exported'));
-  assert.equal(
-    (await inspect('#title')).owner.status,
-    'unavailable',
-    'a partial known identity does not erase another unrecognized component declaration',
-  );
-  await page.locator('#form').evaluate((form) => form.removeAttribute('data-viewid'));
-  await page
-    .locator('#form')
-    .evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
+  await view.evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-b' })));
   assert.equal(
     (await inspect('#title')).owner.status,
     'conflicting',
     'two known structural form IDs on the same element cannot choose one',
   );
-  await page
-    .locator('#form')
-    .evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-a-xml' })));
+  await view.evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'form-a-xml' })));
   assert.equal(
     (await inspect('#title')).owner.status,
     'exact',
     'basic-form and its FormXml alias identify the same definition',
   );
-  await page
-    .locator('#form')
-    .evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'not-exported' })));
+  await view.evaluate((form) => form.setAttribute('data-form-layout', JSON.stringify({ Id: 'not-exported' })));
   assert.equal(
     (await inspect('#title')).owner.status,
     'unavailable',
-    'a known explicit ID cannot hide an unknown layout ID',
+    'a known wrapper ID cannot hide an unknown layout ID',
   );
-  await page.locator('#form').evaluate((form) => form.setAttribute('data-form-layout', '{invalid'));
+  await view.evaluate((form) => form.setAttribute('data-form-layout', '{invalid'));
   assert.equal(
     (await inspect('#title')).owner.status,
     'unavailable',
     'malformed explicit structural layout cannot borrow another identifier',
   );
-  await page.locator('#form').evaluate((form) => form.removeAttribute('data-form-layout'));
+  await view.evaluate((form) => form.removeAttribute('data-form-layout'));
   const conflicting = await inspect('#title', { forms: [{ ...bindings.forms[0], entity: 'sample_wrong' }] });
   assert.equal(conflicting.owner.status, 'conflicting');
-  await page.locator('#form').evaluate((form) => form.removeAttribute('data-formid'));
+  await page.evaluate(() => {
+    document.getElementById('EntityFormControl_forma').id = 'plain';
+    document.getElementById('EntityFormControl_forma_EntityFormView').id = 'plain-view';
+  });
   const noCurrentComponent = await inspect('#title');
   assert.equal(
     noCurrentComponent.owner.status,
@@ -221,7 +210,7 @@ test('actual portal node joins use rendered component scope and never navigation
   );
 });
 
-test('typed advanced wrappers and modal form hierarchy preserve exact configuration while progress chrome stays enclosing', async (t) => {
+test('typed advanced wrappers and modal form hierarchy preserve exact configuration and name the progress indicator', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage();
@@ -277,10 +266,12 @@ test('typed advanced wrappers and modal form hierarchy preserve exact configurat
   assert.equal(configured.source.status, 'exact');
   assert.ok(configured.source.refs.some((ref) => ref.id === 'advanced-config'));
   const progress = await page.evaluate(read, { selector: '#step', options });
+  const progressOwner = resolveInspectionEvidence({ ...progress, mode: 'live', node: { connected: true } }).owner;
+  assert.equal(progressOwner.status, 'exact');
   assert.equal(
-    resolveInspectionEvidence({ ...progress, mode: 'live', node: { connected: true } }).owner.status,
-    'unavailable',
-    'a progress child does not inherit its ancestor as selected owner',
+    progressOwner.component.key,
+    'advanced-form:wizard-a#progress',
+    'a progress step is named as the progress indicator of its multistep form, not as the form itself',
   );
   assert.ok(
     progress.facts.some((fact) => fact.dimension === 'enclosing' && fact.binding.key === 'advanced-form:wizard-a'),
@@ -293,7 +284,7 @@ test('typed advanced wrappers and modal form hierarchy preserve exact configurat
   await frame.locator('body').waitFor();
   await frame.evaluate(() => {
     document.body.innerHTML =
-      '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout=\'{"Id":"modal-a","EntityName":"sample_child"}\'></span><input id="title" name="title"></div></div></div>';
+      '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout=\'{"Id":"modal-a","EntityName":"sample_child"}\'></span><table class="section"><tbody><tr><td class="cell"><input id="title" name="title"></td></tr></tbody></table></div></div></div>';
   });
   const childOptions = { ...options, scope: { ...scope, documentId: 'modal-document', frameId: 'modal-frame' } };
   const packet = await frame.evaluate(read, { selector: '#title', options: childOptions });
@@ -313,7 +304,8 @@ test('typed advanced wrappers and modal form hierarchy preserve exact configurat
     {
       componentKey: 'form:solution-form-a',
       relationship: 'uses-definition',
-      ancestorDepth: 1,
+      // input < td.cell < tr < tbody < table.section < the form view
+      ancestorDepth: 5,
       localName: 'div',
       id: 'EntityFormControl_EntityFormView',
     },

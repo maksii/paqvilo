@@ -14,7 +14,7 @@ import {
   validateClrDescriptor,
   executeClrPlugin,
 } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 import { editorFiles } from '../../lense/project-editor.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 
@@ -245,7 +245,7 @@ test(
     child.stderr.resume();
     await gated;
     const incarnation = () => {
-      const probe = spawnSync(runtime.executable, ['--process-start', String(hostPid)], {
+      const probe = spawnSync(...hostCommand(runtime.executable, ['--process-start', String(hostPid)]), {
         shell: false,
         windowsHide: true,
         encoding: 'utf8',

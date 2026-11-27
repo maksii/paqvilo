@@ -336,6 +336,32 @@ function value(node, ...names) {
   }
   return undefined;
 }
+// A chart's table, description and data and presentation XML (the chart data service, portal-chart-builder.mjs). The
+// XML is an element child in an unpacked Solution and escaped text elsewhere.
+function chartXml(node, name) {
+  const element = node.children?.find((item) => item.name.toLowerCase() === name);
+  if (!element) return null;
+  const nested = element.children?.[0];
+  return nested ? serializeXml(nested) : element.text.trim() || null;
+}
+function chartDefinition(node) {
+  const entity = value(node, 'primaryentitytypecode')?.toLowerCase();
+  const dataDescription = chartXml(node, 'datadescription');
+  if (!entity || !dataDescription) return {};
+  return {
+    chart: {
+      entity,
+      description:
+        value(node, 'description') ??
+        node.children
+          ?.find((item) => item.name.toLowerCase() === 'descriptions')
+          ?.children?.find((item) => item.attrs?.description)?.attrs.description ??
+        null,
+      dataDescription,
+      presentationDescription: chartXml(node, 'presentationdescription'),
+    },
+  };
+}
 const labelOf = (node) => {
   const stack = [...(node.children ?? [])];
   while (stack.length) {
@@ -448,6 +474,7 @@ const ELEMENTS = {
         dependencies: value(node, 'primaryentitytypecode')
           ? [{ component: 'table', name: value(node, 'primaryentitytypecode').toLowerCase() }]
           : [],
+        ...chartDefinition(node),
       }),
   },
   webresource: {
@@ -791,17 +818,21 @@ function dataFacts(text, file) {
  * Inventory records of one component file (`info` from classifyInventoryPath). `text` is its UTF-8 content when the
  * file is small enough to read; binary payloads (`.msapp`) are listed by name and size only and never inflated here.
  */
+// A control is named as the runtime catalogue names it (code-components.mjs): the exported customcontrol Name of its
+// ControlManifest.xml.data.xml, which is also its folder name. The manifest adds namespace.constructor as `controlConstructor`.
 function customControlInventoryRecord(root, component, name) {
   const control = root.name === 'manifest' ? root.children.find((item) => item.name === 'control') : null;
   const attribute = (key) => (control && Object.hasOwn(control.attrs, key) ? control.attrs[key] : null);
+  const exported =
+    root.name === 'CustomControl' ? root.children.find((item) => item.name === 'Name')?.text?.trim() : null;
   return inventoryRecord({
     component,
-    name:
-      attribute('namespace') && attribute('constructor')
-        ? `${attribute('namespace')}.${attribute('constructor')}`
-        : name,
+    name: exported && /^[\w.]+$/.test(exported) ? exported : name,
     version: attribute('version'),
     controlType: attribute('control-type'),
+    ...(attribute('namespace') && attribute('constructor')
+      ? { controlConstructor: `${attribute('namespace')}.${attribute('constructor')}` }
+      : {}),
   });
 }
 

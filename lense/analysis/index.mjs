@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { collectAnalysisInputs, ANALYSIS_LIMITS } from './inventory.mjs';
+import { LIMIT_REASONS } from './limits.mjs';
 import { recordRules, analyzeRecords } from './record-rules.mjs';
 import { contentRules, analyzeContent } from './content-rules.mjs';
+import { outputCacheRules, analyzeOutputCache } from './output-cache-rules.mjs';
 import { analysisSources } from './sources.mjs';
 import { dataverseRules, analyzeDataverse } from './dataverse-rules.mjs';
 import { appRules, analyzeApps } from './app-rules.mjs';
@@ -36,6 +38,7 @@ export const analysisRules = Object.freeze(
     sourceRule,
     payloadRule,
     ...recordRules,
+    ...outputCacheRules,
     ...contentRules,
     ...dataverseRules,
     ...appRules,
@@ -114,7 +117,14 @@ function findingLocation(source, field, offset) {
 }
 
 /** Independent offline review; findings describe source evidence, never deployed behavior. */
-export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_LIMITS, sourceRoots } = {}) {
+/**
+ * `limits` lowers or raises ceilings (up to limits.mjs ANALYSIS_LIMIT_MAXIMUMS); `limitSources` names where each
+ * changed ceiling came from, reported in coverage.limitOverrides.
+ */
+export function analyzeProject(
+  sourceDir,
+  { failOn = 'error', limits = ANALYSIS_LIMITS, limitSources = {}, sourceRoots } = {},
+) {
   if (sourceDir === undefined && sourceRoots === undefined)
     throw new TypeError('analyzeProject(sourceDir) requires a source directory (or options.sourceRoots).');
   validateAnalysisPolicy(failOn);
@@ -151,6 +161,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
   for (const source of input.syntax) emit(sourceRule.id, source);
   for (const source of input.incomplete) emit(payloadRule.id, source);
   analyzeRecords(input.records, emit);
+  analyzeOutputCache(input.records, input.units, input.inputs, emit);
   input.skipped.push(...analyzeContent(input.units, emit));
   const adapters = [
     analyzeDataverse(input.inputs, emit),
@@ -206,6 +217,17 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
       records: input.records.length,
       contentUnits: input.units.length,
       limits,
+      // Every ceiling that differs from its default, with where it was set: a raised budget is never silent.
+      limitOverrides: Object.entries(limits)
+        .filter(([key, value]) => value !== ANALYSIS_LIMITS[key])
+        .map(([limit, value]) => ({
+          limit,
+          value,
+          default: ANALYSIS_LIMITS[limit],
+          source: limitSources[limit] ?? 'caller',
+        })),
+      // The ceilings a skip exhausted: raise them with --analysis-limit or sites.<id>.analysis.limits.
+      exhaustedLimits: [...new Set(input.skipped.map((skip) => LIMIT_REASONS[skip.reason]).filter(Boolean))],
       findingsTruncated: truncated,
       skipped: input.skipped,
       roots: input.roots,

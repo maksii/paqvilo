@@ -1,0 +1,492 @@
+{
+  "source": "Derived from paqvilo-developer pcf-parity digest-surface-r1.json (2026-11-26, field host, run r1; Kyiv digest identical) by keeping public members: own members with their type, prototype level 1 methods with their arity",
+  "context": {
+    "formatting": "object",
+    "factory": "object",
+    "navigation": "object",
+    "reporting": "object",
+    "diagnostics": "object",
+    "resources": "object",
+    "theming": "object",
+    "design": "object",
+    "fluentDesignLanguage": "undefined",
+    "performance": "object",
+    "utils": "object",
+    "orgSettings": "object",
+    "userSettings": "object",
+    "offline": "undefined",
+    "learningPath": "object",
+    "page": "object",
+    "webAPI": "object",
+    "graphApi": "object",
+    "intelligenceApi": "object",
+    "connectors": "null",
+    "client": "object",
+    "parameters": "object",
+    "mode": "object",
+    "accessibility": "object",
+    "updatedProperties": "array",
+    "device": "object",
+    "externalContext": "object",
+    "communicationChannel": "object",
+    "events": "object",
+    "appSettings": "undefined",
+    "copilot": "object",
+    "children": "object",
+    "decorators": "undefined"
+  },
+  "namespaces": {
+    "formatting": {
+      "own": {},
+      "proto": {
+        "parseDateFromString": 2,
+        "parseDateFromInput": 2,
+        "formatDateShort": 2,
+        "formatDateLongAbbreviated": 1,
+        "formatDateLong": 1,
+        "formatDateYearMonth": 1,
+        "parseFormatted": 4,
+        "parseFormattedValue": 2,
+        "formatInteger": 1,
+        "formatDecimal": 2,
+        "formatCurrency": 3,
+        "formatTime": 2,
+        "getWeekOfYear": 1,
+        "getTimeZoneOffsetInMinutes": 1,
+        "formatDateAsFilterStringInUTC": 2,
+        "formatLanguage": 1,
+        "formatUserDateTimeToUTC": 2,
+        "formatUTCDateTimeToUserDate": 2,
+        "formatUserInput": 2
+      }
+    },
+    "factory": {
+      "own": {
+        "createElement": "function/3",
+        "createComponent": "function/3"
+      },
+      "proto": {
+        "createElement": 3,
+        "createComponent": 3,
+        "bindDOMElement": 2,
+        "bindDOMComponent": 2,
+        "createFileObject": 1,
+        "fireEvent": 2,
+        "getControlDefaultMapping": 3,
+        "getPopupService": 0,
+        "requestRender": 1,
+        "unbindDOMComponent": 1,
+        "updateComponent": 2
+      }
+    },
+    "navigation": {
+      "own": {},
+      "proto": {
+        "updateBag": 1,
+        "openEditForm": 5,
+        "openGridPage": 5,
+        "openGrid": 8,
+        "openDashboard": 1,
+        "openCreateForm": 3,
+        "openForm": 2,
+        "openSearch": 1,
+        "openPowerBIFullScreenPage": 7,
+        "openUrl": 2,
+        "openUrlWithProtocol": 2,
+        "openPhoneNumber": 6,
+        "openMaps": 1,
+        "openMap": 1,
+        "openAlertDialog": 2,
+        "openConfirmDialog": 2,
+        "openErrorDialog": 1,
+        "openDialog": 3,
+        "openFile": 2,
+        "openTaskFlow": 3,
+        "openWebResource": 3,
+        "navigateTo": 2
+      }
+    },
+    "reporting": {
+      "own": {},
+      "proto": {
+        "addControlId": 1,
+        "reportSuccess": 2,
+        "reportFailure": 4,
+        "reportEvent": 1
+      }
+    },
+    "diagnostics": {
+      "own": {},
+      "proto": {
+        "addControlId": 1,
+        "traceError": 4,
+        "traceWarning": 4,
+        "traceInfo": 4,
+        "traceDebug": 4,
+        "isInMonitorSession": 0
+      }
+    },
+    "resources": {
+      "own": {},
+      "proto": {
+        "getString": 1,
+        "getResource": 3
+      }
+    },
+    "theming": {
+      "own": {
+        "useUpdatedDesignSystem": "boolean",
+        "normalfontcolor": "string",
+        "normalfontfamily": "string",
+        "normalfontsize": "string",
+        "solidborderstyle": "string",
+        "noneborderstyle": "string",
+        "colors": "object",
+        "textbox": "object",
+        "spacings": "object",
+        "fontfamilies": "object",
+        "fontsizes": "object",
+        "breakpoints": "object",
+        "measures": "object",
+        "lookup": "object",
+        "borders": "object",
+        "shadows": "object",
+        "buttons": "object"
+      },
+      "proto": {
+        "getEntityColor": 1,
+        "disableUiTransitions": 0,
+        "rightAlignEdit": 0,
+        "inlineLayout": 0
+      }
+    },
+    "design": {
+      "own": {
+        "DesignLanguageId": "string",
+        "ThemeId": "string",
+        "Colors": "object",
+        "Components": "object"
+      },
+      "proto": {}
+    },
+    "performance": {
+      "own": {},
+      "proto": {
+        "createPerformanceStopwatch": 3,
+        "trackWork": 1,
+        "addKeyPerformanceIndicator": 3,
+        "addKeyPerformanceIndicatorOnIdle": 2
+      }
+    },
+    "utils": {
+      "own": {
+        "setNotification": "function/2",
+        "clearNotification": "function/1"
+      },
+      "proto": {
+        "doesControlExist": 1,
+        "beginSecureSessionForResource": 4,
+        "createPerformanceMarker": 1,
+        "createPerformanceStopwatch": 1,
+        "log": 3,
+        "getEntityMetadata": 2,
+        "getEntitiesMetadata": 1,
+        "getParentControlName": 0,
+        "getResourceString": 2,
+        "isFeatureEnabled": 1,
+        "isDisruptiveFeatureEnabled": 3,
+        "canOpenUrl": 1,
+        "getFormId": 2,
+        "lookupObjects": 1,
+        "bindDOMElement": 2,
+        "fireEvent": 2,
+        "getControlDefaultMapping": 3,
+        "getPopupService": 0,
+        "requestRender": 1,
+        "unbindDOMComponent": 1,
+        "updateComponent": 2,
+        "createCrmUri": 1,
+        "createServerUri": 1,
+        "openInBrowser": 1,
+        "getServiceUri": 0,
+        "setState": 1,
+        "loadDependency": 1,
+        "crmUrlEncode": 1,
+        "hasEntityPrivilege": 3,
+        "crmHtmlEncode": 1,
+        "isNullOrUndefined": 1,
+        "isNullOrEmptyString": 1,
+        "notifyOutputChanged": 0,
+        "eventListenerExists": 1,
+        "getElementByRef": 0,
+        "disablePanoramaScroll": 0,
+        "scrollToView": 0,
+        "setNotification": 0,
+        "clearNotification": 0,
+        "triggerOfflineMetadataSync": 0,
+        "addGlobalNotification": 6,
+        "clearGlobalNotification": 1,
+        "clearGlobalNotifications": 0,
+        "retrieveChartDrilldownAttributes": 1,
+        "retrieveFormWithAttributes": 3,
+        "getEntityName": 1,
+        "retrieveRecordCommand": 6,
+        "getDeclaredFeatures": 0,
+        "getFeatureClassName": 0,
+        "encodeFilterString": 2,
+        "getUserSettings": 0
+      }
+    },
+    "orgSettings": {
+      "own": {
+        "languageId": "number",
+        "attributes": "object",
+        "uniqueName": "null",
+        "isAutoSaveEnabled": "boolean",
+        "tenantId": "undefined",
+        "isRTL": "boolean",
+        "fiscalYearStartDate": "object",
+        "fiscalPeriodFormat": "number",
+        "fiscalPeriodType": "number",
+        "fiscalYearFormatYear": "number",
+        "fiscalYearFormatPrefix": "number",
+        "fiscalYearFormatSuffix": "number",
+        "fiscalYearDisplayCode": "number",
+        "fiscalPeriodConnector": "string",
+        "showWeekNumber": "boolean",
+        "boundDashboardDefaultCardExpanded": "boolean",
+        "allowUnresolvedPartiesOnEmailSend": "boolean",
+        "webResourceHash": "undefined",
+        "enableBingMapsIntegration": "undefined",
+        "bingMapsApiKey": "undefined",
+        "availableBingMapLocales": "undefined",
+        "excludedCountriesForMaps": "undefined",
+        "bFDatacenter": "undefined",
+        "securitySettingForEmail": "undefined",
+        "appointmentRichEditorExperience": "undefined",
+        "gridTotalRecordCountLimit": "undefined",
+        "lookupCharacterCountBeforeResolve": "undefined",
+        "lookupResolveDelayMS": "undefined",
+        "advancedLookupEnabled": "undefined",
+        "isCollaborationExperienceEnabled": "undefined",
+        "pcfDatasetGridEnabled": "undefined",
+        "allowUsersHidingSystemViews": "undefined",
+        "appointmentWithTeamsMeeting": "undefined",
+        "appointmentWithTeamsMeetingV2": "undefined",
+        "isEmailAddressValidationEnabled": "undefined"
+      },
+      "proto": {
+        "updateBag": 0
+      }
+    },
+    "userSettings": {
+      "own": {
+        "userId": "null",
+        "userName": "null",
+        "dateFormattingInfo": "object",
+        "numberFormattingInfo": "object",
+        "isRTL": "boolean",
+        "languageId": "number",
+        "locale": "undefined",
+        "securityRoles": "array",
+        "isHighContrastEnabled": "boolean",
+        "timeZoneUtcOffsetMinutes": "number",
+        "pagingLimit": "null",
+        "workDayStartTime": "string",
+        "workDayStopTime": "undefined",
+        "formatInfoCultureName": "string",
+        "formatInfoCultureId": "undefined",
+        "aadObjectId": "undefined"
+      },
+      "proto": {
+        "updateBag": 1,
+        "getTimeZoneOffsetMinutes": 1
+      }
+    },
+    "learningPath": {
+      "own": {
+        "DOMAttributeName": "string",
+        "baseControlId": "string"
+      },
+      "proto": {}
+    },
+    "page": {
+      "own": {
+        "appId": "string",
+        "entityTypeName": "string",
+        "entityId": "string",
+        "isPageReadOnly": "boolean",
+        "getClientUrl": "function/0"
+      },
+      "proto": {
+        "updateBag": 1
+      }
+    },
+    "webAPI": {
+      "own": {},
+      "proto": {
+        "retrieveRecord": 3,
+        "createRecord": 2,
+        "updateRecord": 3,
+        "deleteRecord": 2,
+        "retrieveMultipleRecords": 4,
+        "execute": 1,
+        "executeMultiple": 1,
+        "getDeclaredFeatures": 0,
+        "getFeatureClassName": 0
+      }
+    },
+    "graphApi": {
+      "own": {},
+      "proto": {
+        "sendRequest": 5,
+        "getDeclaredFeatures": 0,
+        "getFeatureClassName": 0
+      }
+    },
+    "intelligenceApi": {
+      "own": {},
+      "proto": {
+        "getPredictionSchemaAsync": 2,
+        "predictAsync": 2,
+        "getPreTrainedModelIdAsync": 1,
+        "getLabelsForObjectDetectionModelAsync": 1,
+        "invokeAiModelActionAsync": 2,
+        "invokeGlobalOperationAsync": 2,
+        "invokeCopilotActionAsync": 2,
+        "hasOrganizationSettingsAsync": 0,
+        "getOrganizationSettingsAsync": 1
+      }
+    },
+    "client": {
+      "own": {
+        "formFactor": "number",
+        "userAgent": "object",
+        "languageCode": "string",
+        "isRTL": "boolean",
+        "locale": "string",
+        "orgSettings": "object",
+        "dateFormattingInfo": "object",
+        "numberFormattingInfo": "object",
+        "userTimeZoneUtcOffsetMinutes": "number",
+        "getUserTimeZoneUtcOffset": "function/1",
+        "allocatedWidth": "number",
+        "allocatedHeight": "number",
+        "trackContainerResize": "function/0",
+        "setFullScreen": "function/0",
+        "setFullscreen": "function/0",
+        "ignoreSelfUpdates": "function/0",
+        "disableScroll": "boolean",
+        "fnoDetails": "undefined"
+      },
+      "proto": {
+        "getClient": 0,
+        "isOffline": 0,
+        "isNetworkAvailable": 0,
+        "getFormFactor": 0,
+        "getClientState": 0,
+        "getEnvironmentEndpoint": 2,
+        "getClientInfo": 0,
+        "updateClientBag": 1
+      }
+    },
+    "mode": {
+      "own": {
+        "hasFocus": "boolean",
+        "isPreview": "boolean",
+        "isAuthoringMode": "boolean",
+        "isActive": "boolean",
+        "isRead": "boolean",
+        "allocatedWidth": "number",
+        "allocatedHeight": "number",
+        "trackContainerResize": "function/0",
+        "setFullScreen": "function/0",
+        "isControlDisabled": "boolean",
+        "isVisible": "boolean",
+        "label": "string",
+        "accessibilityLabel": "null",
+        "isOffline": "boolean",
+        "fullPageParam": "null",
+        "rowSpan": "number",
+        "contextInfo": "object"
+      },
+      "proto": {
+        "setNotification": 2,
+        "clearNotification": 1,
+        "requestAlwaysRender": 1,
+        "setControlState": 3,
+        "blur": 0,
+        "focus": 0
+      }
+    },
+    "accessibility": {
+      "own": {
+        "assignedTabIndex": "number",
+        "assignedTooltip": "null",
+        "accessibilityInternalData": "object",
+        "isHighContrastEnabled": "boolean"
+      },
+      "proto": {
+        "registerShortcut": 6,
+        "getUniqueId": 1,
+        "focusElementById": 2,
+        "blurElementById": 2
+      }
+    },
+    "device": {
+      "own": {},
+      "proto": {
+        "captureImage": 1,
+        "captureAudio": 1,
+        "captureVideo": 1,
+        "pickFile": 1,
+        "getBarcodeValue": 0,
+        "getCurrentPosition": 0,
+        "isGetBarcodeValueOperationAvailable": 0,
+        "isTakePictureOperationAvailable": 0,
+        "isCaptureVideoOperationAvailable": 0,
+        "isCaptureAudioOperationAvailable": 0,
+        "isOpenARViewerAvailable": 0,
+        "openARViewer": 1,
+        "isGetMessageReceiverAvailable": 0,
+        "getMessageReceiver": 2,
+        "getDeclaredFeatures": 0,
+        "getFeatureClassName": 0
+      }
+    },
+    "externalContext": {
+      "own": {},
+      "proto": {
+        "getAvailableExternalContexts": 0,
+        "getExternalContextProperty": 3,
+        "invokeExternalContextAction": 3,
+        "removeExternalContextPropertyListener": 3
+      }
+    },
+    "communicationChannel": {
+      "own": {
+        "getPresenceMappedField": "function/1",
+        "isPresenceEnabled": "function/1",
+        "getPersonaInfo": "undefined",
+        "getPresenceStatus": "undefined",
+        "getProfilePhoto": "undefined",
+        "getAadObjectIdInfos": "undefined"
+      },
+      "proto": {
+        "getPresenceMappedField": 1,
+        "isPresenceEnabled": 1,
+        "getPersonaInfo": 1,
+        "getPresenceStatus": 2,
+        "getProfilePhoto": 2,
+        "getAadObjectIdInfos": 1
+      }
+    },
+    "copilot": {
+      "own": {},
+      "proto": {
+        "updateBag": 1,
+        "resolvePrediction": 1
+      }
+    }
+  }
+}

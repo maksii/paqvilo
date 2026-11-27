@@ -1,3 +1,4 @@
+// @test-kind unproven: local PCF host behaviour on loopback pages and portal sources (resources, lifecycle, state, Web API, datasets); the field host tests carry their own capture tags
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -71,7 +72,9 @@ test('standard PCF host loads only declared local resources and preserves lifecy
   });
   const { page, errors, external } = await openPortal(t, app);
   assert.equal(await page.locator('input').inputValue(), 'Initial');
-  assert.ok(await page.locator('input').isDisabled());
+  // A Liquid tag host is never disabled and ignores an argument that names no manifest property (IsDisabled false;
+  // paqvilo-developer pcf-parity summary-D, r1).
+  assert.equal(await page.locator('input').isDisabled(), false);
   assert.equal(
     await page.locator('input').evaluate((node) => getComputedStyle(node).getPropertyValue('--pcf-source')),
     'declared',
@@ -80,10 +83,14 @@ test('standard PCF host loads only declared local resources and preserves lifecy
     node.value = 'Output';
     node.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  // The Liquid tag host takes the output about 100 ms after the notify and runs no updateView for it
+  // (paqvilo-developer pcf-parity summary-F section 2; the timing is asserted in pcf-notify-debounce.test.mjs).
+  await page.waitForFunction(() => window.output !== undefined);
   assert.deepEqual(await page.evaluate(() => window.output), { value: 'Output' });
-  // Mount runs init and updateView; the output's updateView follows in a microtask of the same dispatch.
-  assert.deepEqual(await page.evaluate(() => window.lifecycle), ['init', 'update', 'update']);
-  const catalogPath = await page.locator('script[src*="/__sim-static/pcf/"]').getAttribute('src');
+  assert.deepEqual(await page.evaluate(() => window.lifecycle), ['init', 'update']);
+  // The page loads the bundle from its native address; the host spec still names the catalogue path.
+  assert.equal(await page.locator('script[src^="/_pcfwebresource/"]').count(), 1);
+  const catalogPath = /\/__sim-static\/pcf\/[0-9a-f]+\/bundle\.js/.exec(await page.content())[0];
   assert.equal((await fetch(app.url + catalogPath.replace('bundle.js', 'secret.js'))).status, 404);
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
@@ -105,7 +112,11 @@ async function hostFixture(t) {
     if (request.url.startsWith('/_api/')) {
       requests.push({ url: request.url, method: request.method, headers: request.headers });
       response.setHeader('Content-Type', 'application/json');
-      if (request.method === 'POST') {
+      // As the portal Web API answers a pcf-entity-logical-name request naming no known table (summary-F section 1).
+      if (!/^\/_api\/tst_row(?=[(?]|$)/.test(request.url)) {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ error: { code: '9004010A', message: 'An unexpected error occurred' } }));
+      } else if (request.method === 'POST') {
         response.statusCode = 204;
         response.setHeader('OData-EntityId', '/_api/tst_rows(d0000000-0000-4000-8000-000000000002)');
         response.end();
@@ -152,7 +163,7 @@ test('PCF classic SDK bundle resolves its declared export after repeated whitesp
       'adx_pagetemplateid: main\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: false',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html':
-      '<html><body>{% codecomponent name:"tst_Synthetic.Editor" value:"Classic value" %}</body></html>',
+      '<html><body>{% codecomponent name:tst_Synthetic.Editor value:"Classic value" %}</body></html>',
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>Synthetic</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
     'solution/Controls/tst_Synthetic.Editor/ControlManifest.xml':
@@ -175,7 +186,8 @@ test('PCF classic SDK bundle resolves its declared export after repeated whitesp
   assert.deepEqual(external, []);
 });
 
-test('PCF repeated controls have separate instances and state, typed parameters, bounded binary resources and removal cleanup', async (t) => {
+// @test-kind unproven+observation: local model of repeated loopback controls; getResource failing at once and the -1 allocated size follow the live capture of 2026-11-26 (paqvilo-developer pcf-parity summary-A, capture r1 actions-save)
+test('PCF repeated controls have separate instances and state, typed parameters, refused resources and removal cleanup', async (t) => {
   const { page } = await hostFixture(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -276,19 +288,27 @@ test('PCF repeated controls have separate instances and state, typed parameters,
     window.propertyUpdates.some((update) => update.id === 'same-1' && update.properties.join(',') === 'choice'),
   );
   assert.deepEqual(await page.evaluate(() => window.notifications), [{ choice: 4 }]);
-  assert.equal(
-    await page.evaluate(
-      () =>
-        new Promise((resolve, reject) =>
-          window.contexts[0].resources.getResource('image.bin', (value) => resolve(atob(value).length), reject),
-        ),
-    ),
-    512 * 1024,
+  // Power Pages calls getResource's failure callback at once with no argument and reports no allocated size, also
+  // after trackContainerResize(true) and a resize (summary-A, capture r1 actions-save).
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const calls = [];
+      window.contexts[0].resources.getResource(
+        'image.bin',
+        () => calls.push('success'),
+        (...args) => calls.push('failure/' + args.length),
+      );
+      return calls;
+    }),
+    ['failure/0'],
   );
   await page.locator('#same-1').evaluate((node) => {
     node.style.width = '250px';
   });
-  await page.waitForFunction(() => window.contexts[0].mode.allocatedWidth === 250);
+  assert.deepEqual(
+    await page.evaluate(() => [window.contexts[0].mode.allocatedWidth, window.contexts[0].mode.allocatedHeight]),
+    [-1, -1],
+  );
   await page.locator('#same-1').evaluate((node) => node.remove());
   await page.waitForFunction(() => window.destroyed.length === 1);
   assert.deepEqual(await page.evaluate(() => window.destroyed), ['same-1']);
@@ -296,7 +316,8 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   assert.deepEqual(errors, []);
 });
 
-test('PCF Web API honors entity mappings, CSRF, page size and native create IDs while rejecting navigation in queries and record IDs', async (t) => {
+// @test-kind observation+contract: the request form (/_api/<logical name> with pcf-entity-logical-name, the anti-forgery token, no Prefer for a maxPageSize, which is not validated, nextLink undefined) and the rejection with undefined follow live captures (paqvilo-developer pcf-parity capture r1 actions-save and summary-F section 1, runs fa and fb); the local refusals of foreign URLs, record ids and fragments without a request and the reasons in inspect().webApiErrors are Paqvilo's own diagnostics
+test('PCF Web API names the logical name, sends the token, ignores maxPageSize and keeps native create IDs while rejecting navigation in queries and record IDs', async (t) => {
   const { page, requests } = await hostFixture(t);
   await page.evaluate(async () => {
     window.shell = {
@@ -339,59 +360,83 @@ test('PCF Web API honors entity mappings, CSRF, page size and native create IDs 
     window.context.webAPI.retrieveMultipleRecords('TST_ROW', '?$select=tst_title', 2),
   );
   assert.equal(result.entities[0].tst_title, 'Visible row');
-  assert.equal(requests[0].url, '/_api/tst_rows?$select=tst_title');
+  assert.ok(Object.hasOwn(result, 'nextLink') && result.nextLink === undefined);
+  assert.equal(requests[0].url, '/_api/tst_row?$select=tst_title');
+  assert.equal(requests[0].headers['pcf-entity-logical-name'], 'tst_row');
   assert.equal(requests[0].headers.__requestverificationtoken, 'fixture-token');
-  assert.equal(requests[0].headers.prefer, 'odata.maxpagesize=2');
+  assert.equal(requests[0].headers.prefer, undefined);
   assert.deepEqual(await page.evaluate(() => window.context.webAPI.createRecord('tst_row', { tst_title: 'New row' })), {
     id: 'd0000000-0000-4000-8000-000000000002',
     entityType: 'tst_row',
   });
   const before = requests.length;
+  // Power Pages rejects every webAPI call with undefined; the reason stays in the debugger (inspect().webApiErrors).
   const rejected = await page.evaluate(async () => {
     const failures = [];
     for (const operation of [
       () => window.context.webAPI.retrieveMultipleRecords('tst_row', 'https://example.invalid/data'),
-      () => window.context.webAPI.retrieveRecord('tst_row', '../admin'),
-      () => window.context.webAPI.retrieveMultipleRecords('missing', ''),
+      () => window.context.webAPI.retrieveRecord('tst_row', '../admin', '?$select=tst_title'),
       () => window.context.webAPI.retrieveMultipleRecords('tst_row', '?x=1#fragment'),
-      () => window.context.webAPI.retrieveMultipleRecords('tst_row', '', 0),
     ]) {
       try {
         await operation();
       } catch (error) {
-        failures.push(error.message);
+        failures.push(error);
       }
     }
-    return failures;
+    return {
+      reasons: failures.map((reason) => reason === undefined),
+      messages: window.__paqviloPcf.inspect('api-1')[0].webApiErrors.map((entry) => entry.message),
+    };
   });
-  assert.deepEqual(rejected, [
+  assert.deepEqual(rejected.reasons, [true, true, true]);
+  assert.deepEqual(rejected.messages, [
     'PCF Web API queries cannot target a different URL',
     'PCF Web API requires a record GUID',
-    'PCF Web API table has no imported mapping: missing',
     'PCF Web API options must be an OData or FetchXML query',
-    'PCF Web API maxPageSize must be between 1 and 5000',
   ]);
   assert.equal(requests.length, before);
+  // A table that is not mapped locally is still requested by its name, and the portal's refusal rejects with
+  // undefined; any maxPageSize, 0 included, is ignored (summary-F section 1).
+  assert.deepEqual(
+    await page.evaluate(async () => {
+      const missing = await window.context.webAPI.retrieveMultipleRecords('missing', '').then(
+        () => 'resolved',
+        (reason) => reason,
+      );
+      const ignored = await window.context.webAPI.retrieveMultipleRecords('tst_row', '', 0);
+      return { missing: missing === undefined, ignored: ignored.entities.length };
+    }),
+    { missing: true, ignored: 1 },
+  );
+  assert.deepEqual(
+    requests.slice(before).map((request) => [request.url, request.headers.prefer]),
+    [
+      ['/_api/missing', undefined],
+      ['/_api/tst_row', undefined],
+    ],
+  );
   assert.deepEqual(
     await page.evaluate(async () => {
       try {
         await window.context.webAPI.retrieveMultipleRecords('tst_row', '?denied=true');
-      } catch (error) {
-        return { message: error.message, code: error.errorCode };
+      } catch {
+        const { message, errorCode, status } = window.__paqviloPcf.inspect('api-1')[0].webApiErrors.at(-1);
+        return { message, code: errorCode, status };
       }
     }),
-    { message: 'Fixture permission denied', code: 'AccessDenied' },
+    { message: 'Fixture permission denied', code: 'AccessDenied', status: 403 },
   );
 });
-test('PCF native outputs update only the scoped native field and preserve read-only, lookup and choice form inputs', async (t) => {
+// @test-kind observation: field host outputs are written to the field's hidden input as JSON per type (paqvilo-developer pcf-parity capture r2 notify-save hidden input values)
+test('PCF field host outputs are written to the scoped hidden input as JSON in each type encoding', async (t) => {
   const { page } = await hostFixture(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.evaluate(async () => {
     window.nativeOutputs = {};
-    window.dirty = 0;
-    window.nativeChanges = 0;
-    window.setIsDirty = () => window.dirty++;
+    window.dirty = [];
+    window.setIsDirty = (id) => window.dirty.push(id);
     window.ComponentFramework.registerControl(
       'Synthetic.Native',
       class {
@@ -407,52 +452,25 @@ test('PCF native outputs update only the scoped native field and preserve read-o
       },
     );
     const cases = [
-      ['text', '<input id="native" value="Before">', 'text', 'SingleLine.Text', 'After', false],
-      ['readonly', '<input id="native" readonly value="Before">', 'text', 'SingleLine.Text', 'After', false],
-      ['disabled', '<input id="native" value="Before">', 'text', 'SingleLine.Text', 'After', true],
-      ['bool', '<input id="native" type="checkbox">', 'boolean', 'TwoOptions', true, false],
-      [
-        'radio',
-        '<div id="native"><input type="radio" name="pick" value="1" checked><input type="radio" name="pick" value="2"></div>',
-        'picklist',
-        'OptionSet',
-        2,
-        false,
-      ],
-      [
-        'multi',
-        '<select id="native" multiple><option value="1" selected>One</option><option value="2">Two</option></select>',
-        'multiselect',
-        'MultiSelectOptionSet',
-        [2],
-        false,
-      ],
-      [
-        'date',
-        '<input id="native" type="date">',
-        'datetime',
-        'DateAndTime.DateOnly',
-        new Date('2026-01-02T00:00:00Z'),
-        false,
-      ],
-      [
-        'lookup',
-        '<input id="native" type="hidden"><input id="native_name" readonly><input id="native_entityname">',
-        'lookup',
-        'Lookup.Simple',
-        [{ id: 'd0000000-0000-4000-8000-000000000004', name: 'Selected row', entityType: 'tst_row' }],
-        false,
-      ],
+      ['text', '"Before"', 'text', 'SingleLine.Text', 'After'],
+      ['bool', 'false', 'boolean', 'TwoOptions', true],
+      ['choice', '{"Value":1}', 'picklist', 'OptionSet', 2],
+      ['multi', '[{"Value":1}]', 'multiselect', 'MultiSelectOptionSet', [2]],
+      ['date', '"2026-01-01T00:00:00"', 'datetime', 'DateAndTime.DateOnly', new Date('2026-01-02T00:00:00Z')],
     ];
-    for (const [key, markup, control, type, output, disabled] of cases) {
-      const wrapper = document.createElement('section');
-      wrapper.dataset.pcfNativeField = key;
-      wrapper.innerHTML = markup;
-      wrapper.addEventListener('change', () => window.nativeChanges++);
-      document.body.append(wrapper);
+    for (const [key, hidden, control, type, output] of cases) {
+      // Two fields share the id in different cells: each control writes only its own cell's input.
+      const cell = document.createElement('div');
+      cell.className = 'control';
+      cell.dataset.logicalName = key;
       const target = document.createElement('div');
       target.dataset.test = key;
-      wrapper.append(target);
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.id = 'native';
+      input.value = hidden;
+      cell.append(target, input);
+      document.body.append(cell);
       window.nativeOutputs[key] = output;
       await window.__paqviloPcf.mount(
         {
@@ -461,95 +479,95 @@ test('PCF native outputs update only the scoped native field and preserve read-o
           resources: [],
           properties: [{ name: 'value', 'of-type': type, usage: 'bound' }],
           strings: {},
-          args: { disabled },
+          args: {},
           identity: { roles: [] },
           mappings: {},
-          nativeBinding: { id: 'native', control, properties: ['value'] },
+          nativeBinding: {
+            id: 'native',
+            control,
+            properties: ['value'],
+            attributes: {
+              LogicalName: key,
+              Options: [
+                { Label: 'One', Value: 1 },
+                { Label: 'Two', Value: 2 },
+              ],
+            },
+          },
           language: { code: 'fr-FR', lcid: 1036, isRTL: false },
         },
         target,
       );
-      target.dispatchEvent(new Event('output'));
     }
+    const written = Promise.all(
+      cases.map(
+        ([key]) =>
+          new Promise((resolve) =>
+            document
+              .querySelector(`[data-test="${key}"]`)
+              .addEventListener('paqvilo:pcf-output', resolve, { once: true }),
+          ),
+      ),
+    );
+    for (const [key] of cases) document.querySelector(`[data-test="${key}"]`).dispatchEvent(new Event('output'));
+    await written;
   });
-  assert.equal(await page.locator('[data-pcf-native-field="text"] input').inputValue(), 'After');
-  assert.equal(await page.locator('[data-pcf-native-field="readonly"] input').inputValue(), 'Before');
-  assert.equal(await page.locator('[data-pcf-native-field="disabled"] input').inputValue(), 'Before');
-  assert.equal(await page.locator('[data-pcf-native-field="bool"] input').isChecked(), true);
-  assert.equal(await page.locator('[data-pcf-native-field="radio"] input[value="2"]').isChecked(), true);
+  const hidden = (key) => page.locator(`[data-logical-name="${key}"] input[type=hidden]`).inputValue();
+  assert.equal(await hidden('text'), '"After"');
+  assert.equal(await hidden('bool'), 'true');
+  assert.equal(JSON.parse(await hidden('choice')).Value, 2);
+  assert.equal(JSON.parse(await hidden('choice')).Label.UserLocalizedLabel.Label, 'Two');
   assert.deepEqual(
-    await page
-      .locator('[data-pcf-native-field="multi"] select')
-      .evaluate((node) => Array.from(node.selectedOptions, (option) => option.value)),
-    ['2'],
+    JSON.parse(await hidden('multi')).map((option) => option.Value),
+    [2],
   );
-  assert.equal(await page.locator('[data-pcf-native-field="date"] input').inputValue(), '2026-01-02');
-  assert.deepEqual(
-    await page
-      .locator('[data-pcf-native-field="lookup"] input')
-      .evaluateAll((nodes) => nodes.map((node) => node.value)),
-    ['d0000000-0000-4000-8000-000000000004', 'Selected row', 'tst_row'],
-  );
-  assert.equal(await page.evaluate(() => window.dirty), 6);
-  assert.equal(await page.evaluate(() => window.nativeChanges), 9);
+  assert.equal(await hidden('date'), '"2026-01-02T00:00:00.000Z"');
+  assert.deepEqual(await page.evaluate(() => window.dirty), ['native', 'native', 'native', 'native', 'native']);
   assert.equal(await page.evaluate(() => window.nativeContext.userSettings.languageId), 1036);
-  assert.match(await page.evaluate(() => window.nativeContext.formatting.formatDecimal(1234.5)), /,5$/);
+  // The default decimal precision is NumberDecimalDigits (2), as formatDecimal(1234.5678) "1,234.57" on a Power Pages site;
+  // a page in another language keeps the en-US formatting (paqvilo-developer pcf-parity summary-E de-DE k1/k2).
+  assert.equal(await page.evaluate(() => window.nativeContext.formatting.formatDecimal(1234.5)), '1,234.50');
   assert.deepEqual(errors, []);
 });
-test('native form scripts update PCF context without feedback recursion, removed controls detach and runtime failures restore native fallback', async (t) => {
+// @test-kind observation: only a value change with a change event on the hidden input reaches the control, with updatedProperties [] (paqvilo-developer pcf-parity capture r2 notify-save script changes)
+test('field host script changes reach the control through change events, removed controls detach and runtime failures show their error', async (t) => {
   const { page } = await hostFixture(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.evaluate(async () => {
     window.syncContexts = {};
     window.syncUpdates = {};
-    window.syncOutputs = 0;
-    document.addEventListener('paqvilo:pcf-output', () => window.syncOutputs++);
     window.ComponentFramework.registerControl(
       'Synthetic.Sync',
       class {
         init(context, notify, state, container) {
           this.key = container.dataset.test;
-          this.notify = notify;
           window.syncContexts[this.key] = context;
         }
         updateView(context) {
-          window.syncUpdates[this.key] = (window.syncUpdates[this.key] || 0) + 1;
-          if (context.updatedProperties.length) this.notify();
+          window.syncUpdates[this.key] = [...(window.syncUpdates[this.key] ?? []), [...context.updatedProperties]];
         }
         getOutputs() {
-          return { value: window.syncContexts[this.key].parameters.value.raw };
+          return {};
         }
       },
     );
-    for (const [key, type, markup, control, value, disabled] of [
-      ['text', 'SingleLine.Text', '<input id="original" value="Initial">', 'text', 'Initial', false],
-      ['readonly', 'SingleLine.Text', '<input id="original" readonly value="Initial">', 'text', 'Initial', true],
-      [
-        'lookup',
-        'Lookup.Simple',
-        '<input id="original" type="hidden"><input id="original_name" readonly><input id="original_entityname" type="hidden">',
-        'lookup',
-        null,
-        false,
-      ],
-      [
-        'date',
-        'DateAndTime.DateOnly',
-        '<input id="original" type="date" value="2026-01-01">',
-        'datetime',
-        '2026-01-01',
-        false,
-      ],
-      ['multi', 'MultiSelectOptionSet', '<input id="original" type="hidden" value="1">', 'multiselect', [1], false],
+    for (const [key, type, hidden] of [
+      ['text', 'SingleLine.Text', '"Initial"'],
+      ['date', 'DateAndTime.DateOnly', '"2026-01-01T00:00:00"'],
+      ['multi', 'MultiSelectOptionSet', '[{"Value":1}]'],
     ]) {
-      const wrapper = document.createElement('section');
-      wrapper.dataset.pcfNativeField = key;
-      wrapper.innerHTML = '<div data-pcf-native-input>' + markup + '</div>';
-      document.body.append(wrapper);
+      const cell = document.createElement('div');
+      cell.className = 'control';
+      cell.dataset.logicalName = key;
       const target = document.createElement('div');
       target.dataset.test = key;
-      wrapper.append(target);
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.id = 'original';
+      input.value = hidden;
+      cell.append(target, input);
+      document.body.append(cell);
       await window.__paqviloPcf.mount(
         {
           id: key,
@@ -557,55 +575,46 @@ test('native form scripts update PCF context without feedback recursion, removed
           resources: [],
           properties: [{ name: 'value', 'of-type': type, usage: 'bound' }],
           strings: {},
-          args: { value, disabled },
+          args: {},
           identity: { roles: [] },
           mappings: {},
-          nativeBinding: { id: 'original', control, properties: ['value'] },
+          nativeBinding: { id: 'original', control: 'text', properties: ['value'] },
         },
         target,
       );
     }
-  });
-  assert.equal(await page.locator('[data-pcf-native-field="text"] [data-pcf-native-input]').isVisible(), false);
-  await page.evaluate(() => {
-    const write = (key, id, value) => {
-      const node = document.querySelector('[data-pcf-native-field="' + key + '"] #' + id);
+    const write = (key, value, event = true) => {
+      const node = document.querySelector(`[data-logical-name="${key}"] #original`);
       node.value = value;
-      node.dispatchEvent(new Event('input', { bubbles: true }));
-      node.dispatchEvent(new Event('change', { bubbles: true }));
+      if (event) node.dispatchEvent(new Event('change', { bubbles: true }));
     };
-    write('text', 'original', 'Changed by native script');
-    write('lookup', 'original', 'd0000000-0000-4000-8000-000000000004');
-    write('lookup', 'original_name', 'Lookup name');
-    write('lookup', 'original_entityname', 'tst_row');
-    write('date', 'original', '2026-02-03');
-    write('multi', 'original', '2,3');
+    write('text', '"Silent"', false);
+    write('text', '"Changed by native script"');
+    write('date', '"2026-02-03T00:00:00"');
+    write('multi', '[{"Value":2},{"Value":3}]');
   });
-  await page.waitForFunction(() => window.syncContexts.text.parameters.value.raw === 'Changed by native script');
-  assert.deepEqual(await page.evaluate(() => window.syncContexts.lookup.parameters.value.raw), [
-    { id: 'd0000000-0000-4000-8000-000000000004', entityType: 'tst_row', name: 'Lookup name' },
-  ]);
+  assert.equal(await page.evaluate(() => window.syncContexts.text.parameters.value.raw), 'Changed by native script');
   assert.equal(
-    await page.evaluate(() => window.syncContexts.date.parameters.value.raw.toISOString().slice(0, 10)),
-    '2026-02-03',
+    await page.evaluate(() => {
+      const raw = window.syncContexts.date.parameters.value.raw;
+      return `${raw.getFullYear()}-${raw.getMonth() + 1}-${raw.getDate()}`;
+    }),
+    '2026-2-3',
   );
   assert.deepEqual(await page.evaluate(() => window.syncContexts.multi.parameters.value.raw), [2, 3]);
-  assert.deepEqual(await page.evaluate(() => window.syncContexts.text.updatedProperties), ['value']);
-  assert.equal(await page.evaluate(() => window.syncOutputs), 0);
+  // One updateView at mount and one per change event, each with updatedProperties [].
   assert.deepEqual(await page.evaluate(() => window.syncUpdates), {
-    text: 2,
-    readonly: 1,
-    lookup: 2,
-    date: 2,
-    multi: 2,
-  });
-  assert.equal(await page.locator('[data-pcf-native-field="readonly"] #original').inputValue(), 'Initial');
-  await page.evaluate(() => {
-    window.detachedNative = document.querySelector('[data-pcf-native-field="text"] #original');
-    document.querySelector('[data-pcf-native-field="text"]').remove();
+    text: [[], []],
+    date: [[], []],
+    multi: [[], []],
   });
   await page.evaluate(() => {
-    window.detachedNative.value = 'Detached value';
+    window.detachedNative = document.querySelector('[data-logical-name="text"] #original');
+    document.querySelector('[data-logical-name="text"]').remove();
+  });
+  await page.waitForFunction(() => window.__paqviloPcf.inspect().some((item) => item.state === 'destroyed'));
+  await page.evaluate(() => {
+    window.detachedNative.value = '"Detached value"';
     window.detachedNative.dispatchEvent(new Event('change', { bubbles: true }));
   });
   assert.equal(await page.evaluate(() => window.syncContexts.text.parameters.value.raw), 'Changed by native script');
@@ -618,12 +627,17 @@ test('native form scripts update PCF context without feedback recursion, removed
         }
       },
     );
-    const wrapper = document.createElement('section');
-    wrapper.dataset.pcfNativeField = 'failed';
-    wrapper.innerHTML = '<div data-pcf-native-input hidden><input id="original" value="Fallback"></div>';
-    document.body.append(wrapper);
+    const cell = document.createElement('div');
+    cell.className = 'control';
+    cell.dataset.logicalName = 'failed';
     const target = document.createElement('div');
-    wrapper.append(target);
+    target.dataset.test = 'failed';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.id = 'original';
+    input.value = '"Kept"';
+    cell.append(target, input);
+    document.body.append(cell);
     await window.__paqviloPcf.mount(
       {
         id: 'failed',
@@ -639,11 +653,9 @@ test('native form scripts update PCF context without feedback recursion, removed
       target,
     );
   });
-  assert.equal(await page.locator('[data-pcf-native-field="failed"] #original').isVisible(), true);
-  assert.match(
-    await page.locator('[data-pcf-native-field="failed"] [role=alert]').innerText(),
-    /Fixture runtime failure/,
-  );
+  // The hidden input keeps the value the form posts; the control view shows the failure.
+  assert.equal(await page.locator('[data-logical-name="failed"] #original').inputValue(), '"Kept"');
+  assert.match(await page.locator('[data-test="failed"][role=alert]').innerText(), /Fixture runtime failure/);
   assert.deepEqual(errors, []);
 });
 
@@ -659,7 +671,7 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
     'portal/Main.pagetemplate.yml':
       'adx_pagetemplateid: main\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: false',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
-    'portal/Main.webtemplate.source.html': `<html><body>{% codecomponent name:'tst_Synthetic.Grid' rows:'${viewId}' %}</body></html>`,
+    'portal/Main.webtemplate.source.html': `<html><body>{% codecomponent name:tst_Synthetic.Grid rows:'${viewId}' %}</body></html>`,
     'portal/sitesetting.yml':
       '- adx_sitesettingid: api1\n  adx_name: Webapi/tst_row/enabled\n  adx_value: true\n- adx_sitesettingid: api2\n  adx_name: Webapi/tst_row/fields\n  adx_value: tst_rowid,tst_title,tst_when',
     'solution/Other/Solution.xml':
@@ -683,6 +695,8 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
     solutionRoots: [solution],
     port: 0,
     watch: false,
+    // Paqvilo's local Liquid view binding; Power Pages binds no data set in Liquid (W6 packet 04).
+    pcf: { liquidDatasetBinding: 'view' },
     initial: {
       tables: {
         tst_row: ['Alpha', 'Beta', 'Delta', 'Gamma', 'Omega'].map((tst_title, index) => ({
@@ -700,10 +714,11 @@ test('exported dataset PCF renders real local rows with paging, sorting, filteri
   assert.equal(await page.locator('.grid-title').textContent(), 'Visible Rows');
   assert.equal(await page.locator('.grid-rows').textContent(), 'Alpha,Beta');
   assert.equal(await page.evaluate(() => window.dataset.paging.totalResultCount), 5);
-  await page.evaluate(() => window.dataset.paging.loadNextPage());
+  await page.evaluate(() => window.dataset.paging.loadNextPage(true));
   assert.equal(await page.locator('.grid-rows').textContent(), 'Delta,Gamma');
   assert.equal(await page.evaluate(() => window.dataset.paging.hasPreviousPage), true);
-  await page.evaluate(() => window.dataset.paging.loadPreviousPage());
+  // loadPreviousPage() requests the same page again (live capture summary-C2, Q-092); go back explicitly.
+  await page.evaluate(() => window.dataset.paging.loadExactPage(1));
   assert.equal(await page.locator('.grid-rows').textContent(), 'Alpha,Beta');
   await page.evaluate(() => {
     window.dataset.sorting = [{ name: 'tst_title', sortDirection: 1 }];

@@ -6,9 +6,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
-import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } from '../lense/commands/verify.mjs';
+import verify, {
+  diagnosticSnapshot,
+  compareDiagnostics,
+  assessVerification,
+  verificationPageBlocks,
+} from '../lense/commands/verify.mjs';
 import * as verifyModule from '../lense/commands/verify.mjs';
-import { createFixture, SITE } from './fixture.mjs';
+import { PortalModel } from '../lense/portal-model.mjs';
+import { createFixture, HOME_ID, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
   // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
@@ -84,6 +90,41 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
   assert.equal(assessVerification(checks, comparison, false).passed, true);
 });
 
+test('Verify chooses the displayed language’s inline page sources', (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  fx.write(
+    'web-pages/fixture/Fixture.webpage.yml',
+    `adx_webpageid: fixture-root\nadx_partialurl: fixture\nadx_parentpageid: ${HOME_ID}\n`,
+  );
+  fx.write(
+    'websitelanguage.yml',
+    '- adx_websitelanguageid: en\n  adx_languagecode: en-US\n- adx_websitelanguageid: fr\n  adx_languagecode: fr-FR\n',
+  );
+  const files = (locale) => {
+    const stem = `web-pages/fixture/content-pages/Fixture.${locale}.webpage`;
+    return [`${stem}.custom_css.css`, `${stem}.custom_javascript.js`];
+  };
+  for (const locale of ['en-US', 'fr-FR']) {
+    fx.write(
+      `web-pages/fixture/content-pages/Fixture.${locale}.webpage.yml`,
+      `adx_webpageid: fixture-${locale}\nadx_rootwebpageid: fixture-root\nadx_partialurl: fixture\n`,
+    );
+    const [css, js] = files(locale);
+    fx.write(css, 'html { color: navy; }\n');
+    fx.write(js, `window.fixtureLocale = '${locale}';\n`);
+  }
+  const model = new PortalModel(fx.dir);
+  const selected = (html, url) =>
+    verificationPageBlocks(model, html, url)
+      .map(({ rel }) => rel)
+      .sort();
+  assert.deepEqual(selected('<html lang="fr-FR"></html>', '/fixture/'), files('fr-FR'));
+  assert.deepEqual(selected('<html lang="en-US"></html>', '/fixture/'), files('en-US'));
+  assert.deepEqual(selected('<html></html>', '/fr-FR/fixture/'), files('fr-FR'));
+  assert.deepEqual(selected('<html></html>', '/fixture/'), [...files('en-US'), ...files('fr-FR')].sort());
+});
+
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {
   const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
@@ -124,6 +165,36 @@ test('JSON verification emits one final failure report when temporary cleanup al
   assert.match(report.cleanup.errors[0], /fixture cleanup failure/);
   assert.match(report.error, /Cleanup incomplete/);
   assert.deepEqual(JSON.parse(fs.readFileSync(report.evidence.report, 'utf8')), report);
+});
+
+test('verification matrix deduplicates targets and returns one report with redacted per-page outcomes', async (t) => {
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-targets-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const output = [];
+  t.mock.method(console, 'log', (line) => output.push(line));
+  t.mock.method(console, 'error', () => {});
+  const cfg = {
+    stateDir,
+    siteName: 'fixture',
+    envName: 'local',
+    origin: 'https://portal.invalid',
+    sourceDir: path.join(stateDir, 'missing-extract'),
+    site: { startPath: '/' },
+  };
+  assert.equal(await verify(cfg, { json: true, 'verify-path': ['/en/', '/fr/?key=INVENTED', '/en/'] }), 1);
+  assert.equal(output.length, 1);
+  assert.doesNotMatch(output[0], /INVENTED/);
+  const report = JSON.parse(output[0]);
+  assert.deepEqual(report.paths, ['https://portal.invalid/en/', 'https://portal.invalid/fr/?[redacted]']);
+  assert.deepEqual(
+    report.reports.map(({ url, passed, cleanup }) => [url, passed, cleanup.temporarySourceRemoved]),
+    report.paths.map((url) => [url, false, true]),
+  );
+  assert.equal(report.writesFiles.length, 2);
+  await assert.rejects(
+    () => verify(cfg, { 'verify-path': ['/en/', '//another.invalid/'] }),
+    /--verify-path must be a same-origin path/,
+  );
 });
 
 // @test-kind security: a sign-in redirect carries state and nonce values that verification output must not print.

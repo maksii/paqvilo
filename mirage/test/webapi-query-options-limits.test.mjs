@@ -1,6 +1,6 @@
 // Portal /_api: query options the portal does not serve are refused, never ignored, and a JSON body over the host's
 // limit answers through the Web API error envelope.
-// @test-kind unproven: the portal's answer to savedQuery and userQuery is not captured; Power Pages read operations list neither
+// @test-kind observation: savedQuery and userQuery answered 400 9004010B on every route in hosted session F1 (paqvilo-developer hosted-f1 summary-F1 API-03b, two runs; replayed by portal-webapi/hosted-f1-predefined); these routes and ids are invented
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -83,15 +83,44 @@ async function portal(t) {
   };
 }
 
-test('savedQuery and userQuery are refused with 400 9004010A instead of answering unfiltered rows', async (t) => {
+test('savedQuery and userQuery are refused with 400 9004010B instead of answering unfiltered rows', async (t) => {
   const call = await portal(t);
   for (const query of [
     'savedQuery=11111111-1111-4111-8111-111111111111',
     'userQuery=11111111-1111-4111-8111-111111111111',
     'savedQuery=not-a-guid',
   ]) {
-    const answer = await call('GET', `x_items?${query}`);
-    assert.deepEqual([answer.status, answer.json.error.code], [400, '9004010A'], query);
+    for (const route of [
+      `x_items?${query}`,
+      `x_items/$count?${query}`,
+      `x_items?${query}&fetchXml=${encodeURIComponent('<fetch><entity name="x_item"/></fetch>')}`,
+      `x_items(77777777-7777-4777-8777-000000000000)/x_name?${query}`,
+      `x_items(77777777-7777-4777-8777-000000000000)/x_name/$value?${query}`,
+    ]) {
+      const answer = await call('GET', route);
+      const option = query.split('=')[0];
+      assert.deepEqual(
+        [answer.status, answer.json.error],
+        [400, { code: '9004010B', message: `The ${option} query parameter is not supported` }],
+        route,
+      );
+    }
+  }
+});
+
+// @test-kind contract: the local portal publishes no organization metadata, multipart batch or management operations
+test('portal rejects organization metadata, batch, functions, actions and configuration tables', async (t) => {
+  const call = await portal(t);
+  for (const [method, route, status, code] of [
+    ['GET', '$metadata', 404, '9004010C'],
+    ['GET', 'EntityDefinitions', 400, '9004010A'],
+    ['POST', '$batch', 404, '9004010C'],
+    ['GET', 'WhoAmI()', 400, '9004010A'],
+    ['POST', 'x_items(77777777-7777-4777-8777-000000000000)/Microsoft.Dynamics.CRM.Assign', 404, '9004010C'],
+    ['GET', 'adx_contentsnippets', 404, '9004010E'],
+  ]) {
+    const answer = await call(method, route);
+    assert.deepEqual([answer.status, answer.json.error.code], [status, code], `${method} ${route}`);
   }
 });
 

@@ -8,6 +8,8 @@ import { isExactNumeric, sumNumeric, averageNumeric, decimalParts, parseNumericL
 import {
   fieldKind,
   compareSortKeys,
+  dateTimeRangeError,
+  isDateOnlyField,
   dateGroupValue,
   equalityKey,
   foldText,
@@ -37,6 +39,7 @@ const FETCH_LIMITS = Object.freeze({
   top: 5000,
   totalRecordCount: 5000,
   aggregateRecords: 50000,
+  simplePagingRecords: 50000,
   // Local bound on intermediate joined rows (not a Dataverse limit).
   joinRows: 250000,
   xmlDepth: 64,
@@ -178,13 +181,23 @@ const fail = (message, status = 400, code = 'InvalidFetchXml', details) => {
 };
 const children = (node, name) => node.children.filter((child) => child.name === name);
 const bool = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
+const unsignedInteger = (raw) => {
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+};
+
+export function hasValidFetchTop(fetch) {
+  const value = unsignedInteger(fetch.attrs.top);
+  return value !== null && value >= 1 && value <= FETCH_LIMITS.top;
+}
+
 const integerAttribute = (fetch, name, { min = 1, max } = {}) => {
   const raw = fetch.attrs[name];
   if (raw == null) return null;
-  const text = String(raw).trim();
-  if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text)))
-    fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, 'InvalidFetchXml');
-  const value = Number(text);
+  const value = unsignedInteger(raw);
+  if (value === null) fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, 'InvalidFetchXml');
   if (value < min) fail(`The '${name}' attribute must be at least ${min}.`, 400, 'InvalidFetchXml');
   if (max != null && value > max) fail(`The '${name}' attribute can't exceed ${max}.`, 400, 'InvalidFetchXml');
   return value;
@@ -400,6 +413,11 @@ function reportFilterHint(node, state) {
     );
 }
 
+// The business-unit operators: a portal query evaluates them against the site's application user (observed
+// portalFetchIdentityOperators "application-user", dataverse-conditions.mjs), so their local-support refusal is made when
+// the condition is compiled, after the Web API column checks (hosted F1 DATA-02b: owningbusinessunit outside the Web API
+// fields answered 403 90040101 for eq-businessid). The team and user-hierarchy operators stay refused here.
+const PORTAL_APPLICATION_USER_OPERATORS = new Set(['eq-businessid', 'ne-businessid']);
 function validateConditionNode(node, state) {
   state.conditions++;
   if (!node.attrs.attribute) fail('FetchXML condition requires attribute', 400, 'InvalidFetchXml');
@@ -407,7 +425,8 @@ function validateConditionNode(node, state) {
   if (operator == null)
     fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, 'InvalidFetchXml');
   const identityOperator =
-    UNSUPPORTED_FETCH_OPERATORS.has(operator) && (state.dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
+    UNSUPPORTED_FETCH_OPERATORS.has(operator) &&
+    (state.dataverseIdentity || HIERARCHY_OPERATORS.has(operator) || PORTAL_APPLICATION_USER_OPERATORS.has(operator));
   if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
     fail(
       `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
@@ -493,6 +512,7 @@ export function planFetch(
     generatedAnyAllAliases = [],
     linkBudgetError = 'documented',
     dataverseIdentity = false,
+    zeroCountUsesDefault = false,
   } = {},
 ) {
   const limits = { ...FETCH_LIMITS, ...overrides };
@@ -590,7 +610,7 @@ export function planFetch(
   indexParents(root, root);
   const aggregate = bool(fetch.attrs.aggregate);
   const top = integerAttribute(fetch, 'top', { min: 1, max: FETCH_LIMITS.top });
-  const count = integerAttribute(fetch, 'count', { min: 1 });
+  const count = integerAttribute(fetch, 'count', { min: zeroCountUsesDefault ? 0 : 1 });
   const page = integerAttribute(fetch, 'page', { min: 1 });
   const returnTotal = bool(fetch.attrs.returntotalrecordcount);
   if (top != null && (count != null || page != null || returnTotal))
@@ -619,7 +639,7 @@ export function planFetch(
     diagnostics,
     distinct: bool(fetch.attrs.distinct),
     top,
-    pageSize: count != null ? Math.min(count, limits.pageSize) : limits.pageSize,
+    pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
     totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
     pagingCookie: fetch.attrs['paging-cookie'] ?? null,
@@ -745,6 +765,14 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       });
   }
   return structural;
+}
+
+function validatePortalDateOnlyIn(operator, definition, values) {
+  if (operator !== 'in' || !isDateOnlyField(definition)) return;
+  // A long decimal integer is neither a date literal nor a compact calendar date.
+  // Keep the other date spellings and operand families on their existing parser.
+  const invalid = values.find((value) => /^[+-]?\d{9,}$/.test(String(value).trim()));
+  if (invalid !== undefined) throw dateTimeRangeError(invalid, null);
 }
 
 /**
@@ -993,10 +1021,13 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
         return compare(read(item), other == null ? undefined : fieldValue(other, otherAttribute));
       };
     }
+    const values = valuesOf(condition);
+    if (plan.profile === 'portal' && !plan.dataverseIdentity && !ctx.noBackendAdmission)
+      validatePortalDateOnlyIn(condition.attrs.operator, columnDefinition, values);
     // Identity operators get the bare column (the hierarchy lookup's column) and the table.
     const predicate = compileOperator(condition.attrs.operator, {
       attribute: UNSUPPORTED_FETCH_OPERATORS.has(condition.attrs.operator) ? attribute : qualified,
-      values: valuesOf(condition),
+      values,
       definition: columnDefinition,
       identity: ctx.identity,
       settings,
@@ -1534,8 +1565,10 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       const seek = seekIndex(cookie, keys);
       if (seek != null) start = seek;
     }
-    end = Math.min(start + plan.pageSize, entities.length);
-    more = entities.length > start + plan.pageSize;
+    // Queries without cookie support fall back to Dataverse's bounded simple paging.
+    const rowLimit = cookieSupported ? entities.length : Math.min(entities.length, FETCH_LIMITS.simplePagingRecords);
+    end = Math.min(start + plan.pageSize, rowLimit);
+    more = end < rowLimit;
   }
   const pageEntities = deferredProjection ? entities.slice(start, end).map(project) : entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
@@ -1781,16 +1814,20 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       last = keyed.at(-1);
     const parts = [];
     const pk = rootMapping.idColumn;
+    // A distinct query that projects the primary key still ends its cookie with it (hosted session F1, DATA-02b: the
+    // portal's permission-compiled Liquid queries are distinct, and their cookies list the order columns, then the key).
+    const withKey =
+      !plan.distinct || columns.some((column) => column.alias == null && column.attribute === pk && !column.aliased);
     const seen = new Set();
     for (const spec of first.specs) {
-      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && !plan.distinct)) continue;
+      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && withKey)) continue;
       seen.add(spec.attribute);
       const read = (item) => fieldValue(item.row.base, spec.attribute);
       parts.push(
         `<${spec.attribute} last="${xmlEscapeAttribute(cookieValue(read(last)))}" first="${xmlEscapeAttribute(cookieValue(read(first)))}" />`,
       );
     }
-    if (!plan.distinct)
+    if (withKey)
       parts.push(
         `<${pk} last="${xmlEscapeAttribute(cookieValue(last.row.base[pk]))}" first="${xmlEscapeAttribute(cookieValue(first.row.base[pk]))}" />`,
       );

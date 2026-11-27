@@ -1,9 +1,13 @@
+// @test-kind contract: locally hosted portal search applies its documented query subset, authored search views and visitor permissions.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { organizationRecord } from '../lib/organization-context.mjs';
+import { portalSearch } from '../lib/portal-search.mjs';
+import { compilePortalSearchQuery } from '../lib/portal-search-query.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -14,7 +18,10 @@ const entity = (name, columns) =>
 const view = (table, id, name, columns, filter = '') =>
   `<savedquery><savedqueryid>{${id}}</savedqueryid><querytype>0</querytype><isdefault>0</isdefault><LocalizedNames><LocalizedName description="${name}" languagecode="1033"/></LocalizedNames><fetchxml><fetch><entity name="${table}">${columns.map((column) => `<attribute name="${column}"/>`).join('')}${filter}</entity></fetch></fetchxml><layoutxml><grid><row>${columns.map((column) => `<cell name="${column}" width="100"/>`).join('')}</row></grid></layoutxml></savedquery>`;
 
-async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true } = {}) {
+async function searchSite(
+  t,
+  { settings = [['Search/EnableAdditionalEntities', 'true']], markers = true, moreItems = 0 } = {},
+) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-search-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
@@ -25,7 +32,7 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
     'portal/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main',
     'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'portal/Main.webtemplate.source.html':
-      '<main id=probe>{% searchindex query: request.params.q, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
+      '<main id=probe>{% searchindex query: request.params.q, filter: request.params.filter, logical_names: request.params.ln, page: request.params.page, page_size: request.params.ps %}<p id=n>{{ searchindex.approximate_total_hits }}</p>{% for r in searchindex.results %}<li data-n="{{ r.number }}" data-url="{{ r.url }}" data-ln="{{ r.logical_name }}" data-fragment="{% if r.fragment == nil %}none{% else %}present{% endif %}">{{ r.title }}|{{ r.fragment }}</li>{% endfor %}{% endsearchindex %}</main>',
     'portal/sitesetting.yml':
       settings
         .map(([name, value], index) => `- adx_sitesettingid: s${index}\n  adx_name: ${name}\n  adx_value: "${value}"`)
@@ -81,6 +88,12 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
         { x_itemid: id(2), x_name: 'Invented anchor', x_note: 'heavy', x_kind: 'open' },
         { x_itemid: id(3), x_name: 'Invented lantern spare', x_note: 'kept', x_kind: 'hidden' },
         { x_itemid: id(4), x_name: 'Lanterns pack', x_note: 'many', x_kind: 'open' },
+        ...Array.from({ length: moreItems }, (_, index) => ({
+          x_itemid: id(index + 10),
+          x_name: 'Paging fixture ' + String(index + 1).padStart(2, '0'),
+          x_note: 'paging probe',
+          x_kind: 'open',
+        })),
       ],
       x_secret: [{ x_secretid: id(5), x_name: 'Invented lantern secret' }],
       x_plain: [{ x_plainid: id(6), x_name: 'Invented lantern plain' }],
@@ -110,31 +123,63 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
   const page = async (query, headers = {}) => {
     const response = await fetch(`${sim.url}/?${new URLSearchParams(query)}`, { headers });
     const html = await response.text();
-    assert.equal(response.status, 200, html.slice(0, 500));
+    assert.equal(response.status, 200, 'the Liquid search page returns results');
     const main = /<main id=probe>([\s\S]*?)<\/main>/.exec(html)[1];
     return {
       total: Number(/<p id=n>(\d*)<\/p>/.exec(main)[1]),
       items: [
-        ...main.matchAll(/<li data-n="(\d+)" data-url="([^"]*)" data-ln="([^"]*)">([^|]*)\|([\s\S]*?)<\/li>/g),
-      ].map(([, n, url, ln, title, fragment]) => ({ n: Number(n), url, ln, title, fragment })),
+        ...main.matchAll(
+          /<li data-n="(\d+)" data-url="([^"]*)" data-ln="([^"]*)" data-fragment="([^"]*)">([^|]*)\|([\s\S]*?)<\/li>/g,
+        ),
+      ].map(([, n, url, ln, fragmentState, title, fragment]) => ({
+        n: Number(n),
+        url,
+        ln,
+        title,
+        fragment: fragmentState === 'none' ? null : fragment,
+      })),
     };
   };
   return { sim, page, id };
 }
 
+async function searchSiteWithDisabledIndex(t, siteSettings) {
+  const fixture = await searchSite(t, { settings: [['Search/EnableAdditionalEntities', 'true'], ...siteSettings] });
+  await fixture.sim.store.transact(() => {
+    const organization = organizationRecord(fixture.sim.store);
+    assert.ok(organization, 'the fixture has a configured organization row');
+    organization.isexternalsearchindexenabled = false;
+  });
+  return fixture;
+}
+
+async function defaultSearchHtml(sim) {
+  const response = await fetch(`${sim.url}/search/?q=lantern`);
+  assert.equal(response.status, 200);
+  return response.text();
+}
+
 test('searchindex returns permission-filtered results from the Portal Search views with site-marker urls', async (t) => {
   const { sim, page, id } = await searchSite(t);
   const anonymous = await page({ q: 'lantern' });
-  // x_plain has no Portal Search view; x_secret is not readable anonymously; the view filter hides the spare.
+  // x_plain has no Portal Search view; x_secret is not readable anonymously; the view filter hides the spare. Lanterns
+  // pack matches lantern by its stem (hosted session F3, summary-F3.md PAGE-04f).
   assert.deepEqual(
     anonymous.items.map((item) => [item.title, item.ln]),
-    [['Invented lantern', 'x_item']],
+    [
+      ['Invented lantern', 'x_item'],
+      ['Lanterns pack', 'x_item'],
+    ],
   );
-  assert.equal(anonymous.total, 1);
+  assert.equal(anonymous.total, 2);
   assert.equal(anonymous.items[0].url, `/item/?id=${id(1)}`);
   assert.match(anonymous.items[0].fragment, /<em>lantern<\/em>/);
   const member = await page({ q: 'lantern' }, signInHeaders(sim, 'alex', { roles: ['Member'] }));
-  assert.deepEqual(member.items.map((item) => item.title).sort(), ['Invented lantern', 'Invented lantern secret']);
+  assert.deepEqual(member.items.map((item) => item.title).sort(), [
+    'Invented lantern',
+    'Invented lantern secret',
+    'Lanterns pack',
+  ]);
   assert.equal(member.items.find((item) => item.ln === 'x_secret').url, '', 'no site marker: no url');
   // logical_names, prefix terms and paging.
   assert.deepEqual(
@@ -166,6 +211,152 @@ test('additional tables need Search/EnableAdditionalEntities and Search/Enabled 
   assert.match(diagnostics, /PORTAL_SEARCH_DISABLED/);
 });
 
+test('legacy portal search scans readable rows with the Dataverse index disabled', async (t) => {
+  const { sim, page } = await searchSiteWithDisabledIndex(t, [['search/enableDataverseSearch', ' FALSE ']]);
+  const result = await page({ q: 'lantern' });
+  assert.equal(result.total, 1);
+  assert.deepEqual(
+    result.items.map((item) => item.title),
+    ['Invented lantern'],
+  );
+  const html = await defaultSearchHtml(sim);
+  assert.match(html, /role="status">1 result\(s\)<\/p>/);
+  assert.match(html, />Invented lantern<\/a>/);
+  assert.doesNotMatch(html, /x_secret|Invented lantern secret|Invented lantern spare/);
+});
+
+test('the organization index and site-wide switch still gate portal search', async (t) => {
+  for (const [mode, siteSettings, diagnostic] of [
+    ['omitted', [], 'PORTAL_SEARCH_UNAVAILABLE'],
+    ['Dataverse', [['Search/EnableDataverseSearch', 'true']], 'PORTAL_SEARCH_UNAVAILABLE'],
+    ['unknown', [['Search/EnableDataverseSearch', 'legacy']], 'PORTAL_SEARCH_UNAVAILABLE'],
+    [
+      'disabled legacy',
+      [
+        ['Search/EnableDataverseSearch', 'false'],
+        ['Search/Enabled', 'false'],
+      ],
+      'PORTAL_SEARCH_DISABLED',
+    ],
+  ]) {
+    await t.test(mode, async (check) => {
+      const { sim, page } = await searchSiteWithDisabledIndex(check, siteSettings);
+      assert.equal((await page({ q: 'lantern' })).total, 0);
+      assert.doesNotMatch(await defaultSearchHtml(sim), /Invented lantern/);
+      assert.ok(sim.state().diagnostics.some((entry) => entry.code === diagnostic));
+    });
+  }
+});
+
+test('legacy search availability applies only to the local portal and local data', async () => {
+  for (const config of [
+    { mode: 'live', pageMode: 'local' },
+    { mode: 'local', pageMode: 'live' },
+  ]) {
+    const found = await portalSearch({
+      portal: { settings: { 'Search/EnableDataverseSearch': 'false' } },
+      store: { tables: { organization: [{ isexternalsearchindexenabled: false }] } },
+      config,
+    });
+    assert.equal(found.unavailable, 'dataverse-search-off');
+  }
+});
+
+test('portal search keeps phrases, operators, wildcard matching and term boosts distinct', async (t) => {
+  const { page } = await searchSite(t);
+  const titles = async (q) => (await page({ q })).items.map((item) => item.title);
+  assert.deepEqual(await titles('"bright lantern"'), ['Invented lantern']);
+  assert.deepEqual(await titles('"lantern bright"'), []);
+  assert.deepEqual(await titles('"invented bright"'), [], 'a phrase cannot span two columns');
+  assert.deepEqual(await titles('invented AND "bright lantern"'), ['Invented lantern']);
+  assert.deepEqual(await titles('(anchor OR lantern) AND bright'), ['Invented lantern']);
+  assert.deepEqual(await titles('invented NOT lantern'), ['Invented anchor']);
+  assert.deepEqual(await titles('invented +anchor -heavy'), []);
+  assert.deepEqual(await titles('anchor OR lan?erns'), ['Invented anchor', 'Lanterns pack']);
+  assert.deepEqual(await titles('anchor OR l*erns^2'), ['Lanterns pack', 'Invented anchor']);
+});
+
+test('searchindex treats a malformed request query as literal terms and keeps paging', async (t) => {
+  const { page } = await searchSite(t);
+  const found = await page({ q: '(lantern -lanterns', ps: '1', page: '2' });
+  assert.equal(found.total, 2);
+  assert.deepEqual(
+    found.items.map(({ n, title }) => [n, title]),
+    [[2, 'Lanterns pack']],
+  );
+  assert.equal((await page({ q: '(*' })).total, 0, 'punctuation-only input must not become an empty query');
+});
+
+test('searchindex omits highlighted fragments when a query uses wildcards', async (t) => {
+  const { page } = await searchSite(t);
+  const prefix = await page({ q: 'lantern*', ps: '1', page: '2' });
+  assert.equal(prefix.total, 2);
+  assert.deepEqual(
+    prefix.items.map(({ n, title, fragment }) => [n, title, fragment]),
+    [[2, 'Lanterns pack', null]],
+  );
+  const mixed = await page({ q: 'anchor OR lan?erns' });
+  assert.deepEqual(
+    mixed.items.map(({ title, fragment }) => [title, fragment]),
+    [
+      ['Invented anchor', null],
+      ['Lanterns pack', null],
+    ],
+  );
+  const literal = await page({ q: '(lantern*' });
+  assert.equal(literal.total, 2, 'the recovered word lantern finds Lanterns pack by its stem');
+  assert.match(literal.items[0].fragment, /<em>lantern<\/em>/);
+});
+
+test('searchindex rejects an unsupported filter even when the visitor query recovers', async (t) => {
+  const { sim } = await searchSite(t);
+  const query = new URLSearchParams({ q: '(lantern', filter: 'unsupported' });
+  const response = await fetch(`${sim.url}/?${query}`);
+  assert.equal(response.status, 501);
+  assert.doesNotMatch(await response.text(), /Invented lantern/);
+  assert.match(JSON.stringify(sim.state().diagnostics), /PORTAL_SEARCH_FILTER_UNSUPPORTED/);
+});
+
+test('literal query recovery preserves the local length and nesting bounds', () => {
+  const code = { code: 'PORTAL_SEARCH_QUERY_INVALID' };
+  assert.throws(() => compilePortalSearchQuery('('.repeat(17), { recoverSyntax: true }), code);
+  assert.throws(() => compilePortalSearchQuery('x'.repeat(1025), { recoverSyntax: true }), code);
+  assert.throws(() => compilePortalSearchQuery('(lantern'), code);
+});
+
+test('the default search result pager preserves the current query and record type', async (t) => {
+  const { sim } = await searchSite(t, { moreItems: 11 });
+  const first = await fetch(sim.url + '/search/?q=paging%20probe&logicalNames=x_item');
+  assert.equal(first.status, 200);
+  const firstHtml = await first.text();
+  assert.match(firstHtml, /Paging fixture 01/);
+  assert.doesNotMatch(firstHtml, /Paging fixture 11/);
+  const next = /<a rel="next" href="([^"]+)"/.exec(firstHtml)?.[1].replaceAll('&amp;', '&');
+  assert.equal(next, '/search/?q=paging+probe&page=2&logicalNames=x_item');
+  const secondHtml = await (await fetch(sim.url + next)).text();
+  assert.match(secondHtml, /Paging fixture 11/);
+  assert.doesNotMatch(secondHtml, /Paging fixture 01|rel="next"/);
+  assert.match(secondHtml, /rel="prev" href="\/search\/\?q=paging\+probe&amp;page=1&amp;logicalNames=x_item"/);
+});
+
+// @test-kind security: record-type facets expose names and counts only for results this visitor can read.
+test('default record-type facets group readable results without exposing restricted table matches', async (t) => {
+  const { sim } = await searchSite(t, {
+    settings: [
+      ['Search/EnableAdditionalEntities', 'true'],
+      ['Search/RecordTypeFacetsEntities', 'Matching fixtures:x_item,x_secret'],
+    ],
+  });
+  const search = async (headers) => (await fetch(sim.url + '/search/?q=lantern', { headers })).text();
+  const anonymous = await search();
+  assert.match(anonymous, /aria-label="Record Type"/);
+  // lantern finds Invented lantern and, by its stem, Lanterns pack; the unreadable x_secret match is never counted.
+  assert.match(anonymous, /logicalNames=x_item">Matching fixtures \(2\)/);
+  assert.doesNotMatch(anonymous, /x_secret|Invented lantern secret/);
+  const member = await search(signInHeaders(sim, 'alex', { roles: ['Member'] }));
+  assert.match(member, /logicalNames=x_item%2Cx_secret">Matching fixtures \(3\)/);
+});
+
 test('the default /search/ page renders the search results markup and states a disabled search', async () => {
   const { renderPortalSearchPage } = await import('../lib/portal-search.mjs');
   const diagnostics = [];
@@ -177,7 +368,7 @@ test('the default /search/ page renders the search results markup and states a d
   assert.match(html, /data-mirage-component="portal-search"/);
   assert.match(html, /value="&lt;lantern&gt;"/);
   assert.match(html, /Search is not enabled for this site\./);
-  assert.deepEqual(diagnostics, ['PORTAL_SEARCH_QUERY_WEIGHTS_IGNORED', 'PORTAL_SEARCH_DISABLED']);
+  assert.deepEqual(diagnostics, ['PORTAL_SEARCH_QUERY_WEIGHTS_LOCAL', 'PORTAL_SEARCH_DISABLED']);
 });
 
 // Knowledge articles are searchable only when Published with Internal set to No, and the platform does not let a site

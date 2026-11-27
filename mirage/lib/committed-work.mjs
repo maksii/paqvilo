@@ -29,7 +29,17 @@ const SYSTEM_EVENT = 1,
 // The runner's own bookkeeping transactions find their rows by id inside the transaction (DataStore#transact `tracked`).
 const TRACKED = { tracked: true };
 const READY = 0,
+  SUSPENDED = 1,
   LOCKED = 2;
+// statuscode of a Suspended job: Waiting (Learn "Asynchronous service": Resume changes Suspended to Ready; "The PostPoneUntil
+// column contains a datetime value when the system job changes state from 1 (Suspended) to 0 (Ready)").
+const WAITING = 10;
+// A wait-until in year 9999 is no time: a waiting or failed classic workflow job waits for a write or a Resume.
+const NO_TIME = Date.UTC(9999, 0, 1);
+const timeOf = (text) => {
+  const until = Date.parse(text ?? '');
+  return Number.isFinite(until) && until < NO_TIME ? until : Number.NaN;
+};
 // ponytail: a job whose transaction rolls back is tried 3 times, then finished Failed; a per-kind retry policy can replace the constant.
 const MAX_ATTEMPTS = 3;
 // An intentional per-kind retry already durably recorded its own attempt. It
@@ -124,7 +134,11 @@ function selectCommittedWorkDrainAction({
  * `data` and is tried again, and the third such attempt finishes it Failed (COMMITTED_JOB_POISONED).
  * stage() runs inside the triggering transaction (a data.mjs commit stager; stageCommittedJobs), so a commit carries its
  * jobs or does not happen; only the kick runs after the commit. With a manual scheduler a tick that waits on a not-yet-due
- * task of that scheduler (a connector retry pause) is blocked: pending() and drain() leave it to a later advance(). */
+ * task of that scheduler (a connector retry pause) is blocked: pending() and drain() leave it to a later advance().
+ * A kind's run may leave its row Suspended (1, Waiting 10) instead of completing it: a waiting classic workflow. A Suspended
+ * row with a postponeuntil turns Ready at that time and runs again; one without waits for wake() (its kind decides when,
+ * inside a committing transaction) or a Resume through the Web API (statecode 1 to 0), which the runner sees on commit. Like
+ * a postponed Ready row, a Suspended row is never pending. */
 export function committedJobs(store) {
   if (store.committedJobs) return store.committedJobs;
   const kinds = new Map(),
@@ -132,7 +146,15 @@ export function committedJobs(store) {
     started = new Set(),
     enqueues = new Set(),
     running = new Set(),
-    retry = new Set();
+    retry = new Set(),
+    // Suspended rows of registered kinds that turn Ready at their postponeuntil.
+    waiting = new Set(),
+    // Rows a wake() found Locked (a run in progress may be about to leave them Suspended): woken once they are Suspended.
+    pendingWake = new Set(),
+    // Rows a wake() turned Ready before their postponeuntil: they run now (waitOf) and keep the time they waited for.
+    wokenEarly = new Set();
+  // The ids the running tick has already tried: a row made Ready again for one of them runs after that tick (retry).
+  let seenNow = null;
   let ticking = null,
     kicked = null,
     closed = false;
@@ -143,10 +165,13 @@ export function committedJobs(store) {
   // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
   // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
+    // A row a write woke before its wait-until (a timed classic workflow wait whose condition now holds) runs now.
+    if (row && wokenEarly.has(row.asyncoperationid)) return 0;
     const after = jobOf(row)?.startAfter;
     let until = Number.NaN;
     if (Number.isFinite(after)) until = after;
-    else if (row?.postponeuntil) until = Date.parse(row.postponeuntil);
+    // A wait-until in year 9999 (a woken classic workflow job keeps it) does not postpone the row.
+    else if (row?.postponeuntil) until = timeOf(row.postponeuntil);
     return Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0;
   };
   const autoRuns = () => {
@@ -215,6 +240,88 @@ export function committedJobs(store) {
     return wait;
   };
   const latencyWait = () => nextWait(undefined, latencyOf);
+  // A Suspended row of a registered kind with a postponeuntil: { index, until } (until in ms), else null.
+  const suspendedJob = (rows, id) => {
+    const index = indexOf(store, rows, id),
+      row = rows[index],
+      payload = row?.statecode === SUSPENDED ? jobOf(row) : null,
+      until = timeOf(row?.postponeuntil);
+    return payload && kinds.has(payload.kind) && Number.isFinite(until) ? { index, until } : null;
+  };
+  // The shortest wait of the Suspended rows (0: one is due; null: none has a time).
+  const suspendedWait = (rows = store.state.tables?.asyncoperation ?? []) => {
+    let wait = null;
+    for (const id of waiting) {
+      const job = suspendedJob(rows, id);
+      // A row still Locked is on its way to Suspended (a system job ending Pausing); one in any other state left waiting.
+      if (job) wait = Math.min(wait ?? Infinity, Math.max(0, job.until - nowMs()));
+      else if (rows[indexOf(store, rows, id)]?.statecode !== LOCKED) waiting.delete(id);
+    }
+    return wait;
+  };
+  const firstWait = (rows) => {
+    const queuedWait = nextWait(rows),
+      timerWait = suspendedWait(rows);
+    if (queuedWait === null) return timerWait;
+    return timerWait === null ? queuedWait : Math.min(queuedWait, timerWait);
+  };
+  // A row made Ready while a run of it is in progress or after this tick tried it runs once that run and tick ended: the
+  // tick's scan skips the ids it tried, and a run's end drops its id from the queue.
+  const requeue = (id) => {
+    if (started.has(id) || seenNow?.has(id)) retry.add(id);
+    else queued.add(id);
+  };
+  // Suspended rows whose postponeuntil has come, and Suspended rows a wake() found Locked, turn Ready (Waiting For
+  // Resources) and join the queue. A pending wake whose row is still Locked stays pending; any other state drops it.
+  const wakeDue = async () => {
+    const rows = store.state.tables?.asyncoperation ?? [];
+    const due = [...waiting].filter((id) => suspendedJob(rows, id)?.until <= nowMs());
+    const woke = [];
+    for (const id of pendingWake) {
+      if (started.has(id)) continue; // its own run ends it (wakeAfterRun)
+      const row = rows[indexOf(store, rows, id)];
+      if (row?.statecode === SUSPENDED) woke.push(id);
+      if (row?.statecode !== LOCKED) pendingWake.delete(id);
+    }
+    if (!due.length && !woke.length) return;
+    for (const id of [...due, ...woke]) waiting.delete(id);
+    const woken = await store.transact(() => {
+      const live = store.state.tables?.asyncoperation ?? [],
+        ids = [];
+      for (const id of new Set([...due, ...woke])) {
+        const row = live[indexOf(store, live, id)];
+        // A Resume, Cancel or new postponeuntil written meanwhile leaves the row to that change; a woken row needs no time.
+        const until = timeOf(row?.postponeuntil);
+        const timed = Number.isFinite(until) && until <= nowMs();
+        if (row?.statecode !== SUSPENDED || !(timed || woke.includes(id))) continue;
+        Object.assign(row, { statecode: READY, statuscode: 0 });
+        ids.push(id);
+      }
+      return ids;
+    }, TRACKED);
+    for (const id of woken) requeue(id);
+  };
+  // The end of a run whose row a wake() found Locked: left Suspended, it is woken now (it waited for the write that woke it).
+  const wakeAfterRun = async (id) => {
+    if (!pendingWake.delete(id)) return;
+    const woken = await store.transact(() => {
+      const rows = store.state.tables?.asyncoperation ?? [],
+        row = rows[indexOf(store, rows, id)];
+      if (row?.statecode !== SUSPENDED) return false;
+      Object.assign(row, { statecode: READY, statuscode: 0 });
+      return true;
+    }, TRACKED);
+    if (woken) {
+      waiting.delete(id);
+      retry.add(id);
+    }
+  };
+  // After a run, or a committed write of the row: a Ready row of a registered kind is queued, a timed Suspended one waits.
+  const follow = (id) => {
+    const rows = store.state.tables?.asyncoperation ?? [];
+    if (readyJob(rows, id)) requeue(id);
+    else if (suspendedJob(rows, id) && !started.has(id)) waiting.add(id);
+  };
   // A row still Ready after its run means the run's transaction rolled back.
   const countAttempt = async (id, kind, failure) => {
     if (!readyJob(store.state.tables?.asyncoperation ?? [], id)) return;
@@ -238,6 +345,7 @@ export function committedJobs(store) {
   };
   const execute = async ({ id, payload }) => {
     started.add(id);
+    wokenEarly.delete(id);
     let failure = null,
       outcome;
     try {
@@ -254,8 +362,16 @@ export function committedJobs(store) {
     } catch (error) {
       remember(id, payload.kind, error);
     } finally {
+      // A wake that came while this run held the row: the run may have just left it Suspended.
+      try {
+        await wakeAfterRun(id);
+      } catch (error) {
+        remember(id, payload.kind, error);
+      }
       started.delete(id);
       queued.delete(id);
+      // A run that left its row Suspended with a time waits for it (a Ready row left by a rollback is retried above).
+      if (suspendedJob(store.state.tables?.asyncoperation ?? [], id)) waiting.add(id);
       // A concurrent run that ends after its tick retries on a tick of its own.
       if (retry.has(id) && !ticking) {
         retry.delete(id);
@@ -282,8 +398,10 @@ export function committedJobs(store) {
   const tick = () =>
     (ticking ??= (async () => {
       const seen = new Set();
+      seenNow = seen;
       try {
         for (;;) {
+          await wakeDue();
           let jobs = scan(seen);
           // Jobs a run commits (a plug-in write that triggers a flow) join this tick once their Ready rows are written.
           if (!jobs.length) {
@@ -305,6 +423,7 @@ export function committedJobs(store) {
           }
         }
       } finally {
+        seenNow = null;
         finishCommittedJobTick({
           store,
           queued,
@@ -312,7 +431,7 @@ export function committedJobs(store) {
           seen,
           retry,
           clearTick: () => (ticking = null),
-          nextWait,
+          nextWait: firstWait,
           readyJob,
           kick,
         });
@@ -358,6 +477,49 @@ export function committedJobs(store) {
         kick();
       };
     },
+    /**
+     * Inside an open transaction (a commit stager): every Suspended row of a registered kind that `match(row, payload)`
+     * accepts turns Ready, so it commits or rolls back with that transaction; returns the function that queues the woken rows
+     * once it committed (null when none matched). A waiting classic workflow is woken this way by a change of its record.
+     */
+    wake(match) {
+      const ids = [],
+        pending = [];
+      for (const row of store.state.tables?.asyncoperation ?? []) {
+        const suspended = row.statecode === SUSPENDED && row.statuscode === WAITING;
+        if (!suspended && row.statecode !== LOCKED) continue;
+        const payload = jobOf(row);
+        if (!payload || !kinds.has(payload.kind) || !match(row, payload)) continue;
+        // A Locked row's run may be about to wait: the wake is kept until it ends (wakeAfterRun, wakeDue).
+        if (!suspended) {
+          pending.push(row.asyncoperationid);
+          continue;
+        }
+        Object.assign(row, { statecode: READY, statuscode: 0 });
+        ids.push(row.asyncoperationid);
+      }
+      if (!ids.length && !pending.length) return null;
+      for (const id of ids) wokenEarly.add(id);
+      return () => {
+        for (const id of ids) {
+          waiting.delete(id);
+          requeue(id);
+        }
+        for (const id of pending) pendingWake.add(id);
+        kick();
+      };
+    },
+    /**
+     * Follows a job row another runner is ending as Suspended with a postponeuntil (an on-demand workflow run that waits):
+     * once the row is Suspended, it turns Ready at that time. Checked on every tick until then.
+     */
+    watch(id) {
+      if (closed) return;
+      waiting.add(id);
+      const rows = store.state.tables?.asyncoperation ?? [];
+      const until = timeOf(rows[indexOf(store, rows, id)]?.postponeuntil);
+      kick(Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0);
+    },
     /** Finds Ready rows saved before a restart (or imported) and starts the runner. A row left Locked (2/20) by a run that
      * did not finish (a crash during a web hook POST, a failed final write) is Ready again: at-least-once, so a web hook may
      * be delivered twice. One COMMITTED_JOB_RECOVERED diagnostic reports the count. */
@@ -370,7 +532,10 @@ export function committedJobs(store) {
         if (!payload || !kinds.has(payload.kind)) continue;
         if (row.statecode === READY) queued.add(id);
         else if (row.statecode === LOCKED && row.statuscode === 20) locked.push(id);
+        else if (suspendedJob(store.state.tables.asyncoperation, id)) waiting.add(id);
       }
+      const timer = suspendedWait();
+      if (timer !== null) kick(timer);
       if (locked.length)
         track(
           store
@@ -452,6 +617,22 @@ export function committedJobs(store) {
       }
     },
   });
+  // A committed write of a job row through the records pipeline (a Web API Resume, Postpone or Cancel): the runner follows
+  // its new state once the write committed.
+  if (typeof store.addCommitStager === 'function')
+    store.addCommitStager((events) => {
+      const ids = events
+        .filter((event) => event.entity === 'asyncoperation' && event.operation === 'update')
+        .map((event) => event.row?.asyncoperationid)
+        .filter((id) => typeof id === 'string');
+      if (!ids.length) return null;
+      return () => {
+        if (closed) return;
+        for (const id of ids) follow(id);
+        const wait = firstWait();
+        if (wait !== null) kick(wait);
+      };
+    });
   return jobs;
 }
 

@@ -171,7 +171,29 @@ test('PCF catalogue output is pinned to the pre-change import', async (t) => {
     files: { 'strings/Labels.resx': resx },
   });
   const catalogue = await importCodeComponents([{ dir }]);
-  assert.equal(digestOf({ ...catalogue, controls: [...catalogue.controls] }, dir), PINNED_CONTROL_DIGEST);
+  // Manifest facts added after the pin (CPCF-062/063) are compared on their own; every pinned field is unchanged.
+  const added = ['version', 'apiVersion', 'displayNameKey', 'descriptionKey', 'propertyDependencies'];
+  added.push('commonProperties', 'externalServiceUsage', 'dependencies', 'identityFile');
+  const control = catalogue.controls.get('tst_Synthetic.Editor');
+  assert.deepEqual(Object.fromEntries(added.map((key) => [key, control[key]])), {
+    version: null,
+    apiVersion: null,
+    displayNameKey: null,
+    descriptionKey: null,
+    propertyDependencies: [],
+    commonProperties: [],
+    externalServiceUsage: null,
+    dependencies: [],
+    identityFile: path.join(
+      await fsp.realpath(dir),
+      'Controls',
+      'tst_Synthetic.Editor',
+      'ControlManifest.xml.data.xml',
+    ),
+  });
+  const pinned = Object.fromEntries(Object.entries(control).filter(([key]) => !added.includes(key)));
+  const controls = [['tst_Synthetic.Editor', pinned]];
+  assert.equal(digestOf({ ...catalogue, controls }, dir), PINNED_CONTROL_DIGEST);
   assert.equal(catalogue.assets.size, 13, 'the code, the eleven stylesheets and the resx are all declared');
 });
 

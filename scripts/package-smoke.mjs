@@ -1,4 +1,5 @@
 // Install the actual distributable into an independent project, without portal traffic.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -473,7 +474,7 @@ async function smokePackage(work) {
   preserveEvidence({ work, packed, dependencyEvidenceFile });
 }
 
-const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isEntry = isEntryPoint(import.meta.url);
 if (isEntry)
   answerHelp(process.argv.slice(2), {
     name: 'package-smoke',

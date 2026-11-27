@@ -39,19 +39,51 @@ assertions.
 
 Module: `mirage/lib/dataverse-calculated.mjs`. Capability record: requires `metadata:FormulaDefinition`. `describe(api)`
 reports level `behaviour` only when the store has calculated columns and a pack function covers every one of them;
-otherwise it reports `contract`, because the evaluator covers only the subset below.
+otherwise it reports `contract`, because the evaluators cover only the subsets below.
 
 **Behaviour.** A column with `SourceType` 1 in its metadata is calculated on every read: Web API entity, collection,
 property and `$value` reads, expanded rows, FetchXML, `$filter`, `$orderby`, `$apply` aggregates and the portal reads
 all use the computed value. The stored value is never returned. A calculated column that reads another calculated column
 reads it computed; a chain deeper than five calculated columns reads null with `CALCULATED_UNSUPPORTED`. An `$orderby`
 or FetchXML `<order>` on a calculated column whose definition references a parent column or another calculated column is
-ignored without an error; Microsoft documents sorting as unavailable on such columns, and the native answer is not
-captured. The value comes from the column's `FormulaDefinition`, evaluated against the stored row. A `Field` reference
-can follow one N:1 lookup to the parent row. That parent row is read without the caller's read privilege, on the
-assumption that the platform computes the value itself.
+ignored without an error, and so is one on a column that reads `Now`; Microsoft documents sorting as unavailable on
+such columns, and the native answer is not captured. The value comes from the column's `FormulaDefinition`, evaluated
+against the stored row. A field reference can follow one N:1 lookup to the parent row. That parent row is read without
+the caller's read privilege, on the assumption that the platform computes the value itself. A decimal or money result
+is rounded to the column's precision (`Accuracy` in the export, 2 when absent) and a whole number result to an integer.
 
-The supported `FormulaDefinition` subset uses XML elements. Element names are case-insensitive and namespace prefixes
+**Designer XAML.** The calculated-column designer stores `FormulaDefinition` as Windows Workflow XAML, and a Solution
+export writes it to `Formulas/<table>-<column>.xaml`. Mirage compiles that XAML (`mirage/lib/calculated-xaml.mjs`) with
+the non-resolving Solution XML reader and runs it on read; nothing is evaluated as VB. The supported designer forms:
+
+| Designer form                                                                                                                                                                         | Meaning                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ConditionSequence` of `ConditionBranch` steps                                                                                                                                        | IF / ELSE IF / ELSE: the first branch whose condition holds sets the column; when none holds the column is null      |
+| `EvaluateCondition` (`Equal`, `NotEqual`, `GreaterThan`, `GreaterEqual`, `LessThan`, `LessEqual`, `Null`, `NotNull` and the text conditions), `EvaluateLogicalCondition` `And` / `Or` | Conditions; a comparison with a null operand is false                                                                |
+| `GetEntityProperty` of the row, or of `related_<lookup>#<table>`                                                                                                                      | A column of the row, or of the row one N:1 lookup away                                                               |
+| `CreateCrmType` literals, `SelectFirstNonNull`                                                                                                                                        | Typed literals (Boolean, whole number, decimal, float, money, choice, text, date, GUID) and the first non-null value |
+| `Add`, `Subtract`, `Multiply`, `Divide`, `Concat`                                                                                                                                     | Exact decimal arithmetic (a null operand gives null, dividing by zero gives null) and text (null reads as empty)     |
+| `AddDays`, `AddHours`, `AddWeeks`, `AddMonths`, `AddYears` and their `Subtract` forms (amount, date); `DiffInDays` to `DiffInYears` (from, to); `Now`                                 | Date arithmetic in UTC; every `DiffIn` function counts the UTC unit boundaries between the two times, to minus from  |
+| `TrimLeft`, `TrimRight` (text, count)                                                                                                                                                 | The text without that many characters at that end; a null text reads as empty text                                   |
+
+Hosted runs (2026-11-26) replay as the `dataverse-calculated` parity cases: every captured value of eleven designer
+columns, a direct write ignored with 204, and `$filter` and `$orderby` on a calculated column. Columns saved by the
+classic calculated-field designer itself (2026-11-27, suite `designer-dc2`) add every `Add`/`Subtract` and `DiffIn`
+function, `TrimLeft`, `TrimRight`, `Concat` with a null, a Yes/No column (the designer writes its value as `"1"`/`"0"`),
+And/Or, column-to-column and text conditions and ELSE IF chains: a `DiffIn` function counts unit boundaries (23:30 to
+00:29 is one hour, one day and one year; weeks start on Sunday), and a text condition on a null column does not hold.
+`Now` stays uncaptured.
+
+**Definition.** Creating a calculated column through `EntityDefinitions(...)/Attributes` refuses designer XAML in which
+an arithmetic, date or text function reads a `CreateCrmType` literal directly, with 400 `0x80060424` "The \<column\>
+field has an invalid XAML formula definition."; the designer wraps every literal in `SelectFirstNonNull` (hosted
+creates, 2026-11-26). Other definitions are accepted.
+
+**Stored text.** A column loaded from a Solution serves its `Formulas` file unchanged as `FormulaDefinition`: the
+exported text with its line ends and indentation and without an XML declaration, as an imported column reads (hosted
+import round trip, 2026-11-26).
+
+**Subset grammar.** Mirage also reads its own `FormulaDefinition` grammar, which uses XML elements. Element names are case-insensitive and namespace prefixes
 are ignored. The root element is either an optional `<Formula>` wrapper around exactly one expression, or the expression
 itself.
 
@@ -66,15 +98,18 @@ itself.
 | `<AddDays>`, `<AddHours>`, `<AddWeeks>`, `<AddMonths>`, `<AddYears>` (date, amount)                                           | Date arithmetic in UTC                                                                        |
 | `<DiffInDays>`, `<DiffInHours>`, `<DiffInMinutes>`, `<DiffInWeeks>`, `<DiffInMonths>`, `<DiffInYears>` (from, to)             | Date differences in whole units                                                               |
 
-Arithmetic uses JavaScript numbers. Money and decimal results can therefore differ from the platform in the last digits.
+Arithmetic is exact decimal arithmetic.
 
-**Writes.** A create, update or upsert that includes a calculated column is refused with HTTP 400 `0x80048d19`, and
-nothing is stored. The native refusal is not known; this invalid-property shape stands in.
+**Writes.** A create, update or upsert that includes a calculated column succeeds and ignores the value, as the
+Dataverse Web API and the portal `/_api` do (captured 2026-11-23): nothing is stored for the column, reads compute it,
+and an update that carries only calculated columns changes no stored column while `modifiedon` and `versionnumber`
+advance, as for an empty update. `CALCULATED_WRITE_IGNORED` is reported once per column so the ignored value is
+visible locally.
 
 **Diagnostics.** `CALCULATED_UNSUPPORTED` is reported once per column in these cases:
 
 - the column has no `FormulaDefinition`
-- the definition contains a node outside the subset
+- the definition contains a node or a designer activity outside the subsets
 - a value has the wrong type, for example text where a number is expected
 - a pack function returns a promise
 
@@ -86,9 +121,9 @@ In each case the column reads as null. Mirage never guesses a value.
 pack defines a function for a column, it replaces the evaluator for that column. `validateCalculatedColumns(map)` checks
 the export: each key must have the form `table.column` and each value must be a synchronous function.
 
-**Limits.** The column designer stores `FormulaDefinition` as Windows Workflow XAML (`ActivityReference` and
-`EvaluateExpression` with VB expressions). That format is outside the subset, so a column exported from the designer
-reports `CALCULATED_UNSUPPORTED` until a pack supplies a function for it.
+**Limits.** Designer XAML outside the forms above (for example a VB expression, or an activity the designer
+does not write) reports `CALCULATED_UNSUPPORTED` with the first form it could not read, until a pack supplies a
+function for the column. The XAML text length, element count and nesting are bounded.
 
 ## Business rules
 
@@ -108,10 +143,9 @@ API, SDK calls from plug-ins, flow Dataverse actions, the portal `/_api` and por
 
 | Action (XAML step)                                                                                          | Server behaviour                                                                                     |
 | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `<SetAttributeValueStep Attribute Value/>`                                                                  | Sets the value in the payload                                                                        |
+| `<SetAttributeValueStep Attribute Value/>`                                                                  | Sets the value in the payload; without `Value` it clears the column                                  |
 | `<SetDefaultValueStep Attribute Value/>`                                                                    | On create only, sets the value when the merged value is empty                                        |
 | `<SetMessageStep Message/>`                                                                                 | Fails the write with HTTP 400. The error message is the rule's message and the code is `0x80040265`. |
-| `<SetFieldRequiredLevelStep Attribute RequiredLevel="required"/>`                                           | Fails the write with HTTP 400 `0x80040203` when the merged value is empty                            |
 | `<ConditionBranchStep Logic="and\|or">` with `<Condition Attribute Operator Value/>`, `<Then>` and `<Else>` | One condition branch. Supported operators: `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `null`, `not-null`.   |
 
 The steps are the child elements of the root element. Each `Value` is parsed as JSON when it is valid JSON, for example
@@ -119,10 +153,12 @@ a number, `true`, `false` or `null`. Otherwise it is used as text. Condition bra
 rule reports `BUSINESS_RULE_UNSUPPORTED`. Parsed rules are cached per workflow id and replaced when the rule's XAML
 changes, and the activated rules are indexed by table once per store revision.
 
-**Inventory.** Some actions affect only the client: `<SetVisibilityStep>`, `<SetDisplayModeStep>` (lock and unlock) and
-`<RecommendationStep>`. They have no server behaviour, and each rule that contains them reports
-`BUSINESS_RULE_CLIENT_ONLY` once. The rule's server actions still run. Rules with Form or All Forms scope are never
-evaluated by the server.
+**Inventory.** Some actions affect only the client: `<SetVisibilityStep>`, `<SetDisplayModeStep>` (lock and unlock),
+`<SetFieldRequiredLevelStep>` (set business required) and `<RecommendationStep>`. Microsoft Learn lists them as
+model-driven app actions, and "actions that only apply to model-driven apps are ignored when the rule is run
+server-side". They have no server behaviour, and each rule that contains them reports `BUSINESS_RULE_CLIENT_ONLY` once.
+The parsed rule keeps the required step for the model-driven host. The rule's server actions still run. Rules with
+Form or All Forms scope are never evaluated by the server.
 
 **Diagnostics.**
 
@@ -291,7 +327,20 @@ columns a direct Assign writes (`ownerid`, `owninguser` or `owningteam`, `owning
 | `NoCascade`, `RemoveLink`, anything else | none                                                       |
 
 `UserOwned` means "owned by the same user as the primary row". The primary row already has the new owner after the
-write, so the owner from before the write is compared.
+write, so the owner from before the write is compared. A Solution export spells `Active` as `ActiveOnly`
+(`<CascadeAssign>ActiveOnly</CascadeAssign>`); it is read as `Active` for every action, as the metadata Web API
+answers it.
+
+**Delete.** A delete applies each relationship's Delete value (`mirage/lib/data.mjs`): `Cascade` deletes the children,
+`RemoveLink` clears their lookup and `Restrict` refuses the delete while one exists, with 405 `0x80040227` naming the
+deleted table and id, the first restricting row and the relationship, as the platform words it. The intersect rows of
+many-to-many relationships go with the row; the rows on the other side stay. Hosted runs (2026-11-26) of an Assign and
+a delete over parental, referential, restrict and custom relationships replay as the `dataverse-cascade` parity cases.
+
+**One parent.** A relationship whose Assign, Delete, Reparent, Share or Unshare cascades is parental. Creating a second
+parental relationship from a table through `RelationshipDefinitions` is refused with 400 `0x80047007` naming the
+existing parent table (hosted probe, 2026-11-26); the lookups of one polymorphic or customer column may each be
+parental.
 
 **Share, Unshare, Reparent, Merge** (Microsoft Learn "Configure table relationship cascading behavior"). A share of a
 row (GrantAccess, ModifyAccess, RevokeAccess from any entry point, `dataverse-security.mjs` grantAccessNow and
@@ -321,18 +370,33 @@ Module: `mirage/lib/dataverse-rollup.mjs`. Capability record: level `behaviour`,
 `scheduler`. `MassRecalculation` is a behaviour operation when the module scheduled the periodic job; without a
 scheduler it is listed under `contractOperations`.
 
-**Behaviour.** A rollup column is a column whose metadata says SourceType 2. Its FormulaDefinition is the aggregate
-FetchXML: one child `<entity>`, one aggregate `<attribute>`, and a `<filter>` whose condition with `value="{id}"` names
-the child column that holds the parent id (the 1:N relationship). Three operations execute:
+**Behaviour.** A rollup column is a column whose metadata says SourceType 2. Its FormulaDefinition is the designer's
+exported XAML or an aggregate FetchXML (one child `<entity>`, one aggregate `<attribute>`, and a `<filter>` whose
+condition with `value="{id}"` names the child column that holds the parent id). The behaviour below follows two hosted
+runs of thirteen designer rollups (replay cases `dataverse-rollup/designer-f6`) and two runs of rollups saved by the
+classic rollup designer itself (`dataverse-rollup/designer-dc2`):
 
-- **Create.** A new parent row is stamped `<column>_state = 0` (NotCalculated) and `<column>_date = null` for every
-  rollup column whose payload omits them. An explicit write to `<column>` itself is refused with 400, on create, update
-  and upsert.
-- **Child write.** A create, update, upsert or delete of a child row marks each parent linked through a rollup
-  `<column>_state = 0` (stale), inside the write's own transaction. A reparent or delete also marks the parent the row
-  pointed at before the write. A parent already at 0 is left alone. The flag is a journaled row mutation: the parent's
-  version number, modified-on value and ETag stay, and no Update step, flow, audit entry or committed event runs for the
-  parent.
+- **Definition.** Creating a rollup column through the metadata API whose designer Aggregate names an operator other
+  than `Count`, `Sum`, `Average`, `Minimum` or `Maximum` (the platform refuses `Min` and `Max`) answers 400
+  `0x80060417` "FormulaDefinition is not valid Xaml". Any other definition is stored as received.
+- **Create.** A new parent row is Calculated: `<column>_state = 1`, `<column>_date` equal to the row's `createdon`, and
+  the value of no children (0 for Count, Sum and a designer Average; null for Minimum and Maximum), as a column created
+  with its definition through the Web API stamps it. A column created empty and then saved by the classic rollup
+  designer (the Maker panel's path) stamps NotCalculated instead: `_state = 0`, the value 0 for a Count, Sum or Average
+  over a related table and null otherwise, and `_date` the time of the column's last mass calculation (null before
+  one). An export does not say which path made a column, so a site selects the designer stamp with the observed setting
+  `rollupCreateState: not-calculated` (replay suites `create-state-designer` and `create-state-webapi`). A write to
+  `<column>` itself is accepted and ignored on create, update and upsert, as the platform answers 204 and keeps the
+  stored value.
+- **Child write.** A create, update, upsert or delete of a child row changes neither the parent's value nor its
+  `_state` or `_date`. Mirage marks each parent linked through a rollup for its mass recalculation (an update only for
+  the rollups that read a column it writes: the aggregated column, a filter column, the link, the state; and, for a
+  hierarchical rollup, every ancestor); a reparent or delete also marks the parent the row pointed at before the write,
+  and moving a row of a hierarchical parent table marks its old and new ancestors. A mark made in a transaction is kept
+  only when the transaction commits. A write to a row of the source table marks a rollup of its own column over the
+  hierarchy, and a source-filtered hierarchical rollup, of that row and every ancestor. `api.rollups.isStale(table, id,
+column)` reads it. No Update step, flow, audit
+  entry or committed event runs for the parent.
 - **Recalculate.** `recalculate(api, table, id, column)` (exported, and `api.rollups.recalculate(table, id, column)`)
   computes the value over the local child rows and stores `<column>`, `<column>_state = 1` (Calculated) and
   `<column>_date = now`, with the modified-on value kept. It runs as the platform (administrator), like the cascade
@@ -340,16 +404,46 @@ the child column that holds the parent id (the 1:N relationship). Three operatio
   404 for an unknown row.
 - **CalculateRollupField.** The message (`dataverse-record-messages.mjs`) calls `api.rollups.recalculate` when this
   module is installed, so a pack `rollups` function is honoured and an unsupported definition stores state 2 with
-  `ROLLUP_UNSUPPORTED`. Without the module the message runs the column's FetchXML aggregate itself.
+  `ROLLUP_UNSUPPORTED`. A null value (Minimum, Maximum or a date over no children) is absent from the response. Without
+  the module the message runs the column's FetchXML aggregate itself.
 - **Mass recalculation.** When the runtime has a scheduler (`api.scheduler`), install schedules a recurring "Mass
-  Calculate Rollup Fields" task every hour that recalculates every stale (`_state = 0`) rollup column of every row
-  (`api.rollups.recalculateStale()`). A failed run reports `ROLLUP_MASS_RECALCULATION_FAILED` and the next run still
+  Calculate Rollup Fields" task every hour that recalculates every marked rollup column and every NotCalculated
+  (`_state = 0`) one, for example of a seeded row (`api.rollups.recalculateStale()`). Under `rollupCreateState:
+not-calculated` it visits the marked ones only, as the hosted hourly job left a NotCalculated row without related rows
+  as it was. `api.rollups.massCalculate(table, column)` is a column's own "Mass calculate" job (the platform runs it
+  about 12 hours after a designer save): every row is recalculated at one time, which becomes the `_date` of rows
+  created later under `not-calculated`; there a row no related row reaches keeps its NotCalculated Count, Sum, Minimum
+  or Maximum and only takes the date. Marks live with the running
+  module: after a restart only NotCalculated columns are visited. A failed run reports `ROLLUP_MASS_RECALCULATION_FAILED` and the next run still
   comes. Closing the module cancels the task.
+
+- **Untyped child lookups.** A child lookup that holds a bare GUID, with no table, counts for the parent only while
+  the parent is the one target table of that lookup that holds the GUID. A row of another target table that is created,
+  deleted, purged after its time to live or brought in by replacing the whole table (`state.tables[name] = rows`, also
+  in an isolated changeset) marks the parent for recalculation when it changes that decision for a child that contributes. An elastic target
+  is matched by primary key and the partition the child's `<lookup>pid` column names. A lookup that also targets a
+  virtual table attributes no bare GUID (`ROLLUP_BARE_LOOKUP_UNRESOLVED`), because that table's rows are not stored
+  locally; typed lookups still count. A replacement that adds or removes only GUIDs no other target table holds reads no
+  rollup metadata.
 
 The rollup columns per table and the child-to-parent links are memoised per `store.tablesRevision([])` and cleared on
 reset.
 
-**Supported subset.** The FetchXML subset recalculated by this module:
+**Supported subset.** The designer export is read from its XAML, in the form the classic rollup designer saves it
+(opened from the Maker column panel; replay cases `dataverse-rollup/designer-dc2`): the Source
+(`HierarchicalRelationshipName` `[Nothing]`, or a self-referencing relationship whose descendant rows also contribute,
+with an optional source filter on the source table's own columns), the Target (the one-to-many relationship, then an
+optional filter on the related rows; empty for a hierarchical rollup of the source table's own column over the row and
+its descendants) and the Aggregate (`Count`, `Sum`, `Average`, `Minimum` or `Maximum` of one column). A filter reads
+columns, builds option set, Boolean (`"1"`/`"0"`, or `"True"`/`"False"`), number or UTC date literals and compares them
+with `Equal`, `NotEqual`, `Null`, `NotNull`, `GreaterThan`, `GreaterEqual`, `LessThan` or `LessEqual`, joined by `And`.
+`Equal` with several checked options of a choice matches any of them and `NotEqual` none of them; a Yes/No condition
+with both boxes checked admits only Yes rows, as hosted runs show. A row without a value matches `Null` and `NotEqual`. A source
+filter drops the rows it refuses (the root row too, so a refused root reads the value of no rows) while their
+descendants still count. Another operator, `Or` or another literal type is outside the
+subset. Inactive children count, as the designer adds no state condition. Count counts non-null values; Sum skips nulls
+(0 over none); Average divides the sum by every linked child, a null counting as 0 (0 over none); Minimum and Maximum
+ignore nulls and compare numbers or date and time values (null over none). The FetchXML form supports these parts:
 
 | Part                                                                               | Meaning                                                                                  |
 | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -365,8 +459,10 @@ sum, min, max or avg) is outside the subset.
 only on demand. Unsupported definitions are not guessed: they are answered by a diagnostic and state 2.
 
 **Diagnostics.** `ROLLUP_UNSUPPORTED`, once per `table.column`: the definition is outside the subset, the pack function
-returned a promise, or a value under the aggregate is not a number. The column stores null with `_state = 2`.
-`api.rollups.diagnostics()` lists them.
+returned a promise, a value under the aggregate is not a number, or the parent or child table is a virtual or elastic
+table. Dataverse calculates no rollup on or over a virtual table and gives elastic tables no rollup columns, and Mirage
+refuses a lookup on an elastic table. The column stores null with `_state = 2`. `ROLLUP_BARE_LOOKUP_UNRESOLVED`, once
+per `table.column`, names a child lookup that also targets a virtual table. `api.rollups.diagnostics()` lists them.
 
 **Pack override.** Export `rollups`, a map of `'<table>.<column>'` keys to synchronous functions `(row, ctx) => value`.
 `row` is a copy of the parent row and `ctx` is `{ table, column }`. The override wins over the definition and stores its
@@ -375,12 +471,10 @@ The validator is `validateRollups(map)`; install is `install(api, { rollups, dia
 
 **Limits.**
 
-- SUM over no matching child rows is 0; MIN, MAX and AVG over none are null.
+- A FetchXML SUM over no matching child rows is 0; MIN, MAX and AVG over none are null, and AVG ignores nulls (SQL).
 - An unsupported definition stores state 2 (OverflowError), the nearest platform error state.
-- A write to a rollup column is refused with the invalid-property shape (`0x80048d19`), assumed from the calculated
-  module.
-- The platform keeps no per-row stale flag; its system job recalculates incrementally per column. The local `_state = 0`
-  mark only tells the hourly local task which rows to visit.
+- The platform keeps no per-row stale flag; its system job recalculates incrementally per column. Mirage's marks only
+  tell the hourly local task which rows to visit and never show in a row.
 
 ## Formula columns
 
@@ -399,7 +493,11 @@ nothing. The column is evaluated as the system user, so the caller's identity is
 or a pack `powerFx` adapter), else `createPowerFxEvaluator()` from `canvas-power-fx.mjs`, the core engine. The formula
 reads the row's columns by name or through `ThisRecord`, follows lookups to the related row (`x_parentid.x_rate`), and
 reads other formula columns of the row, at most 10 deep. Decimal, currency and whole-number arithmetic is exact and
-float values are doubles; a decimal result keeps the column's precision (0 to 10 places, default 2). A formula that
+float values are doubles; a decimal result keeps the column's precision (0 to 10 places, default 2). The engine runs
+with `host.formulaColumn`, so a numeric function is typed by its first argument as Learn documents for formula columns
+(`Sum(1, 2, Float(1))` is a decimal, `Sum(Float(1), 1, 2)` a float), and `Decimal()` of a value outside the decimal
+formula column range (-100000000000 to 100000000000) makes the formula read `null` with `FORMULA_ERROR`. A decimal
+result outside that range reads `null` with `FORMULA_OUT_OF_RANGE`. A formula that
 answers an error value (a division by zero, for example) reads `null` with `FORMULA_ERROR` and its error kind, once per
 column. With the engine explicitly disabled (`engine: false`) it answers 501 and the column reads `null`. Read
 projection is synchronous: an evaluator without `evaluateSync`, or one that answers with a promise, leaves the column
@@ -428,9 +526,35 @@ changes refresh the running formula.
 **Inventory / contract.** Without a synchronous evaluator or a pack override (the engine disabled), the answer is
 `null`.
 
+**Formula column dialect.** `mirage/test/dataverse-formula-coverage.test.mjs` covers every function of Learn "Formula
+reference - Dataverse formula columns" and every operator of "Work with formula columns". Before a formula is evaluated,
+`checkFormulaColumn` (`mirage/lib/power-fx-formula-columns.mjs`) looks for the restrictions that article documents; the
+native designer refuses to save such a formula. A formula that breaks one reads `null` with `FORMULA_UNSUPPORTED` and
+its `construct`:
+
+| `construct`        | Restriction                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| `text-number`      | `Text()` with a single Number argument                                                                  |
+| `text-format`      | `Text()` of a String with a Format argument                                                             |
+| `locale-format`    | a number format with the locale-specific `.` or `,` token                                               |
+| `value-separator`  | `Value()` of a literal with a decimal separator                                                         |
+| `text-coercion`    | `&` with a number, currency, date time or choice operand                                                |
+| `string-argument`  | a number, currency, date time or choice value where a string function expects text                      |
+| `start-of-week`    | the StartOfWeek argument of `WeekNum` or `Weekday`                                                      |
+| `currency`         | a currency column used directly, not through `Decimal()`                                                |
+| `related-currency` | a related table's currency column                                                                       |
+| `base-currency`    | a base currency (`_base`) column                                                                        |
+| `date-behaviour`   | a user local date time compared with, or in `DateDiff` with, a time zone independent or date only value |
+| `literal-range`    | a number literal outside the decimal range, in a decimal formula column                                 |
+| `length`           | a formula longer than 1,000 characters                                                                  |
+
+Functions outside the documented list are evaluated, and a node the checker cannot type (`If`, `Switch`, an enum) is
+never refused.
+
 **Diagnostics.** `FORMULA_NOT_EVALUATED` fires when a formula column has no value: the evaluator has no `evaluateSync`
 or answers asynchronously, the column has no formula text, the evaluator throws, returns without `value`, or a pack
-function returns a promise. Once per table and column, until reset.
+function returns a promise. `FORMULA_UNSUPPORTED` and `FORMULA_OUT_OF_RANGE` are described above. Once per table and
+column, until reset.
 
 **Pack override.** Export `formulaColumns`, keys `'<table>.<column>'` (case-insensitive), values synchronous
 `(row, ctx) => value` functions where `ctx` is `{ table, column, user }` with `user` null (the column is computed as the
@@ -486,7 +610,7 @@ operation to undo a write, so the external change stays. The capability record l
 | update, or an upsert that updates | `update(id, patch, ctx)` | the returned row, merged (the primary key is kept); nothing returned keeps the patch        |
 | delete                            | `delete(id, ctx)`        | the local row is removed by the write itself                                                |
 
-**Reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or
+**Organization Web API reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or
 navigation read calls the provider's `retrieveMultiple({ select, filter, orderby, top }, ctx)`: `select`, `filter` and
 `orderby` are the caller's `$select`, `$filter` and `$orderby` text, `top` is `$top` as a number, each `null` when
 absent. A single record, property or `$value` read calls `retrieve(id, ctx)`; `null` means the row does not exist (404).
@@ -496,8 +620,36 @@ read path, so `$filter`, `$select`, `$orderby`, paging, `$expand`, column securi
 rows as to any rows. `api.virtualProviders.query(table, { select, filter, orderby, top })` calls `retrieveMultiple`
 directly and resolves with its rows, or `null` when the table is not virtual, declares the local fallback, or its
 provider has no `retrieveMultiple`; a virtual table with neither a provider nor the fallback rejects with 501
-`VirtualProviderMissing`. Portal reads outside the Web API read the mirror as the last Web API read or write
-left it.
+`VirtualProviderMissing`.
+
+**Portal reads.** Local Liquid, list queries and portal Web API reads load current provider rows for the root table,
+authored FetchXML links and explicit OData navigation or expand targets that the visitor has a table grant to read.
+The same snapshot supplies the provider-backed tables of applicable table permission paths: Parent ancestors, the
+intersect table of a many-to-many Parent relationship, and an identity relationship's table and intersect.
+Tables a read only joins, expands or checks permissions through are read whole (`retrieveMultiple` with `select`,
+`filter`, `orderby` and `top` all `null`), so their predicates see every row. A collection read of the virtual table
+itself (Liquid `{% fetchxml %}`, the portal Web API's `fetchXml` and OData collection reads) instead
+passes the portal's translated query, as a hosted site passes it to a data provider plug-in (hosted session F1,
+recorded as the `portal-dataverse-query/hosted-f1-virtual` replay cases): `retrieveMultiple({ select, filter, orderby,
+top, query }, ctx)` with the OData text as before and `query`, the QueryExpression (Mirage's SDK JSON shape: the
+authored columns followed by the primary key, one authored filter as the criteria and several as nested filters, the
+authored orders, no `topCount` and a `pageInfo` of page 1 with the authored `count`, `$top` or 5,000), or `null` when
+the read has no QueryExpression form here. `ctx.userId` and `ctx.initiatingUserId` are the site's application user
+(observed `portalApplicationUserId`, else the local one once it exists). The provider's rows then stand as it
+returned them: no local filter, order, `top`, paging or `$select` projection, a total record count of 0 (`$count`
+answers `@odata.count` 0) and no more records. Table permissions, links, the Web API column settings and column
+security still apply to those rows. With a scoped table permission the translated query also carries the permission's
+predicate, as the portal adds it to its queries of ordinary tables; the recording's virtual table had a Global
+permission, so that part is not captured, and Mirage removes rows outside the grant itself, so a provider that
+ignores the predicate never widens it. Where available, `retrieve` answers direct primary-key reads, with the same
+user, and its row is not projected by `$select` either.
+A portal Web API read also loads the current rows of every table that its `$filter` reaches through navigation paths
+(including the collection of an `any` or `all` lambda), that a `$filter` nested in `$expand` reaches, that an `$apply`
+filter, `groupby` property or aggregate reaches, and of the counted table of a `/$count` route, when the visitor may read each table on the path. Column and table refusals are
+made before any provider is read, and an `$orderby` through a navigation path answers 400 `UnsupportedQuery` without
+reading a provider. The provider rows live for that read and leave the stored mirror intact. A declared
+`fallback: 'local'` keeps reading local rows. A missing provider or operation, or a provider that fails, follows the
+same provider error classifications as the organization API.
 
 **SDK reads.** SDK `Retrieve`, `RetrieveMultiple` and FetchXML (a CLR plug-in's `IOrganizationService`, the flow
 Dataverse connector) are synchronous and never read the mirror. A virtual table without a provider (and without the

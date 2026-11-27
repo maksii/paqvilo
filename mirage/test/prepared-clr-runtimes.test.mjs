@@ -13,7 +13,8 @@ import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 
 const identity = '10000000-0000-0000-0000-000000000001';
 function temp(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-prepared-clr-'));
+  // The physical path: the fixture refuses cache roots reached through links, such as macOS's /var.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-prepared-clr-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   return root;
 }

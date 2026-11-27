@@ -1,4 +1,5 @@
 // Copy an explicitly requested, invented project and run the normal Mirage browser lifecycle.
+import { isEntryPoint } from '../entry-point.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -316,7 +317,7 @@ Close the browser or press Ctrl+C to stop.\n`);
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ runDemo().catch((error) => {
     console.error(`Mirage demo: ${error.message}`);
     process.exitCode = 1;

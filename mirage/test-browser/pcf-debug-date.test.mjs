@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's PCF debugger (inspect, updateParameters, the debugger dialog) and the host's failure containment; native field values are written to the field host's hidden input as JSON (lib/pcf-field-host.mjs)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -71,15 +72,16 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     ];
     const result = [];
     for (const [fieldId, kind, behavior] of declarations) {
+      // The field host cell: the control view and the hidden input that holds the value as JSON.
       const wrapper = document.createElement('div');
-      wrapper.setAttribute('data-pcf-native-field', fieldId);
+      wrapper.className = 'control';
+      wrapper.dataset.logicalName = fieldId;
+      wrapper.dataset.behavior = behavior;
       const field = document.createElement('input');
+      field.type = 'hidden';
       field.id = fieldId;
-      field.setAttribute('data-ui', 'datetimepicker');
-      field.dataset.type = kind;
-      field.dataset.behavior = behavior;
       const target = document.createElement('div');
-      wrapper.append(field, target);
+      wrapper.append(target, field);
       document.body.append(wrapper);
       await window.__paqviloPcf.mount(
         {
@@ -113,13 +115,17 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
   assert.deepEqual(
     mounted.map((item) => item.value),
     [
-      '2026-10-09T21:00:00.0000000Z',
-      '2026-10-10T09:00:00.1250000Z',
-      '2026-10-10T00:00:00.0000000',
-      '2026-10-10T12:00:00.1250000',
+      '"2026-10-09T21:00:00.125Z"',
+      '"2026-10-10T09:00:00.125Z"',
+      '"2026-10-09T21:00:00.125Z"',
+      '"2026-10-10T09:00:00.125Z"',
     ],
   );
   assert.equal(new Set(mounted.map((item) => item.id)).size, 4);
+  // The field host calls getOutputs about 100 ms after the last notify (summary-F section 2): wait for it.
+  await page.waitForFunction(() =>
+    window.__paqviloPcf.inspect().every((item) => item.lifecycle.some((event) => event.stage === 'getOutputs')),
+  );
   const before = await page.evaluate(() => window.__paqviloPcf.inspect());
   assert.equal(before.length, 4);
   assert.ok(
@@ -138,7 +144,8 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     .fill(JSON.stringify({ value: '2027-01-20T00:00:00+02:00', fault: null }));
   await dialog.getByRole('button', { name: 'Apply parameters' }).click();
   assert.equal(await dialog.getByRole('status').textContent(), 'Parameters applied.');
-  assert.equal(await page.locator('#date-independent').inputValue(), '2027-01-20T00:00:00.0000000');
+  // A date-only value is that calendar day at local midnight (Kyiv, UTC+2 in January).
+  assert.equal(await page.locator('#date-independent').inputValue(), '"2027-01-19T22:00:00.000Z"');
   assert.equal(await page.locator('#date-local').inputValue(), mounted[0].value);
   await dialog.getByLabel('Parameter values (JSON)').fill('{broken');
   await dialog.getByRole('button', { name: 'Apply parameters' }).click();
@@ -164,6 +171,8 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     window.__paqviloPcf.updateParameters(id, { fault: 'getOutputs' });
     document.getElementById(id).querySelector('button').click();
   }, mounted[1].id);
+  // The field host calls getOutputs in a later task.
+  await page.waitForFunction((id) => window.__paqviloPcf.inspect(id)[0]?.state === 'failed', mounted[1].id);
   const failed = await page.evaluate((id) => window.__paqviloPcf.inspect(id)[0], mounted[1].id);
   assert.equal(failed.state, 'failed');
   assert.equal(failed.error, 'Synthetic output failure');

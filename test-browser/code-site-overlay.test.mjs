@@ -1,5 +1,4 @@
 // @test-kind contract: the overlay applies a code site's per-folder web files and language page scripts to the online page, as for any other export.
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The overlay treats a .powerpages-site (short-key) export like any other: its per-folder web
 // files and its content-pages/<language>/ page sources apply to the online page, using
 // the synthetic code site (fixtures/code-site) in a temporary git repository.
@@ -11,12 +10,8 @@ import path from 'node:path';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
-import { listenOwnedServer } from './helpers/owned-server.mjs';
-import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
-import { OverlaySession } from '../lense/session.mjs';
-import { attachSession } from '../lense/browser.mjs';
-import { SITE } from '../test/fixture.mjs';
+import { createSimulator } from '../mirage/server.mjs';
+import { proxiedOverlay } from './helpers/proxied-overlay.mjs';
 
 const CLI_HANG_GUARD_MS = 170_000; // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const FIXTURE = fileURLToPath(new URL('./fixtures/code-site/.powerpages-site/', import.meta.url));
@@ -58,51 +53,60 @@ test("real browser: a code site's per-folder web file and language page script r
         );
     else response.writeHead(404).end('loopback fixture: missing');
   });
-  server.on('connect', (_request, socket) => {
-    socket.on('error', () => {});
-    socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+  const { origin, page, faults } = await proxiedOverlay(t, server, {
+    work,
+    session: { sourceDir: site, siteName: 'code-site-test' },
   });
-  let context, detach;
-  ownedFixture(t).add(async () => {
-    await detach?.();
-  });
-  ownedFixture(t).add(async () => {
-    await context?.close();
-  });
-  const origin = await listenOwnedServer(t, server);
-  ownedFixture(t).remove(async () => {
-    fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
-  });
-  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  context = await chromium.launchPersistentContext(path.join(work, 'profile'), {
-    channel: channel === 'chromium' ? undefined : channel,
-    headless: true,
-    serviceWorkers: 'block',
-    proxy: { server: origin, bypass: '127.0.0.1,localhost' },
-    args: [
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--disable-sync',
-      '--disable-domain-reliability',
-      '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-    ],
-  });
-  const session = new OverlaySession({
-    sourceDir: site,
-    origin,
-    site: structuredClone(SITE),
-    siteName: 'code-site-test',
-    envName: 'isolated',
-    stateDir: path.join(work, 'state'),
-    browser: { bypassCSP: false },
-  });
-  const faults = [];
-  session.on('fault', (error) => faults.push(error.message));
-  detach = await attachSession(context, session);
-  const page = context.pages()[0];
   await page.goto(origin, { waitUntil: 'load' });
   assert.equal(await page.evaluate(() => window.syntheticApp), 'from the web file');
   assert.equal(await page.evaluate(() => window.syntheticHome), 'local edit');
   assert.ok(!requests.includes('/app.js'), 'the local web file never reached the online server');
+  assert.deepEqual(faults, []);
+});
+
+test('a configured build runs on a client route; Lense answers the build file first and the other exported web files', async (t) => {
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-compiled-overlay-')));
+  const site = path.join(work, '.powerpages-site');
+  fs.cpSync(FIXTURE, site, { recursive: true });
+  fs.mkdirSync(path.join(work, 'dist'));
+  fs.writeFileSync(
+    path.join(work, 'powerpages.config.json'),
+    JSON.stringify({ siteName: 'Invented code site', compiledPath: 'dist', defaultLandingPage: 'index.html' }),
+  );
+  fs.writeFileSync(
+    path.join(work, 'dist', 'index.html'),
+    '<!doctype html><html><head><title>Compiled app</title><script src="/app.js"></script></head><body><main>Compiled app</main></body></html>',
+  );
+  fs.writeFileSync(path.join(work, 'dist', 'app.js'), 'window.syntheticApp = "from the build";');
+  const app = await createSimulator({ sourceDir: work, watch: false, requirePortalSource: true });
+  t.after(() => app.close());
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    try {
+      requests.push(request.url);
+      const upstream = await fetch(app.url + request.url, { redirect: 'manual' });
+      response.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+      response.end(Buffer.from(await upstream.arrayBuffer()));
+    } catch {
+      response.writeHead(502).end('loopback build fixture failed');
+    }
+  });
+  const { origin, page, faults } = await proxiedOverlay(t, server, {
+    work,
+    session: { sourceDir: site, siteName: 'code-site-test' },
+  });
+  await page.goto(app.url + '/reports/calendar/', { waitUntil: 'load' });
+  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the build');
+  assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
+  const fallback = await page.goto(origin + '/reports/calendar/', { waitUntil: 'load' });
+  assert.equal(fallback.status(), 200);
+  // The build is what pac pages upload-code-site deploys: its app.js answers ahead of the exported web file of that
+  // address (as in Mirage), and a web file the build does not hold is still answered from the export.
+  assert.equal(await page.evaluate(() => window.syntheticApp), 'from the build');
+  const theme = await page.evaluate(() => fetch('/theme.css').then((response) => response.text()));
+  assert.equal(theme, 'body { margin: 0; }\n');
+  assert.equal(await page.evaluate(() => window.Microsoft.Dynamic365.Portal.isSpaSite), 'True');
+  assert.ok(!requests.includes('/app.js'), 'the local build file never reached the upstream build');
+  assert.ok(!requests.includes('/theme.css'), 'the local web file never reached the upstream build');
   assert.deepEqual(faults, []);
 });

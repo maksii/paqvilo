@@ -578,11 +578,18 @@ test('enhanced deployment diagnostics distinguish previewable source fields from
   editField(NEWS_EN, 'customjavascript', (text) => text + '\nconsole.log("preview");');
   let model = new PortalModel(dir);
   assert.deepEqual(model.deploymentChanges(baseline, baseline.changedFiles()), []);
-  editField(NEWS_EN, 'title', () => 'Server-rendered title');
+  // The page title is previewed in the document's <title> (test/page-title-preview.test.mjs); the page's server
+  // settings still need deployment.
+  editField(NEWS_EN, 'title', () => 'Locally previewed title');
+  model = new PortalModel(dir);
+  assert.deepEqual(model.deploymentChanges(baseline, baseline.changedFiles()), []);
+  const title = model.inlineSources.find((source) => source.file === xmlOf(NEWS_EN) && source.field === 'title');
+  assert.deepEqual([title.encoding, title.pageUrl], ['html-text', '/Newsfeed']);
+  editField(NEWS_EN, 'hiddenfromsitemap', () => true);
   model = new PortalModel(dir);
   const changes = model.deploymentChanges(baseline, baseline.changedFiles());
   assert.equal(changes.length, 1);
-  assert.match(changes[0].reason, /title.*require deployment/);
+  assert.match(changes[0].reason, /hiddenfromsitemap.*require deployment/);
   editField('x1', 'value', () => 'false');
   assert.ok(
     model

@@ -14,7 +14,10 @@ const VOLATILE = '<volatile>';
 // Shown in place of a known-gap pointer's value in a replay failure diff only; never stored.
 const KNOWN_GAP = '<known gap>';
 
-const TOP_LEVEL_KEYS = new Set(['schema', 'surface', 'suite', 'oracle', 'captures', 'cases', 'history']);
+const TOP_LEVEL_KEYS = new Set(['schema', 'surface', 'suite', 'oracle', 'captures', 'cases', 'history', 'redaction']);
+// Stored in place of every redacted term (a hosted site's host or name) of a capture; the terms are never kept.
+const REDACTED = '<redacted>';
+const REDACTION_KEYS = new Set(['placeholder', 'terms', 'occurrences']);
 const CAPTURE_KEYS = new Set(['id', 'sha256', 'capturedAt']);
 const NAME_PATTERN = /^[a-z0-9-]+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -211,6 +214,21 @@ function caseProblems(cases) {
   return problems;
 }
 
+function redactionProblems(value) {
+  if (!Object.hasOwn(value, 'redaction')) return [];
+  const redaction = value.redaction;
+  if (!isObject(redaction)) return ['redaction must be an object'];
+  const problems = Object.keys(redaction)
+    .filter((key) => !REDACTION_KEYS.has(key))
+    .map((key) => `redaction has unknown key "${key}"`);
+  if (redaction.placeholder !== REDACTED) problems.push(`redaction.placeholder must be "${REDACTED}"`);
+  for (const field of ['terms', 'occurrences'])
+    if (!Number.isSafeInteger(redaction[field]) || redaction[field] < 0)
+      problems.push(`redaction.${field} must be a non-negative integer`);
+  if (Number.isSafeInteger(redaction.terms) && redaction.terms < 1) problems.push('redaction.terms must be at least 1');
+  return problems;
+}
+
 function historyProblems(history) {
   if (!Array.isArray(history)) return ['history must be an array'];
   return history.flatMap((entry, index) => {
@@ -243,6 +261,7 @@ export function validateParityCases(value, { surface, suite } = {}) {
     ...captureProblems(value.captures),
     ...caseProblems(value.cases),
     ...historyProblems(value.history),
+    ...redactionProblems(value),
   ];
 }
 
@@ -313,6 +332,58 @@ function collectVolatile(base, other, pointer, out) {
   } else if (!sameLeaf(base, other)) {
     out.add(pointer);
   }
+}
+
+// ---------------------------------------------------------------- redaction
+
+// The terms of a redaction, validated, longest first (a term inside a longer one never splits it), then by code unit.
+function redactionTerms(redact) {
+  if (redact === undefined) return [];
+  if (!Array.isArray(redact) || redact.length === 0) throw new Error('redact must be a non-empty array of terms');
+  for (const term of redact) {
+    if (typeof term !== 'string' || term.trim().length < 3)
+      throw new Error('every redaction term must be a string of at least three characters');
+    if (term.toLowerCase().includes(REDACTED.toLowerCase()) || REDACTED.toLowerCase().includes(term.toLowerCase()))
+      throw new Error(`a redaction term must not overlap the placeholder ${REDACTED}`);
+  }
+  return [...new Set(redact.map((term) => term.trim()))].sort(
+    (left, right) => right.length - left.length || compareCodeUnits(left, right),
+  );
+}
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, (character) => `\\${character}`);
+
+// Copies of the captures' results with every case-insensitive occurrence of a term, in any string or object key of an
+// input or output, replaced by REDACTED, and the count of replacements. Deterministic: the same captures and terms give
+// the same results.
+function redactCaptures(captures, terms) {
+  if (!terms.length) return { captures, occurrences: 0 };
+  const pattern = new RegExp(terms.map(escapeRegExp).join('|'), 'gi');
+  let occurrences = 0;
+  const text = (value) =>
+    value.replace(pattern, () => {
+      occurrences += 1;
+      return REDACTED;
+    });
+  const walk = (value) => {
+    if (typeof value === 'string') return text(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [text(key), walk(item)]));
+    return value;
+  };
+  const redacted = captures.map((capture) => ({
+    ...capture,
+    ...(isObject(capture.capture) && typeof capture.capture.id === 'string'
+      ? { capture: { ...capture.capture, id: text(capture.capture.id) } }
+      : {}),
+    results: capture.results.map((result) => ({
+      ...result,
+      id: text(result.id),
+      input: walk(result.input),
+      output: walk(result.output),
+    })),
+  }));
+  return { captures: redacted, occurrences };
 }
 
 function assertSameCorpus(base, other) {
@@ -446,12 +517,14 @@ function changeNames(changed, oracleChanged) {
 }
 
 // Merges freshly built cases into an existing file; a change needs `revise` and records one history entry.
-function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, revise }) {
+function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, revise, redaction }) {
   const problems = validateParityCases(existing, { surface, suite });
   if (problems.length > 0) throw new Error(`existing case file is not valid: ${problems.join('; ')}`);
   const { cases, changed } = mergeCases(existing.cases, built, revise?.dropVolatile);
   const oracleChanged = diffParityOutput(oracle, existing.oracle).length > 0;
   const changes = changeNames(changed, oracleChanged);
+  if (existing.redaction && !redaction)
+    throw new Error('the existing case file was built with a redaction; build it again with the same redaction terms');
   if (changes.length > 0 && !revise) {
     const error = new Error(`${changes.join(', ')} would change; pass revise { date, change, evidence } to record it`);
     // Callers with their own option names (the CLI) reword the remedy from these fields.
@@ -467,6 +540,7 @@ function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, 
     captures: mergeCaptures(existing.captures, captures),
     cases,
     history: revisedHistory(existing, changes, revise),
+    ...(redaction ? { redaction } : {}),
   };
 }
 
@@ -484,22 +558,27 @@ function mergeIntoExisting(existing, { surface, suite, oracle, captures, built, 
  * @param {object} [options.existing] previously built case file for the same surface and suite
  * @param {{ date: string, change: string, evidence: string, dropVolatile?: string[] }} [options.revise] needed to
  *   change existing cases
+ * @param {string[]} [options.redact] terms (a hosted site's host or name) replaced by "<redacted>" in every input and
+ *   output string and key before the cases are built; the file records the placeholder and the counts, never the terms
  * @returns {object} the case file; it has passed validateParityCases
  * @throws {Error} when captures disagree, a root pointer differs, or an existing case would change unrevised
  */
 export function buildParityCases(
-  { surface, suite, oracle, captures, existing, revise } = requiredArgument(
+  { surface, suite, oracle, captures: raw, existing, revise, redact } = requiredArgument(
     'buildParityCases({ captures })',
     'an options object with at least two captures',
   ),
 ) {
-  if (!Array.isArray(captures) || captures.length < 2) throw new Error('at least two captures are required');
-  if (captures.some((capture) => !Array.isArray(capture?.results))) throw new Error('every capture needs results');
+  if (!Array.isArray(raw) || raw.length < 2) throw new Error('at least two captures are required');
+  if (raw.some((capture) => !Array.isArray(capture?.results))) throw new Error('every capture needs results');
+  const terms = redactionTerms(redact);
+  const { captures, occurrences } = redactCaptures(raw, terms);
+  const redaction = terms.length ? { placeholder: REDACTED, terms: terms.length, occurrences } : null;
   const [first, ...later] = captures;
   for (const capture of later) assertSameCorpus(first, capture);
   const built = first.results.map((result, index) => buildCase(result, index, captures));
   const file = existing
-    ? mergeIntoExisting(existing, { surface, suite, oracle, captures, built, revise })
+    ? mergeIntoExisting(existing, { surface, suite, oracle, captures, built, revise, redaction })
     : {
         schema: PARITY_CASES_SCHEMA,
         surface,
@@ -508,6 +587,7 @@ export function buildParityCases(
         captures: captures.map(captureRecord),
         cases: built,
         history: [],
+        ...(redaction ? { redaction } : {}),
       };
   const problems = validateParityCases(file, { surface, suite });
   if (problems.length > 0) throw new Error(`built case file is not valid: ${problems.join('; ')}`);

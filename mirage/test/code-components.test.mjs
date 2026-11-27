@@ -136,7 +136,7 @@ test('PCF rejects invalid declared paths and reports platform and dataset depend
   catalog = await importCodeComponents([{ dir }]);
   assert.deepEqual(catalog.controls.get('tst_Synthetic.Editor').datasets, [{ name: 'rows' }]);
   assert.match(
-    renderCodeComponent({ name: id, portal, catalog }),
+    renderCodeComponent({ name: id, portal, catalog, liquidDatasetBinding: 'view' }),
     /requires a dataset binding to an exported table and view/,
   );
   await fs.writeFile(
@@ -190,12 +190,21 @@ test('PCF datasets bind only to selected exported views and exact table mappings
     catalog,
     metadata,
     mappings,
+    liquidDatasetBinding: 'view',
   });
   assert.match(html, /__paqviloPcf.mount/);
   assert.match(html, /"viewId":"d0000000-0000-4000-8000-000000000002"/);
   assert.match(html, /"displayName":"Title"/);
   assert.match(
-    renderCodeComponent({ name: id, args: { rows: 'missing' }, portal, catalog, metadata, mappings }),
+    renderCodeComponent({
+      name: id,
+      args: { rows: 'missing' },
+      portal,
+      catalog,
+      metadata,
+      mappings,
+      liquidDatasetBinding: 'view',
+    }),
     /no exported table definition/,
   );
   assert.match(
@@ -206,6 +215,7 @@ test('PCF datasets bind only to selected exported views and exact table mappings
       catalog,
       metadata: { ...metadata, views: [...metadata.views, { ...metadata.views[0], id: 'other' }] },
       mappings,
+      liquidDatasetBinding: 'view',
     }),
     /multiple exported views/,
   );
@@ -225,11 +235,56 @@ test('PCF native form mounts require declared bound properties and retain select
   assert.match(html, /__paqviloPcf.mount/);
   assert.match(html, /"lcid":1036/);
   assert.match(html, /"nativeBinding"/);
-  for (const properties of [[], ['unknown'], ['caption'], ['value', 'caption']])
+  for (const properties of [[], ['unknown']])
     assert.match(
       renderCodeComponent({ ...context, nativeBinding: { id: 'fullname', control: 'text', properties } }),
-      /no valid single-field native binding/,
+      /no valid native binding to its declared bound or input properties/,
     );
+  // A FormXml binding of an input property mounts on the Power Pages field host (lib/pcf-field-host.mjs).
+  for (const properties of [['caption'], ['value', 'caption']])
+    assert.match(
+      renderCodeComponent({ ...context, nativeBinding: { id: 'fullname', control: 'text', properties } }),
+      /__paqviloPcf.mount/,
+    );
+});
+
+test('PCF saved control state is keyed by the configuration and native field, not by the bound value', async (t) => {
+  const { dir, control } = await fixture(t);
+  await fs.writeFile(
+    path.join(control, 'ControlManifest.xml'),
+    '<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><property name="caption" of-type="SingleLine.Text" usage="input"/><resources><code path="bundle.js"/></resources></control></manifest>',
+  );
+  const catalog = await importCodeComponents([{ dir }]);
+  const mounted = (args, nativeBinding, stateScope) => {
+    const html = renderCodeComponent({
+      name: 'tst_Synthetic.Editor',
+      portal: {},
+      catalog,
+      args,
+      nativeBinding,
+      stateScope,
+    });
+    const spec = JSON.parse(/__paqviloPcf\.mount\((\{.*\}), document\.currentScript/.exec(html)[1]);
+    return { id: spec.id, stateId: spec.stateId };
+  };
+  const first = mounted({ value: 'One', caption: 'Shared' }),
+    second = mounted({ Value: 'Two', caption: 'Shared' });
+  assert.notEqual(first.id, second.id);
+  assert.match(first.stateId, /^pcf-state-[0-9a-f]{16}$/);
+  assert.equal(first.stateId, second.stateId);
+  assert.notEqual(mounted({ value: 'One', caption: 'Other' }).stateId, first.stateId);
+  const field = { id: 'fullname', control: 'text', properties: ['value'] };
+  assert.equal(mounted({ value: 'A' }, field).stateId, mounted({ value: 'B' }, field).stateId);
+  assert.notEqual(mounted({ value: 'A' }, field).stateId, mounted({ value: 'A' }, { ...field, id: 'other' }).stateId);
+  // Two forms with the same field id keep separate state.
+  assert.notEqual(
+    mounted({ value: 'A' }, field, { form: 'form-a', step: null }).stateId,
+    mounted({ value: 'A' }, field, { form: 'form-b', step: null }).stateId,
+  );
+  assert.equal(
+    mounted({ value: 'A' }, field, { form: 'form-a', step: null }).stateId,
+    mounted({ value: 'B' }, field, { form: 'form-a', step: null }).stateId,
+  );
 });
 
 test('PCF feature declarations preserve source attributes and order and distinguish portal eligibility from local APIs', async (t) => {

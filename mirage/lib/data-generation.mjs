@@ -13,6 +13,7 @@ import { resolvePreset } from './presets.mjs';
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from './schema-validation.mjs';
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
+import { grantContactRoles } from './site-tables.mjs';
 import { assertDatasetAlternateKeys } from './alternate-key-values.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { cloneStateData } from './state-clone.mjs';
@@ -193,17 +194,16 @@ function materializeDatasetMemberships(result, fragment, basePreset, portal) {
   // a base preset never implicitly create memberships during additive merge.
   const assignments = membershipsForRoles(portal, descriptors);
   if (!assignments.length) return 0;
-  result.simulator ??= {};
-  const memberships = (result.simulator.contactRoles ??= []);
+  const memberships = result.simulator?.contactRoles ?? [];
   const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
   let addedMemberships = 0;
   for (const assignment of assignments) {
     const key = `${assignment.contactId}:${assignment.roleId}`;
     if (seen.has(key)) continue;
-    memberships.push(assignment);
     seen.add(key);
     addedMemberships++;
   }
+  grantContactRoles(portal, result, assignments);
   return addedMemberships;
 }
 

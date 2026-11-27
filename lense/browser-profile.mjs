@@ -22,7 +22,14 @@ export function browserProfileInfo(cfg, overrideDir) {
       userDataDir: path.resolve(overrideDir),
       profileDirectory: 'Default',
     };
-  if (b.cdpUrl) return { kind: 'attached', name: null, channel: null, userDataDir: null, profileDirectory: null };
+  if (b.cdpUrl)
+    return {
+      kind: 'attached',
+      name: b.profileDirectory ?? null,
+      channel: null,
+      userDataDir: null,
+      profileDirectory: b.profileDirectory ?? null,
+    };
   if (b.userDataDir)
     return {
       kind: 'external',
@@ -106,7 +113,7 @@ export function validateBrowserProfile(profile) {
   const root = profile.userDataDir;
   if (profile.channel === 'msedge' && defaultEdgeDataDirs().some((dir) => canonical(dir) === canonical(root))) {
     throw new Error(
-      'Edge cannot be automated through launch flags in its normal user-data directory. Use --profile work for a dedicated persistent profile, or enable remote debugging in a running Edge instance and use --cdp-url with its active endpoint. No profile data has been copied.',
+      `Edge cannot be automated through launch flags in its normal user-data directory. Use --profile work for a dedicated persistent profile, or attach to the running Edge: tick "Allow remote debugging for this browser instance" at edge://inspect/#remote-debugging, then use --cdp-url msedge --profile-directory "${profile.profileDirectory}" and allow the connection in Edge. No profile data has been copied.`,
     );
   }
   if (

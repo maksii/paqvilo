@@ -89,7 +89,8 @@ export async function editRichText(
   await settleHostModal(page);
   const documentBefore = await page.evaluate(() => performance.timeOrigin).catch(() => null);
   await body.click();
-  await body.press('Control+A');
+  // Select the existing text to replace it: Command+A on macOS, where Control+A only moves to the line start.
+  await body.press('ControlOrMeta+A');
   await body.pressSequentially(text);
   // Native PCF batches editor changes. Blur commits its model before authored
   // Save handlers read the hidden JSON-valued control.

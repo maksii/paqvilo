@@ -47,8 +47,8 @@ The generated [Dataverse](../mirage/docs/baseline/dataverse-inventory.md) and
   name. The suite checks output paths before starting a runtime or live bridge and rejects linked descendants and
   hardlinked artifact files. An explicitly selected linked output root remains supported.
 
-It does not guarantee pixel equality, because screenshots are evidence, not compared. It does not cover pages outside
-the fixture, or configuration the PAC export cannot express.
+Screenshots are kept as evidence by default. Set `compareScreenshot: true` on a scenario to compare both captures'
+dimensions and pixels exactly. Baseline coverage is limited to the fixture and the configuration its export can express.
 
 ## Run it against your own portal
 

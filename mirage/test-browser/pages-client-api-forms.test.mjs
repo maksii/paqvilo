@@ -253,7 +253,10 @@ test('$pages forms bind to the rendered basic form: tabs, sections, values, visi
     const blob = await $pages.webAPI.downloadFileFromColumn('x_items', id, 'x_doc');
     return [await blob.text(), blob.type];
   }, ROW);
-  assert.deepEqual(file, ['file body', 'text/plain']);
+  // The portal file read (GET /_api/<set>(id)/<column>/$value, ranged and size=full) answers application/octet-stream
+  // without a mimetype header (hosted session F1 files runs a and b, file-get:range-0-15 and file-get:size-full), so the
+  // downloaded blob carries that type.
+  assert.deepEqual(file, ['file body', 'application/octet-stream']);
   assert.deepEqual(errors, []);
 });
 
@@ -303,6 +306,14 @@ async function renderedContactForm() {
             adx_type: 100000000,
             adx_controlstyle: 756150001,
           },
+          // The rich text editor renders with code component metadata only (formRichTextField).
+          {
+            kind: 'basicformmetadata',
+            adx_entityform: 'contact',
+            adx_attributelogicalname: 'x_body',
+            adx_type: 100000000,
+            adx_controlstyle: 756150001,
+          },
         ],
       },
       schemas: {
@@ -324,7 +335,9 @@ async function renderedContactForm() {
       store: { resolveMapping: () => ({ entitySet: 'contacts', idColumn: 'contactid' }), query: () => ({ value: [] }) },
       codeComponent: async (spec) => {
         specs.push(spec);
-        return '<div data-invented-pcf-host></div>';
+        // As renderCodeComponent: the mounted binding, then the host script and the mount element.
+        spec.onNativeBinding?.({ properties: ['value'] }, {});
+        return '<script src="/__sim-static/pcf-host.js"></script><div data-invented-pcf-host></div>';
       },
     },
   );
@@ -332,6 +345,7 @@ async function renderedContactForm() {
   return { html, spec: specs[0] };
 }
 
+// @test-kind observation: the code component field is the live generic control (getValue and setValue throw "Method not implemented.", visible, not disabled, setDisabled changes nothing the component sees), paqvilo-developer pcf-parity capture f1|f2 pages-api and pages-api2; the full name and rich text assertions keep the local model of this file
 test('$pages full name, rich text and code component controls read and write their values over platform.mjs output', async (t) => {
   const { html, spec } = await renderedContactForm();
   const { clientPortalObjectRuntime } = await import('../lib/portal-client-object.mjs');
@@ -352,42 +366,47 @@ test('$pages full name, rich text and code component controls read and write the
     content: await fs.readFile(new URL('../lib/code-components-client.js', import.meta.url), 'utf8'),
   });
   // A real code component: it shows its bound value and records every updateView the host makes.
-  await page.evaluate(async (spec) => {
-    window.observed = [];
-    window.ComponentFramework.registerControl(
-      'Invented.Echo',
-      class {
-        init(context, notify, state, container) {
-          this.box = document.createElement('output');
-          this.box.id = 'echo';
-          container.append(this.box);
-          this.box.textContent = context.parameters.value.raw ?? '';
-        }
-        updateView(context) {
-          this.box.textContent = context.parameters.value.raw ?? '';
-          window.observed.push(context.parameters.value.raw ?? null);
-        }
-        getOutputs() {
-          return {};
-        }
-        destroy() {}
-      },
-    );
-    await window.__paqviloPcf.mount(
-      {
-        id: 'x_code',
-        constructor: 'Invented.Echo',
-        resources: [],
-        properties: [{ name: 'value', 'of-type': 'SingleLine.Text', usage: 'bound' }],
-        strings: {},
-        args: spec.args,
-        identity: { roles: [] },
-        mappings: {},
-        nativeBinding: spec.nativeBinding,
-      },
-      document.querySelector('[data-invented-pcf-host]'),
-    );
-  }, spec);
+  await page.evaluate(
+    async (spec) => {
+      window.observed = [];
+      window.ComponentFramework.registerControl(
+        'Invented.Echo',
+        class {
+          init(context, notify, state, container) {
+            this.box = document.createElement('output');
+            this.box.id = 'echo';
+            // An opaque PCF marker inside a component is not the typed input for the form binding.
+            this.box.setAttribute('pcf-controlcontext', '{}');
+            container.append(this.box);
+            this.box.textContent = context.parameters.value.raw ?? '';
+          }
+          updateView(context) {
+            this.box.textContent = context.parameters.value.raw ?? '';
+            window.observed.push(context.parameters.value.raw ?? null);
+          }
+          getOutputs() {
+            return {};
+          }
+          destroy() {}
+        },
+      );
+      await window.__paqviloPcf.mount(
+        {
+          id: 'x_code',
+          constructor: 'Invented.Echo',
+          resources: [],
+          properties: [{ name: 'value', 'of-type': 'SingleLine.Text', usage: 'bound' }],
+          strings: {},
+          args: spec.args,
+          identity: { roles: [] },
+          mappings: {},
+          nativeBinding: spec.nativeBinding,
+        },
+        document.querySelector('[data-invented-pcf-host]'),
+      );
+    },
+    { args: spec.args, nativeBinding: spec.nativeBinding },
+  );
   await page.addScriptTag({ content: clientPortalObjectRuntime({}, { websiteId: SITE, language: 'en-US' }) });
   await page.addScriptTag({
     content: await fs.readFile(new URL('../lib/pages-client-api.js', import.meta.url), 'utf8'),
@@ -420,8 +439,17 @@ test('$pages full name, rich text and code component controls read and write the
     const fromEditor = body.getValue();
     body.setValue('<p>Into editor</p>');
     const code = form.getControlByLogicalName('x_code');
-    const codeBefore = code.getValue();
-    code.setValue('After');
+    const threw = (call) => {
+      try {
+        call();
+        return null;
+      } catch (error) {
+        return error.message;
+      }
+    };
+    const codeGet = threw(() => code.getValue());
+    const codeSet = threw(() => code.setValue('After'));
+    const codeDisable = code.setDisabled(true);
     let wrongType = null;
     try {
       full.setValue('Grace Hopper');
@@ -440,9 +468,8 @@ test('$pages full name, rich text and code component controls read and write the
       editorData,
       bodyValue: body.getValue(),
       bodyType: body.getType(),
-      codeBefore,
-      codeAfter: code.getValue(),
-      codeType: code.getType(),
+      code: [codeGet, codeSet, code.getType(), code.getVisible(), codeDisable, code.getDisabled()],
+      codeHidden: document.getElementById('x_code').value,
       changes,
       wrongType,
     };
@@ -459,12 +486,21 @@ test('$pages full name, rich text and code component controls read and write the
     ['<p>Changed</p>', '<p>From editor</p>', '<p>Into editor</p>', '<p>Into editor</p>'],
   );
   assert.equal(result.bodyType, undefined);
-  assert.deepEqual([result.codeBefore, result.codeAfter, result.codeType], ['', 'After', 'String']);
+  assert.deepEqual(result.code, [
+    'Method not implemented.',
+    'Method not implemented.',
+    undefined,
+    true,
+    undefined,
+    false,
+  ]);
+  assert.equal(result.codeHidden, '');
   // Each written box raises change, so the native form posts the parts and the mounted code component sees the value.
-  for (const id of ['firstname', 'middlename', 'lastname', 'fullname', 'x_body', 'x_code'])
+  for (const id of ['firstname', 'middlename', 'lastname', 'fullname', 'x_body'])
     assert.ok(result.changes.includes(id), id);
-  await page.waitForFunction(() => document.getElementById('echo')?.textContent === 'After');
-  assert.equal(await page.evaluate(() => window.observed.at(-1)), 'After');
+  // setValue and setDisabled reached the component with no updateView after its mount.
+  assert.deepEqual(await page.evaluate(() => window.observed), ['']);
+  assert.equal(await page.evaluate(() => window.__paqviloPcf.inspect()[0].parameters.value.raw), '');
   assert.match(result.wrongType, /needs an object/);
   assert.deepEqual(errors, []);
 });

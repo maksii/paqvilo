@@ -1,4 +1,6 @@
+// @test-kind contract: the simulator defines its DataStore queue and portal paging-cursor contracts.
 import test from 'node:test';
+import { createHmac } from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -19,6 +21,7 @@ test('queued state replacement compares freshness inside transaction and preserv
   assert.equal(store.snapshot().settings.changed, true);
 });
 
+// @test-kind security+contract: portal cursors bind the request and state and use a key separate from the browser's request token.
 test('portal API applies 5000/default and Prefer paging, follows signed cursors, rejects changed persona/data/query and skip', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'odata-pages-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
@@ -58,14 +61,25 @@ test('portal API applies 5000/default and Prefer paging, follows signed cursors,
   assert.equal(first.status, 200);
   assert.equal(first.body.value.length, 5000);
   assert.equal(first.body['@odata.count'], 5000);
-  const second = await read(first.body['@odata.nextLink']);
+  const continuation = new URL(first.body['@odata.nextLink']);
+  const [payload, signature] = continuation.searchParams.get('$skiptoken').split('.');
+  const browserTokenDigest = createHmac('sha256', app.portalToken).update(payload).digest('base64url');
+  assert.ok(signature !== browserTokenDigest, 'the browser request token must not be the continuation signing key');
+  const second = await read(continuation);
   assert.equal(second.body.value.length, 1000);
   assert.equal(second.body['@odata.nextLink'], undefined);
   assert.equal(new Set([...first.body.value, ...second.body.value].map((row) => row.itemid)).size, 6000);
   const top = await read('/_api/items?$select=itemid&$top=1', 'odata.maxpagesize=2');
   assert.equal(top.body.value.length, 1);
   assert.equal(top.body['@odata.nextLink'], undefined);
-  const small = await read('/_api/items?$select=itemid', 'odata.maxpagesize=2');
+  // A Contact-scope read is paged by odata.maxpagesize without $top too (hosted session F1 summary-F1 API-02c, two runs);
+  // only a Global-scope read without $top ignores it (webapi-hosted-f1-observation.test.mjs).
+  const scoped = await read("/_api/items?$select=itemid&$filter=itemid lt '00009'", 'odata.maxpagesize=2');
+  assert.equal(scoped.status, 200);
+  assert.equal(scoped.body.value.length, 2);
+  assert.ok(scoped.body['@odata.nextLink']);
+  // $top larger than the row count keeps later pages, whose signed cursor the refusals below follow.
+  const small = await read('/_api/items?$select=itemid&$top=6000', 'odata.maxpagesize=2');
   assert.equal(small.body.value.length, 2);
   assert.equal(small.preference, null); // sandbox sends no Preference-Applied header
   assert.equal((await read(small.body['@odata.nextLink'])).body.value.length, 2);

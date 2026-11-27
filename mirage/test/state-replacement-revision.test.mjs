@@ -70,7 +70,7 @@ test('guards accept current snapshots, keep provenance out of JSON and permit ex
   assert.equal(store.state.tables.fixture[0].name, 'Explicit import');
 });
 
-test('runtime configuration rejects stale publication while retaining an SDK commit and prior compiler state', async (t) => {
+test('runtime configuration commits beside an SDK commit made while it prepares, keeping the commit', async (t) => {
   const { sim } = await modelDrivenFixture(t, { dataverse: { enabled: true } });
   // This fixture supplies raw initial data, so provide the admin configuration
   // fields normally installed by the CLI bootstrap before exercising its API.
@@ -80,13 +80,18 @@ test('runtime configuration rejects stale publication while retaining an SDK com
     identity: { roles: [] },
     endpoints: [],
   });
-  const replace = sim.store.replaceState.bind(sim.store),
-    before = sim.store.state.settings.permissionMode;
-  let inject = true;
-  sim.store.replaceState = async (state, options) => {
-    if (inject) {
+  const snapshot = sim.store.snapshot.bind(sim.store),
+    before = sim.store.state.settings.permissionMode,
+    after = before === 'permissive' ? 'enforce' : 'permissive';
+  // The asynchronous job's commit is queued once the change has taken its snapshot and before it commits: the window
+  // in which a whole-state replacement found the revision moved.
+  let inject = true,
+    committed;
+  sim.store.snapshot = (...args) => {
+    const value = snapshot(...args);
+    if (inject && args[1]?.forkTables) {
       inject = false;
-      await sim.store.transact(() =>
+      committed = sim.store.transact(() =>
         sim.store.sdkMutation(() =>
           sim.store.updateRecord(
             'x_item',
@@ -97,26 +102,24 @@ test('runtime configuration rejects stale publication while retaining an SDK com
         ),
       );
     }
-    return replace(state, options);
+    return value;
   };
   t.after(() => {
-    sim.store.replaceState = replace;
+    sim.store.snapshot = snapshot;
   });
   const response = await fetch(`${sim.url}/_sim/api/config`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
-    body: JSON.stringify({
-      mode: 'local',
-      pageMode: 'local',
-      permissionMode: before === 'permissive' ? 'enforce' : 'permissive',
-    }),
+    body: JSON.stringify({ mode: 'local', pageMode: 'local', permissionMode: after }),
   });
-  assert.equal(response.status, 409, await response.clone().text());
+  await committed;
+  assert.equal(inject, false, 'the job committed while the change prepared');
+  assert.equal(response.status, 200, await response.clone().text());
   assert.equal(
     sim.store.state.tables.x_item.find((row) => row.x_itemid === 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa').x_name,
     'Committed SDK write',
   );
-  assert.equal(sim.store.state.settings.permissionMode, before);
+  assert.equal(sim.store.state.settings.permissionMode, after);
   const read = await fetch(`${sim.url}/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`).then((response) =>
     response.json(),
   );

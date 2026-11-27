@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { closeClrHostPool, executeClrPlugin, prepareClrRuntime, releaseClrRuntime } from '../lib/plugin-clr.mjs';
-import { CLR_SKIP, clrSdk, compileClr, strongNameKey } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, strongNameKey, toolchainPaths } from './fixtures/clr-sdk.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001';
 
@@ -38,9 +38,12 @@ Console.ReadLine();Console.WriteLine("{\"kind\":\"result\"}");}}`,
       assembly,
       executable,
       files: await Promise.all(
-        [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+        [assembly, ...toolchainPaths(executable), executable].map(async (file) => ({
+          path: file,
+          sha256: hash(await fs.readFile(file)),
+        })),
       ),
-      allowedFiles: ['Original.dll', 'Protocol.exe'],
+      allowedFiles: ['Original.dll', ...toolchainPaths(executable).map((file) => path.basename(file)), 'Protocol.exe'],
       descriptor: { typeName: 'Invented.Original' },
       provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
     };

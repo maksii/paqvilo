@@ -41,16 +41,19 @@ export async function createPersonaBrowserContext(
   const { opened, description } = await launch(options, 'createPersonaBrowserContext(browser, options)');
   const context = await browser.newContext({ ...opened.browser, ...options.browserOptions });
   try {
-    const separator = opened.cookieHeader.indexOf('=');
-    await context.addCookies([
-      {
-        name: opened.cookieHeader.slice(0, separator),
-        value: opened.cookieHeader.slice(separator + 1),
-        url: opened.origin,
-        httpOnly: true,
-        sameSite: 'Lax',
-      },
-    ]);
+    // A long session cookie arrives as its chunks (name=chunks:<n>; nameC1=…), each its own cookie.
+    await context.addCookies(
+      opened.cookieHeader.split('; ').map((pair) => {
+        const separator = pair.indexOf('=');
+        return {
+          name: pair.slice(0, separator),
+          value: pair.slice(separator + 1),
+          url: opened.origin,
+          httpOnly: true,
+          sameSite: 'Lax',
+        };
+      }),
+    );
     return { context, origin: opened.origin, startPath: opened.path, url: opened.url, persona: description };
   } catch (cause) {
     await context.close();

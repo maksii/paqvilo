@@ -826,6 +826,29 @@ export const webUrlEncode = (value) => percentEncode(value, /[A-Za-z0-9\-_.!*()]
 export const escapeDataString = (value) => percentEncode(value, /[A-Za-z0-9\-_.~]/);
 /** System.Web.HttpUtility.UrlEncode (lower-case hex, '+' for spaces). */
 export const httpUtilityUrlEncode = (value) => percentEncode(value, /[A-Za-z0-9\-_.!*()]/, { space: '+', lower: true });
+// The code points Microsoft AntiXSS leaves as they are (its default safe list): Basic Latin, Latin-1 Supplement
+// without the no-break space and the soft hyphen, Latin Extended-A and -B, IPA Extensions, Spacing Modifier Letters and
+// Combining Diacritical Marks. Everything else is written as a decimal character reference.
+const antiXssSafe = (code) =>
+  (code >= 0x20 && code <= 0x7e) || (code >= 0xa1 && code <= 0xac) || (code >= 0xae && code <= 0x36f);
+/**
+ * Microsoft AntiXSS Encoder.HtmlEncode, which the portal's server controls write text with (the breadcrumb of a
+ * rewrite page layout): named references for the markup characters, &#39; for the apostrophe and decimal references
+ * for every code point outside the safe list, one per code point.
+ */
+export function antiXssHtmlEncode(value) {
+  let out = '';
+  for (const char of String(value ?? '')) {
+    const code = char.codePointAt(0);
+    if (char === '<') out += '&lt;';
+    else if (char === '>') out += '&gt;';
+    else if (char === '&') out += '&amp;';
+    else if (char === '"') out += '&quot;';
+    else if (char === "'") out += '&#39;';
+    else out += antiXssSafe(code) ? char : `&#${code};`;
+  }
+  return out;
+}
 /** Microsoft AntiXSS Encoder.UrlEncode (query rebuilt by add_query/remove_query). */
 export const antiXssUrlEncode = (value) => percentEncode(value, /[A-Za-z0-9\-_.~]/, { lower: true });
 function decodeBytes(text, { plus, unicodeEscapes }) {

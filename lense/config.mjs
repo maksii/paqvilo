@@ -23,6 +23,7 @@ import {
   validateCatalogue,
   normalizeCatalogue,
   httpUrl,
+  validateCdpUrl,
   startPath,
   debugPort,
   browserProfile,
@@ -562,7 +563,7 @@ function selectedConfigSource(siteName, site, opts, settings, configDir, { valid
     const layout = unsupportedSourceLayout(sourceDir);
     if (layout)
       throw configurationError(
-        `"${sourceDir}" (source of site "${siteName}") is ${layout.label}, which the toolkit does not treat as a portal: use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)`,
+        `"${sourceDir}" (source of site "${siteName}") is ${layout.label}, which the toolkit does not treat as a portal: use a PAC YAML export, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)`,
         'source_unsupported_layout',
       );
     throw configurationError(
@@ -769,16 +770,13 @@ function validateBrowserProfileCombination(browser) {
     throw configurationError(
       'browser.profile (--profile / PAQVILO_PROFILE) cannot be combined with browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR); choose a named toolkit profile or an existing browser root',
     );
-  if (browser.profileDirectory !== null && browser.userDataDir === null)
+  if (browser.profileDirectory !== null && browser.userDataDir === null && !browser.cdpUrl)
     throw configurationError(
-      'browser.profileDirectory (--profile-directory / PAQVILO_PROFILE_DIRECTORY) requires browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR)',
+      'browser.profileDirectory (--profile-directory / PAQVILO_PROFILE_DIRECTORY) requires browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR) to launch that profile, or browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) to use it in an attached browser',
     );
-  if (
-    browser.cdpUrl &&
-    [browser.profile, browser.userDataDir, browser.profileDirectory].some((value) => value !== null)
-  )
+  if (browser.cdpUrl && [browser.profile, browser.userDataDir].some((value) => value !== null))
     throw configurationError(
-      'browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile, browser.userDataDir or browser.profileDirectory; an attached browser already owns its profile',
+      'browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile or browser.userDataDir; an attached browser already owns its user-data directory. browser.profileDirectory (--profile-directory) selects one of its open profiles',
     );
 }
 
@@ -810,7 +808,7 @@ export function browserSettings({
   resolveBrowserProfilePaths(browser, opts, configDir);
   validateBrowserProfileCombination(browser);
   resolveBrowserDebugPort(browser, opts, s);
-  if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  if (browser.cdpUrl) validateCdpUrl(browser.cdpUrl);
   validateDebuggerMode(browser.cdpUrl, browser.debugPort);
   return browser;
 }

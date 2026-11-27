@@ -123,7 +123,8 @@ Rows that are captured but carry a note:
   - timeline metadata and step auto-number shapes
   - JSON-format string columns (elastic tables only)
   - rollup and calculated column definitions (maker portal only)
-- **Pixels.** Screenshots are captured as evidence, but no comparison reads them.
+- **Pixels.** The baseline keeps screenshots for review. Projects can opt individual scenarios into exact pixel comparison
+  with `compareScreenshot: true`.
 
 ## How coverage is proven
 

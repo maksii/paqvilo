@@ -1,15 +1,10 @@
 import YAML from 'yaml';
 
-// A rollup column's exported definition (<table>-<column>.xaml) is one XAML document. The platform serves it as the
-// FormulaDefinition with an XML declaration and without the whitespace between elements that the export adds.
-const XML_DECLARATION = '<?xml version="1.0" encoding="utf-16"?>';
-const storedXaml = (text) => {
-  const compact = String(text)
-    .replace(/^\u{FEFF}/u, '')
-    .trim()
-    .replace(/>\s+</g, '><');
-  return compact.startsWith('<?xml') ? compact : XML_DECLARATION + compact;
-};
+// A calculated or rollup column's exported definition (<table>-<column>.xaml) is one XAML document. After a Solution import
+// the platform serves it as the FormulaDefinition byte for byte: the exported text, pretty-printed with CRLF line ends and
+// without an XML declaration (native, hosted import round trip 2026-11-26: each of the 24 imported columns equalled its
+// exported file). Only a leading byte order mark, an encoding marker rather than text, is dropped.
+const storedXaml = (text) => String(text).replace(/^\u{FEFF}/u, '');
 
 export function parseSolutionFormulaDocument(text, info) {
   if (/\.xaml$/i.test(info.formulaFile))

@@ -398,7 +398,7 @@ test('shape budget does not hide later controls or assets within the bounded doc
     t,
     '<div id="decoration">' +
       Array.from({ length: 2100 }, (_, i) => `<span class="decorative" id="shape-${i}"></span>`).join('') +
-      '</div><form data-formid="later-form"><input id="later-field" name="later-field"></form><script src="/late-asset.js"></script>',
+      '</div><form data-form-layout="{&quot;Id&quot;:&quot;later-form&quot;}"><input id="later-field" name="later-field"></form><script src="/late-asset.js"></script>',
   );
   const evidence = await page.evaluate(inspectRenderedPage);
   assert.ok(evidence.controls.some((control) => control.id === 'later-field'));

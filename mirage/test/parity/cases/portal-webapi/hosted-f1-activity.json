@@ -1,0 +1,1155 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-activity",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages site, 2026-11-26",
+    "scope": "Column checks of a custom activity table on the portal Web API (hosted session F1, API-01c): five phases of the table's and activitypointer's Web API settings, each with inherited-only, mixed, declared-only and select-less collection and keyed reads, and the activitypointer set. Projection as the odata-shapes suite. Runs a and b (run b's phase A is its retry with a readiness check)."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-activity",
+      "sha256": "d054610d5e650c9e8857d7e09d63910a38fe883b94f6e5f1b1f4d9ee18377f38",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-activity",
+      "sha256": "d765610506e53c1899b7f0fb941e74ec73d333fea3d0e0be0b382d8ff392d96c",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "A:select-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:select-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:select-declared-only",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=pqf1_note"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute pqf1_note in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:select-description",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,description"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:select-less",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute activityid in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:keyed-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:keyed-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "A:activitypointers-select-subject",
+      "input": {
+        "method": "GET",
+        "phase": "A-inherited-only",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,description"
+        },
+        "headers": {},
+        "path": "/_api/activitypointers?$select=subject&$filter=activitytypecode eq 'pqf1_task'"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment activitypointer."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:select-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:select-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:select-declared-only",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:select-description",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,description"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:select-less",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute activityid in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:keyed-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:keyed-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute subject in table activitypointer is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "B:activitypointers-select-subject",
+      "input": {
+        "method": "GET",
+        "phase": "B-mixed",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note"
+        },
+        "headers": {},
+        "path": "/_api/activitypointers?$select=subject&$filter=activitytypecode eq 'pqf1_task'"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment activitypointer."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:select-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:select-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:select-declared-only",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=pqf1_note"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:select-description",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,description"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:select-less",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:keyed-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:keyed-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment pqf1_task."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "C:activitypointers-select-subject",
+      "input": {
+        "method": "GET",
+        "phase": "C-activitypointer-only",
+        "settings": {
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/activitypointers?$select=subject&$filter=activitytypecode eq 'pqf1_task'"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040120",
+          "message": "You don't have permission to read the activitypointer table."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:select-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:select-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(subject,pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:select-declared-only",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:select-description",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,description"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:select-less",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(activityid,subject,pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:keyed-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:keyed-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(subject,pqf1_note)/$entity",
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "D:activitypointers-select-subject",
+      "input": {
+        "method": "GET",
+        "phase": "D-task-settings-plus-activitypointer-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/activitypointers?$select=subject&$filter=activitytypecode eq 'pqf1_task'"
+      },
+      "output": {
+        "status": 404,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=404, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "9004010C",
+          "message": "Resource not found for the segment activitypointer."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:select-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:select-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(subject,pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:select-declared-only",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:select-description",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks?$select=subject,description"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:select-less",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(activityid,subject,pqf1_note)",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:keyed-inherited-only",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040101",
+          "message": "Attribute All Columns in table pqf1_task is not enabled for Web Api."
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:keyed-mixed",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/pqf1_tasks(f1f1f1f1-0000-4000-8000-000000001201)?$select=subject,pqf1_note"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_tasks(subject,pqf1_note)/$entity",
+          "rows": [
+            {
+              "activityid": "f1f1f1f1-0000-4000-8000-000000001201",
+              "pqf1_note": "task note",
+              "subject": "pqf1 task one"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "E:activitypointers-select-subject",
+      "input": {
+        "method": "GET",
+        "phase": "E-task-settings-plus-activitypointer-enabled-fields",
+        "settings": {
+          "Webapi/pqf1_task/enabled": "true",
+          "Webapi/pqf1_task/fields": "activityid,subject,pqf1_note",
+          "Webapi/activitypointer/enabled": "true",
+          "Webapi/activitypointer/fields": "activityid,subject,description,activitytypecode"
+        },
+        "headers": {},
+        "path": "/_api/activitypointers?$select=subject&$filter=activitytypecode eq 'pqf1_task'"
+      },
+      "output": {
+        "status": 403,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=403, correlationId; desc=<id>"
+        },
+        "error": {
+          "code": "90040120",
+          "message": "You don't have permission to read the activitypointer table."
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

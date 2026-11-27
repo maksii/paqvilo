@@ -1,18 +1,89 @@
-// Original-DLL fixtures need the .NET Framework compiler and the verified public Microsoft.Xrm.Sdk.dll. .NET Framework
-// exists only on Windows, so these tests skip elsewhere; on Windows a missing SDK fixture fails instead of skipping.
+// Original-DLL fixtures need a plug-in host toolchain (the Windows .NET Framework compiler, or a .NET 10+ SDK on macOS and
+// Linux) and the verified public Microsoft.Xrm.Sdk.dll. Without a toolchain these tests skip. On Windows, where CI prepares
+// the SDK fixture, a missing one fails instead of skipping; on macOS and Linux they also skip until it is prepared (npm
+// run ci:prepare -- --suite mirage --unit) or named by PAQ_TEST_XRM_SDK.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { compileCached, compileCacheKey, compilerIdentity, fileDigest } from '../../lib/compile-cache.mjs';
-
-export const CLR_SKIP = process.platform !== 'win32' && 'CLR plugin hosts need the Windows .NET Framework compiler';
+import { clrHostCommand, clrToolchain, removeClrHostLeftovers } from '../../lib/clr-toolchain.mjs';
+import {
+  dotnetBuildInputs,
+  dotnetCompile,
+  writeDotnetRuntimeConfig,
+} from '../../lib/clr-dotnet.mjs';
 
 // The location `npm run ci:prepare -- --suite mirage --unit` restores; PAQ_TEST_XRM_SDK overrides it.
 const PREPARED_SDK = fileURLToPath(
   new URL('../../../.paqvilo/ci/sdk-reference/reference/lib/net462/Microsoft.Xrm.Sdk.dll', import.meta.url),
 );
+
+const TOOLCHAIN = clrToolchain();
+const DOTNET = TOOLCHAIN?.kind === 'dotnet';
+const sdkPrepared = () => fs.existsSync(path.resolve(process.env.PAQ_TEST_XRM_SDK || PREPARED_SDK));
+// Parity tests whose oracle is a .NET Framework program they compile with the Windows compiler or start directly: their
+// recorded expectations are .NET Framework runs, so they stay on Windows. Each test file runs in its own process, so the
+// started file names the test that imported this fixture; every other CLR test also runs on the .NET host.
+const NETFX_ORACLE_TESTS = new Set([
+  'dataverse-soap-sdk-values.test.mjs',
+  'plugin-query-paging.test.mjs',
+  'webhook-message-values.test.mjs',
+  'webhook-sdk-values.test.mjs',
+]);
+const netfxOracle = NETFX_ORACLE_TESTS.has(path.basename(process.argv[1] ?? ''));
+export const CLR_SKIP =
+  (!TOOLCHAIN && 'CLR plugin hosts need the .NET Framework compiler (Windows) or a .NET 10+ SDK') ||
+  (process.platform !== 'win32' && netfxOracle && 'this parity test runs .NET Framework oracle programs, on Windows') ||
+  (process.platform !== 'win32' &&
+    !sdkPrepared() &&
+    'CLR plugin hosts on macOS and Linux need the prepared SDK fixture');
+
+// .NET (macOS, Linux): the reference assemblies, package assemblies and C# compiler of the installed SDK, resolved once.
+let inputs;
+const dotnetInputs = () => (inputs ??= dotnetBuildInputs(TOOLCHAIN));
+// A framework assembly named without a path (System.ServiceModel.dll) is a .NET Framework reference: under .NET the
+// resolved reference set already holds it (or its facade), so only file references are passed on.
+const fileReference = (reference) => path.isAbsolute(reference) && fs.existsSync(reference);
+
+/** Under .NET a fixture executable runs through dotnet: its runtime configuration and the package assemblies it may bind
+ * (the WCF client) are placed beside it once. */
+function prepareExecutable(executable) {
+  if (!DOTNET) return;
+  const folder = path.dirname(executable),
+    config = path.join(folder, path.basename(executable, path.extname(executable)) + '.runtimeconfig.json');
+  if (!fs.existsSync(config)) writeDotnetRuntimeConfig(executable);
+  for (const file of dotnetInputs().runtime) {
+    const beside = path.join(folder, path.basename(file));
+    if (!fs.existsSync(beside)) fs.copyFileSync(file, beside);
+  }
+}
+
+/**
+ * The files a hand-built runtime lists beside its stand-in host `executable` (before the host itself): under .NET its
+ * runtime configuration and package assemblies, which Mirage copies into each execution snapshot; none on Windows.
+ */
+export function toolchainPaths(executable) {
+  if (!DOTNET) return [];
+  prepareExecutable(executable);
+  const folder = path.dirname(executable);
+  return [
+    path.join(folder, path.basename(executable, path.extname(executable)) + '.runtimeconfig.json'),
+    ...dotnetInputs().runtime.map((file) => path.join(folder, path.basename(file))),
+  ];
+}
+
+/** The command and arguments that start a compiled fixture executable: itself on Windows, through dotnet under .NET. */
+export function hostCommand(executable, args = []) {
+  prepareExecutable(executable);
+  return clrHostCommand(TOOLCHAIN?.launcher ?? null, executable, args);
+}
+
+/** Removes what the .NET runtime of a fixture process `child` that a test ended left in the temporary folder. */
+export function removeHostLeftovers(child) {
+  removeClrHostLeftovers(TOOLCHAIN?.launcher ?? null, child.pid);
+}
 
 export function clrSdk() {
   const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK || PREPARED_SDK);
@@ -23,11 +94,11 @@ export function clrSdk() {
   return sdk;
 }
 
-const CSC = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+const CSC = TOOLCHAIN?.compiler ?? 'csc';
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
 
-/** Compiles invented C# with the .NET Framework compiler; `references` are DLL paths or framework DLL names and `keyFile` an
+/** Compiles invented C# with the host toolchain's compiler (the .NET Framework compiler, or the SDK's csc under .NET); `references` are DLL paths or framework DLL names and `keyFile` an
  * optional strong-name key (strongNameKey). The output is taken from the toolkit's compile cache when the same source,
  * references, options and compiler built it before (lib/compile-cache.mjs); `run` and `cache` replace the compiler
  * start and the cache folder. */
@@ -42,7 +113,7 @@ export function compileClr(source, out, { target = 'library', references = [], k
     ...(cacheRoot === undefined ? {} : { root: cacheRoot }),
     key: compileCacheKey([
       'clr-fixture/1',
-      compilerIdentity(CSC),
+      DOTNET ? 'dotnet:' + TOOLCHAIN.sdkVersion + ':' + compilerIdentity(dotnetInputs().csc) : compilerIdentity(CSC),
       target,
       // The assembly's identity is its output file name.
       name,
@@ -53,22 +124,34 @@ export function compileClr(source, out, { target = 'library', references = [], k
     files: [name],
     into: path.dirname(out),
     build(folder) {
-      const build = run(
-        CSC,
-        [
-          '/nologo',
-          '/target:' + target,
-          '/out:' + path.join(folder, name),
-          ...(keyFile ? ['/keyfile:' + keyFile] : []),
-          ...references.map((reference) => '/reference:' + reference),
-          source,
-        ],
-        { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
-      );
+      const build = DOTNET
+        ? dotnetCompile(TOOLCHAIN, dotnetInputs(), {
+            out: path.join(folder, name),
+            target,
+            sources: [...(keyFile ? ['/keyfile:' + keyFile] : []), source],
+            references: references.filter(fileReference),
+            defines: ['PAQVILO_CORECLR'],
+            run,
+            timeout: CLI_HANG_GUARD_MS,
+          })
+        : run(
+            CSC,
+            [
+              '/nologo',
+              '/target:' + target,
+              '/out:' + path.join(folder, name),
+              ...(keyFile ? ['/keyfile:' + keyFile] : []),
+              ...references.map((reference) => '/reference:' + reference),
+              source,
+            ],
+            { shell: false, windowsHide: true, encoding: 'utf8', timeout: CLI_HANG_GUARD_MS },
+          );
       if (build.status !== 0)
         throw new Error('C# fixture build failed: ' + (build.error?.message ?? build.stdout + build.stderr));
     },
   });
+  // An executable fixture may be started by Mirage itself (a stand-in host), not only through hostCommand.
+  if (target === 'exe') prepareExecutable(out);
   return out;
 }
 

@@ -9,6 +9,8 @@ import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { portalAuthorizationModel } from '../lib/portal-authorization.mjs';
 import { runExportedServerLogic } from '../lib/exported-operations.mjs';
+import { createPrincipals } from '../lib/dataverse-security.mjs';
+import { recordFilterAdmits } from '../lib/record-filter.mjs';
 
 const text = { dataverseType: 'nvarchar' };
 const files = (state) => ({
@@ -136,13 +138,15 @@ const initial = () => ({
   },
 });
 
-async function site(t, state, overrides = {}) {
+async function site(t, state, overrides = {}, permissionSource = 'configured') {
+  const input = initial();
+  input.simulator.permissionSource = permissionSource;
   const sim = await simulatorFixture(t, {
     prefix: 'portal-authorization-',
     files: { ...files(state), ...overrides },
     port: 0,
     watch: false,
-    initial: initial(),
+    initial: input,
   });
   const alex = signInHeaders(sim, 'alex');
   const call = (method, route, body, headers = alex) =>
@@ -168,6 +172,34 @@ async function site(t, state, overrides = {}) {
 }
 const mappedUser = (sim) =>
   sim.store.tableRows('systemuser').find((row) => row.fullname === 'Alex Local' && row.systemmanagedusertype === 1);
+
+test('enhanced Dataverse role links distinguish source web role IDs that share a name', async (t) => {
+  const { sim, ids } = await site(t, 3, {
+    'webrole.yml': files(3)['webrole.yml'].replace('adx_name: Reviewer', 'adx_name: Member'),
+  });
+  const items = '/_api/x_items?$select=x_name';
+  assert.deepEqual(await ids(items), ['i1', 'i2']);
+  const userId = mappedUser(sim).systemuserid;
+  const candidates = sim.store.tableRows('role').filter((row) => row.name === 'Member');
+  assert.equal(candidates.length, 2, 'both source web roles must have separate Dataverse roles');
+  const candidateIds = new Set(candidates.map((row) => row.roleid));
+  const linked = () =>
+    sim.store
+      .tableRows('systemuserroles')
+      .filter((row) => row.systemuserid.id === userId && candidateIds.has(row.roleid.id))
+      .map((row) => row.roleid.id);
+
+  const primary = linked();
+  assert.equal(primary.length, 1, 'the same-name role is not an implicit membership');
+  await sim.store.transact(() => {
+    sim.store.state.simulator.contactRoles = [{ contactId: 'alex', roleId: '77777777-7777-4777-8777-777777777702' }];
+  });
+  assert.deepEqual(await ids(items), ['i1', 'i2']);
+  assert.deepEqual(
+    linked(),
+    [...candidateIds].filter((roleId) => roleId !== primary[0]),
+  );
+});
 
 async function grantSecretRead(sim) {
   const user = mappedUser(sim);
@@ -242,6 +274,107 @@ test('the same site grants exactly what its table permissions allow in the stand
       const own = fixture.sim.store.tableRows('x_item').find((row) => row.x_itemid === 'i1');
       assert.equal(own.modifiedby?.id, user.systemuserid, 'the write runs as the mapped user (impersonation)');
     }
+  }
+});
+
+const customAccess = (fetchXml) => ({
+  'table-permissions/Filtered.tablepermission.yml': [
+    'adx_entitypermissionid: 77777777-7777-4777-8777-777777777772',
+    'adx_name: Filtered access',
+    'adx_entitylogicalname: x_item',
+    'adx_scope: 756150005',
+    'adx_create: true',
+    'adx_read: true',
+    'adx_write: true',
+    'adx_delete: true',
+    'adx_entitypermission_webrole:',
+    `- ${MEMBER}`,
+    'mspp_permissionfetchxml: >-',
+    `  ${fetchXml}`,
+  ].join('\n'),
+});
+
+// @test-kind security+contract: documented Custom Access source shape uses the same restrictive predicate for portal reads and writes.
+test('enabled enhanced Custom Access filters Liquid, API and mutations through a source root predicate', async (t) => {
+  const source = customAccess(
+    '<fetch top="1"><entity name="x_item"><attribute name="x_secret"/><filter type="and"><condition attribute="x_contactid" operator="eq" value="alex"/><filter type="or"><condition attribute="x_name" operator="in"><value>Own</value><value>Own edited</value></condition><condition attribute="x_name" operator="eq" value="Own created"/></filter></filter></entity></fetch>',
+  );
+  const { sim, call, ids } = await site(t, 3, source, 'exported');
+  assert.deepEqual(await ids('/_api/x_items?$select=x_name'), ['i1']);
+  assert.equal((await call('GET', '/_api/x_items(i2)')).status, 403);
+  const fetchXml = '<fetch><entity name="x_item"><attribute name="x_name"/></entity></fetch>';
+  const fetched = await (await call('GET', '/_api/x_items?fetchXml=' + encodeURIComponent(fetchXml))).json();
+  assert.deepEqual(
+    fetched.value.map((row) => row.x_name),
+    ['Own'],
+  );
+  const liquid = await (await call('GET', '/')).text();
+  assert.match(liquid, /<li>Own=/);
+  assert.doesNotMatch(liquid, /<li>Foreign=/);
+  assert.equal((await call('PATCH', '/_api/x_items(i1)', { x_name: 'Own edited' })).status, 204);
+  assert.equal((await call('PATCH', '/_api/x_items(i1)', { x_contactid: 'bea' })).status, 403);
+  assert.equal((await call('PATCH', '/_api/x_items(i2)', { x_name: 'Own' })).status, 403);
+  assert.equal((await call('POST', '/_api/x_items', { x_name: 'Own created', x_contactid: 'alex' })).status, 204);
+  assert.equal((await call('POST', '/_api/x_items', { x_name: 'Own created', x_contactid: 'bea' })).status, 403);
+  const all = await (await call('GET', '/_api/x_items?$select=x_name')).json();
+  assert.deepEqual(all.value.map((row) => row.x_name).sort(), ['Own created', 'Own edited'], 'only root filters apply');
+  assert.equal((await call('DELETE', '/_api/x_items(i2)')).status, 403);
+  assert.equal((await call('DELETE', '/_api/x_items(i1)')).status, 204);
+  assert.deepEqual(
+    sim.store
+      .tableRows('x_item')
+      .map((row) => row.x_name)
+      .sort(),
+    ['Foreign', 'Own created'],
+  );
+});
+
+// @test-kind security: disabled enhanced states, unknown fields and unsupported filter structure fail closed.
+test('unqualified Custom Access source never becomes a blanket grant', async (t) => {
+  const scope =
+    '<fetch><entity name="x_item"><filter><condition attribute="x_contactid" operator="eq" value="alex"/></filter></entity></fetch>';
+  for (const [state, filter, code] of [
+    ...[0, 1, 2].map((state) => [state, scope, 'PERMISSION_CUSTOM_ACCESS_REQUIRES_ENABLED_AUTHORIZATION']),
+    [3, scope.replace('x_contactid', 'unknown_column'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    [3, scope.replace('<filter>', '<filter><filter/>'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    [3, scope.replace('name="x_item"', 'name="x_order"'), 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'],
+    // A linked-table filter is refused rather than dropped, which would grant every root-filter match.
+    [
+      3,
+      scope.replace(
+        '</entity>',
+        '<link-entity name="contact" from="contactid" to="x_contactid"><filter><condition attribute="lastname" operator="eq" value="Only"/></filter></link-entity></entity>',
+      ),
+      'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED',
+    ],
+  ]) {
+    const { sim, call } = await site(t, state, customAccess(filter), 'exported');
+    assert.equal((await call('GET', '/_api/x_items')).status, 403);
+    assert.ok(sim.state().diagnostics.some((item) => item.code === code));
+  }
+});
+
+// @test-kind security+observation: hosted session F1 (summary-F1.md AUTH-02e, a disposable site and a partially migrated one): the generated record filter keeps only the root filter of a Custom Access rule and an empty filter for a link-only rule; Mirage keeps the refusal and states what the live site grants.
+test('a Custom Access join refusal states that the hosted site drops the join and widens the grant', async (t) => {
+  const link =
+    '<link-entity name="contact" from="contactid" to="x_contactid"><filter><condition attribute="lastname" operator="eq" value="Only"/></filter></link-entity>';
+  for (const [fetchXml, grants] of [
+    [
+      `<fetch><entity name="x_item"><filter><condition attribute="x_name" operator="eq" value="Own"/></filter>${link}</entity></fetch>`,
+      'root-filter',
+    ],
+    [`<fetch><entity name="x_item">${link}</entity></fetch>`, 'every-row'],
+  ]) {
+    const { sim, call } = await site(t, 3, customAccess(fetchXml), 'exported');
+    assert.equal((await call('GET', '/_api/x_items')).status, 403, grants);
+    const diagnostics = sim.state().diagnostics;
+    assert.ok(diagnostics.some((item) => item.code === 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED'));
+    const dropped = diagnostics.filter((item) => item.code === 'PERMISSION_CUSTOM_ACCESS_HOSTED_JOIN_DROPPED');
+    assert.deepEqual(
+      dropped.map((item) => [item.entity, item.hostedGrants, item.severity]),
+      [['x_item', grants, 'warning']],
+    );
+    assert.match(dropped[0].message, grants === 'every-row' ? /every x_item row/ : /every row the root filter matches/);
   }
 });
 
@@ -529,21 +662,232 @@ test('an undocumented enhanced authorization value runs the standard model and i
   assert.equal(mappedUser(fixture.sim), undefined);
 });
 
-// @test-kind contract: preflight describes the selected local authorization model without claiming native parity.
-test('the preflight row of every enhanced state is satisfied with a fidelity note', () => {
+// @test-kind observation: hosted session F1 (2026-11-26, summary-F1.md AUTH-02c): a site in enhancedauthorization 1 or 2 queried as its application user with the standard permission FetchXML (two runs each); only 3 used the generated security roles.
+test('only the enabled state selects the enhanced model; the migration states keep the standard model', () => {
   assert.deepEqual(
     [0, 1, 2, 3, 9].map((state) => portalAuthorizationModel({ enhancedauthorization: state }).model),
-    ['standard', 'enhanced', 'enhanced', 'enhanced', 'standard'],
+    ['standard', 'standard', 'standard', 'enhanced', 'standard'],
   );
   assert.deepEqual(
-    [0, 9].map((state) => portalAuthorizationModel({ enhancedauthorization: state }).label),
-    ['Disabled', 'Unknown (9)'],
+    [0, 1, 2, 9].map((state) => portalAuthorizationModel({ enhancedauthorization: state }).label),
+    ['Disabled', 'Migration in progress', 'Migration Failed', 'Unknown (9)'],
   );
+});
+
+// @test-kind contract: preflight describes the selected local authorization model without claiming native parity.
+test('the preflight row of every enhanced state is satisfied with a fidelity note', () => {
   for (const state of [1, 2, 3]) {
-    const [row] = buildSourceGraph({
-      portal: { diagnostics: platformChangeDiagnostics({ website: { adx_enhancedauthorization: state } }) },
-    }).requirements();
+    const diagnostics = platformChangeDiagnostics({ website: { adx_enhancedauthorization: state } });
+    const [row] = buildSourceGraph({ portal: { diagnostics } }).requirements();
     assert.deepEqual([row.id, row.status, row.level], ['portal:enhanced-authorization', 'satisfied', 'behaviour']);
-    assert.match(row.message, /Fidelity: the privilege depth each table permission scope maps to/);
+    assert.equal(diagnostics[0].model, state === 3 ? 'enhanced' : 'standard');
+    assert.match(
+      row.message,
+      state === 3
+        ? /Fidelity: the privilege depth \(16, record filter\)/
+        : /Fidelity: states 1 and 2 keep the standard/,
+    );
   }
+});
+
+// @test-kind observation: hosted session F1 (summary-F1.md AUTH-02c): in states 1 and 2 the hosted portal ignored Custom Access and served the standard model's grants.
+test('a migration state serves the standard model to a visitor and maps nobody', async (t) => {
+  for (const state of [1, 2]) {
+    const fixture = await site(t, state);
+    assert.deepEqual(await fixture.ids('/_api/x_items?$select=x_name'), ['i1', 'i2'], `state ${state}`);
+    const diagnostics = fixture.sim.state().diagnostics;
+    assert.deepEqual(
+      diagnostics.filter((item) => item.code === 'PORTAL_AUTHORIZATION_MODEL').map((item) => [item.state, item.model]),
+      [[state, 'standard']],
+    );
+    assert.equal(mappedUser(fixture.sim), undefined, `state ${state}`);
+  }
+});
+
+const MAPPING_INNER =
+  '<link-entity name="powerpagesusermapping" from="contact" to="contactid" link-type="inner"><filter><condition attribute="systemuser" operator="eq-userid" /></filter></link-entity>';
+const recordFilters = (sim, roleName) => {
+  const role = sim.store.tableRows('role').find((row) => row.name === roleName);
+  const names = new Map(sim.store.tableRows('privilege').map((row) => [row.privilegeid, row.name]));
+  const filters = new Map(sim.store.tableRows('recordfilter').map((row) => [row.recordfilterid, row]));
+  return new Map(
+    sim.store
+      .tableRows('roleprivileges')
+      .filter((row) => row.roleid.id === role.roleid)
+      .map((row) => [
+        names.get(row.privilegeid.id),
+        { mask: row.privilegedepthmask, fetchxml: filters.get(row.recordfilterid?.id)?.fetchxml ?? null },
+      ]),
+  );
+};
+
+// @test-kind observation: hosted session F1 (2026-11-26, summary-F1.md AUTH-02d; enhanced-snapshot-trial-enabled, a disposable site with one web role per scope read back from roleprivileges and recordfilter): every scope is depth 16 with a record filter joining powerpagesusermapping through eq-userid, Global is unfiltered, and every role reads its own contact, parent account and the user mappings.
+test('generated security roles grant every scope at depth 16 through the record filter a hosted site writes', async (t) => {
+  const fixture = await site(t, 3);
+  await fixture.ids('/_api/x_items?$select=x_name');
+  const grants = recordFilters(fixture.sim, 'Member');
+  const filtered = (root, branches) =>
+    `<fetch mapping="logical"><entity name="${root}"><filter type="and"><filter type="or">${branches}</filter></filter></entity></fetch>`;
+  const contactBranch = (to) =>
+    `<link-entity name="contact" from="contactid" to="${to}" link-type="any">${MAPPING_INNER}</link-entity>`;
+  const accountBranch = (to) =>
+    `<link-entity name="account" from="accountid" to="${to}" link-type="any"><link-entity name="powerpagesusermapping" from="parentcustomerid" to="accountid" link-type="inner"><filter><condition attribute="systemuser" operator="eq-userid" /></filter></link-entity></link-entity>`;
+  assert.deepEqual(grants.get('prvReadX_item'), {
+    mask: 16,
+    fetchxml: '<fetch mapping="logical"><entity name="x_item" /></fetch>',
+  });
+  assert.deepEqual(grants.get('prvWriteX_item'), {
+    mask: 16,
+    fetchxml: filtered('x_item', contactBranch('x_contactid')),
+  });
+  assert.deepEqual(grants.get('prvReadX_order'), {
+    mask: 16,
+    fetchxml: filtered('x_order', accountBranch('x_accountid')),
+  });
+  assert.deepEqual(grants.get('prvReadX_line'), {
+    mask: 16,
+    fetchxml: filtered(
+      'x_line',
+      `<filter type="and"><link-entity name="x_order" from="x_orderid" to="x_orderid" link-type="any">${accountBranch('x_accountid')}</link-entity></filter>`,
+    ),
+  });
+  assert.deepEqual(grants.get('prvReadContact'), {
+    mask: 16,
+    fetchxml: filtered(
+      'contact',
+      '<link-entity name="powerpagesusermapping" from="contact" to="contactid" link-type="any"><filter><condition attribute="systemuser" operator="eq-userid" /></filter></link-entity>',
+    ),
+  });
+  assert.deepEqual(grants.get('prvReadAccount'), {
+    mask: 16,
+    fetchxml: filtered(
+      'account',
+      `<link-entity name="contact" from="parentcustomerid" to="accountid" link-type="any">${MAPPING_INNER}</link-entity>`,
+    ),
+  });
+  for (const [name, grant] of grants)
+    if (grant.mask !== 16) assert.equal(grant.mask, 8, `${name}: the other implicit grants are Global metadata reads`);
+  // The visitor's user mapping row, which the filters join through.
+  const user = mappedUser(fixture.sim);
+  assert.deepEqual(
+    fixture.sim.store
+      .tableRows('powerpagesusermapping')
+      .map((row) => [row.contact.id, row.systemuser.id, row.parentcustomerid?.id ?? null]),
+    [['alex', user.systemuserid, 'acme']],
+  );
+});
+
+// @test-kind observation: hosted session F1 (summary-F1.md AUTH-02d): Global on a custom activity generated the activity privileges with an unfiltered record filter on activitypointer, so it reaches every activity type.
+test('an activity table permission maps to the shared activity privileges rooted at activitypointer', async (t) => {
+  const fixture = await site(t, 3);
+  await fixture.sim.store.transact(() => {
+    fixture.sim.store.state.mappings.x_task.idColumn = 'activityid';
+    fixture.sim.store.state.tables.x_task[0].activityid = fixture.sim.store.state.tables.x_task[0].x_taskid;
+  });
+  await fixture.ids('/_api/x_items?$select=x_name');
+  const grants = recordFilters(fixture.sim, 'Member');
+  assert.deepEqual(grants.get('prvReadActivity'), {
+    mask: 16,
+    fetchxml: '<fetch mapping="logical"><entity name="activitypointer" /></fetch>',
+  });
+  assert.equal(grants.has('prvReadX_task'), false);
+});
+
+// @test-kind security: a record-filter grant (depth 16) reaches only the rows its filter selects for the mapped user, never all rows as a Global grant would; a grant whose filter is missing or unreadable reaches nothing.
+test('the mapped user reaches through Dataverse only the rows its record filters select', async (t) => {
+  const fixture = await site(t, 3),
+    { sim } = fixture;
+  await fixture.ids('/_api/x_items?$select=x_name');
+  const principals = createPrincipals(sim.store);
+  const user = principals.byId(mappedUser(sim).systemuserid);
+  const reads = (entity) => {
+    const filter = principals.readFilter({ user, entity });
+    return sim.store
+      .tableRows(entity)
+      .filter((row) => (filter ? filter(row) : true))
+      .map((row) => row[`${entity}id`])
+      .sort();
+  };
+  assert.deepEqual(reads('x_order'), ['o1'], 'Account scope: the parent account only');
+  assert.deepEqual(reads('x_line'), ['l1'], 'Parent scope: through the parent permission');
+  assert.deepEqual(reads('contact'), ['alex'], 'every role reads its own contact');
+  assert.deepEqual(reads('account'), ['acme'], 'and its parent account');
+  const writable = (entity, id) =>
+    principals
+      .principalAccess({ user, entity, row: sim.store.tableRows(entity).find((row) => row[`${entity}id`] === id) })
+      .includes('WriteAccess');
+  assert.deepEqual([writable('x_item', 'i1'), writable('x_item', 'i2')], [true, false], 'Contact scope');
+  // A record filter that is gone, or whose FetchXML cannot be read, admits nothing.
+  await sim.store.transact(() => {
+    for (const row of sim.store.state.tables.recordfilter)
+      if (row.fetchxml.includes('<entity name="x_order">')) row.fetchxml = '<fetch><entity name="x_order"><filter';
+    sim.store.state.tables.recordfilter = sim.store.state.tables.recordfilter.filter(
+      (row) => !row.fetchxml.includes('<entity name="x_line">'),
+    );
+  });
+  const fresh = createPrincipals(sim.store);
+  const freshUser = fresh.byId(user.systemuserid);
+  for (const entity of ['x_order', 'x_line']) {
+    const filter = fresh.readFilter({ user: freshUser, entity });
+    assert.ok(filter, `${entity}: a record filter grant is never read as Global`);
+    assert.deepEqual(sim.store.tableRows(entity).filter(filter), [], entity);
+  }
+});
+
+// @test-kind security: the record filter evaluator never widens: unsupported joins, operators and roots admit nothing, an empty filter adds no condition (the hosted shape), and eq-userid matches only the calling user.
+test('record filters admit nothing they cannot evaluate', () => {
+  const rows = { mapping: [{ contact: 'c1', systemuser: 'u1' }] };
+  const store = { tableRows: (name) => rows[name] ?? [], resolveMapping: () => ({ fields: {} }) };
+  const linked = (type) =>
+    `<fetch><entity name="contact"><link-entity name="mapping" from="contact" to="contactid" link-type="${type}"><filter><condition attribute="systemuser" operator="eq-userid" /></filter></link-entity></entity></fetch>`;
+  const admits = (xml, userId, row = { contactid: 'c1' }, logical = 'contact') =>
+    recordFilterAdmits(xml, { store, userId, logical }, row);
+  assert.equal(admits(linked('any'), 'u1'), true);
+  assert.equal(admits(linked('any'), 'u2'), false);
+  assert.equal(admits(linked('any'), null), false);
+  assert.equal(admits(linked('outer'), 'u1'), false);
+  assert.equal(admits(linked('all'), 'u1'), false);
+  assert.equal(admits(linked('not any'), 'u2'), true);
+  assert.equal(admits('<fetch><entity name="contact"><filter type="or" /></entity></fetch>', null), true);
+  assert.equal(admits('<fetch><entity name="account" /></fetch>', 'u1'), false, 'another root');
+  assert.equal(admits('<fetch><entity name="contact"', 'u1'), false, 'unreadable');
+  assert.equal(
+    admits(
+      '<fetch><entity name="contact"><filter><condition attribute="x" operator="invented" value="1" /></filter></entity></fetch>',
+      'u1',
+    ),
+    false,
+  );
+});
+
+// @test-kind security: a record-filter role held by a team reaches only what its filter selects without a user (an unfiltered filter), never every row of an organization-owned table.
+test('a team holding a generated role reaches rows only through filters that need no user', async (t) => {
+  const fixture = await site(t, 3),
+    { sim } = fixture;
+  await fixture.ids('/_api/x_items?$select=x_name');
+  const role = sim.store.tableRows('role').find((row) => row.name === 'Member');
+  const root = sim.store.tableRows('businessunit').find((row) => !row.parentbusinessunitid);
+  const teamid = '77777777-7777-4777-8777-777777777790';
+  await sim.store.transact(() => {
+    sim.store.state.tables.team.push({
+      teamid,
+      name: 'Invented team',
+      businessunitid: { id: root.businessunitid, logical_name: 'businessunit' },
+    });
+    sim.store.state.tables.teamroles.push({
+      teamroleid: '77777777-7777-4777-8777-777777777791',
+      teamid: { id: teamid, logical_name: 'team', name: 'Invented team' },
+      roleid: { id: role.roleid, logical_name: 'role', name: 'Member' },
+    });
+  });
+  const principals = createPrincipals(sim.store);
+  const access = (entity, id) =>
+    principals.teamAccess({
+      team: { teamid },
+      entity,
+      row: sim.store.tableRows(entity).find((row) => row[`${entity}id`] === id),
+    });
+  assert.match(access('x_item', 'i2'), /ReadAccess/, 'Global: the unfiltered record filter');
+  assert.doesNotMatch(access('x_order', 'o1'), /ReadAccess/, 'Account: the filter needs the visitor');
+  assert.doesNotMatch(access('x_item', 'i1'), /WriteAccess/, 'Contact: the filter needs the visitor');
 });

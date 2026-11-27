@@ -28,7 +28,7 @@ after(() => browser?.close());
 // on every div (the X-ray host is a div; `all` does not reset direction).
 const hostileCss =
   'body{color:red;font:30px serif;letter-spacing:5px}*{color:red!important}div{direction:rtl!important;unicode-bidi:bidi-override!important}';
-const html = `<!doctype html><html><head><style>${hostileCss}</style></head><body><main style="padding:40px 40px 40px 520px"><form data-entityname="fx_widget" data-formid="widget-edit"><label for="fx_title">Title</label><input id="fx_title" name="fx_title"></form></main></body></html>`;
+const html = `<!doctype html><html><head><style>${hostileCss}</style></head><body><main style="padding:40px 40px 40px 520px"><form data-paqvilo-table="fx_widget" data-form-layout="{&quot;Id&quot;:&quot;widget-edit&quot;}"><label for="fx_title">Title</label><input id="fx_title" name="fx_title"></form></main></body></html>`;
 
 test('the X-ray card ignores page hover over its own UI, keeps page CSS out and opens every enclosing definition', async (t) => {
   const fx = inspectionFixture();

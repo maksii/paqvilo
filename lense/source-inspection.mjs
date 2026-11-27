@@ -4,14 +4,22 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
-import { importPortal, portalField, normalizePortalPath, effectiveSnippetRecords } from '../mirage/lib/importer.mjs';
+import {
+  importPortal,
+  portalField,
+  normalizePortalPath,
+  effectiveSnippetRecords,
+  pageTemplateKind,
+} from '../mirage/lib/importer.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
 import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
-import { importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { codeComponentGuid, importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { pcfBuildLayers, pcfImportOptions } from '../mirage/lib/pcf-sources.mjs';
 import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
+import { PCF_RESOURCE_PATH, PCF_REFUSALS } from './pcf-resources.mjs';
 
 // Web API roots that route to a server logic or a cloud flow instead of a table's entity set.
 const NON_TABLE_API_SEGMENTS = new Set(['cloudflow', 'serverlogics']);
@@ -23,6 +31,8 @@ import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal
 import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { definitionQuery } from './definition-query.mjs';
 import { moduleImportMatches } from '../mirage/lib/text-scanning.mjs';
+import { contentStylesheetFiles } from '../mirage/lib/liquid.mjs';
+import { discoverSolutionRoots } from '../mirage/lib/solution-roots.mjs';
 
 // Keep the browser entry point serializable, with owned dependencies embedded.
 /* NOSONAR */ export const inspectRenderedPage = new Function(
@@ -30,6 +40,8 @@ import { moduleImportMatches } from '../mirage/lib/text-scanning.mjs';
 )();
 
 const SERVER_LOGIC_ROUTE = /^\/_api\/serverlogics\//i;
+const REQUEST_PATH_LIMIT = 500,
+  REQUEST_PATH_LENGTH = 512;
 const ENTITY_SET_ROUTE = /^\/_api\/([a-z]\w*)(?:\(|\/|$)/i;
 const routePathname = (url) => (URL.canParse(url) ? new URL(url).pathname : '');
 // The page's resource-timing buffer stops recording once it holds 250 entries, so the session's own request events are the
@@ -47,6 +59,9 @@ const sameOrigin = (url, documentUrl) =>
 export function createApiRouteObserver() {
   const apiSets = new Set();
   const serverLogicPaths = new Set();
+  // Every same-origin request path (web files, server logic, cloud-flow endpoints), so the inspection can mark the
+  // export records they resolve to as requested. Pathnames only: query values and fragments are never kept.
+  const requestPaths = new Set();
   // The last navigation the main frame requested, without its fragment. Its commit
   // replaces the document whose routes are kept.
   let documentRequest = null;
@@ -57,6 +72,8 @@ export function createApiRouteObserver() {
       if (SERVER_LOGIC_ROUTE.test(route)) serverLogicPaths.add(route);
       const match = ENTITY_SET_ROUTE.exec(route);
       if (match) apiSets.add(match[1]);
+      if (route && route.length <= REQUEST_PATH_LENGTH && requestPaths.size < REQUEST_PATH_LIMIT)
+        requestPaths.add(route);
     },
     navigationRequested(url) {
       documentRequest = withoutHash(url);
@@ -66,11 +83,14 @@ export function createApiRouteObserver() {
       documentRequest = null;
       apiSets.clear();
       serverLogicPaths.clear();
+      requestPaths.clear();
     },
     merge(rendered) {
-      const merged = { ...rendered, apiSets: unionOf(rendered.apiSets, apiSets) };
+      let merged = { ...rendered, apiSets: unionOf(rendered.apiSets, apiSets) };
       const logicPaths = unionOf(rendered.serverLogicPaths, serverLogicPaths);
-      return logicPaths.length ? { ...merged, serverLogicPaths: logicPaths } : merged;
+      if (logicPaths.length) merged = { ...merged, serverLogicPaths: logicPaths };
+      const paths = unionOf(rendered.requestPaths, requestPaths).slice(0, REQUEST_PATH_LIMIT);
+      return paths.length ? { ...merged, requestPaths: paths } : merged;
     },
   };
 }
@@ -79,6 +99,9 @@ const norm = (value) =>
   String(value?.id ?? value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// Solution metadata keys component schemas by record ID only (solution-metadata.mjs): a name is not unique across
+// basic forms and lists, so a name lookup could join a form to a same-named list's view.
+const componentSchema = (metadata, id) => (id ? metadata.componentSchemas?.[id] : undefined);
 // Keep a synchronous final check for callers that await browser selection
 // validation after the asynchronous import. Do not serialize this capability.
 const editorAdmission = (read) => {
@@ -240,7 +263,7 @@ function indexMarkupSource(body, source, options) {
 
 function indexedForms(portal, metadata) {
   return [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].map((form) => {
-    const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name],
+    const schema = componentSchema(metadata, form.id),
       advanced = form.metadata?.kind === 'advancedform';
     const formLayouts = advanced ? formLayoutsForSchema(schema) : [];
     return {
@@ -285,6 +308,53 @@ function formLayoutsForSchema(schema) {
   };
   collectLayouts(schema);
   return formLayouts;
+}
+
+const LAYOUT_TAB_LIMIT = 100,
+  LAYOUT_SECTION_LIMIT = 100;
+/**
+ * The tabs and sections of each FormXml the report names, as `[{ name: <tab>, sections: [<section name>] }]`, from the
+ * compiled form structure of the Solution metadata index (lense/model-driven-metadata.mjs formStructure). The node
+ * observer then proves a rendered tab or section by its FormXml name. Rows are copied, never written into the cached
+ * export index the component index rows come from.
+ */
+function layoutOfStructure(structure) {
+  const tabs = new Map();
+  for (const item of structure) {
+    if (item?.kind === 'tab' && typeof item.name === 'string' && tabs.size < LAYOUT_TAB_LIMIT && !tabs.has(item.name))
+      tabs.set(item.name, { name: item.name, sections: [] });
+    const tab = item?.kind === 'section' && tabs.get(item.tab);
+    if (tab && typeof item.name === 'string' && tab.sections.length < LAYOUT_SECTION_LIMIT)
+      tab.sections.push(item.name);
+  }
+  return tabs.size ? [...tabs.values()] : null;
+}
+
+function attachFormLayouts(report, metadataIndex) {
+  if (typeof metadataIndex?.formStructure !== 'function') return;
+  const layouts = new Map();
+  const layoutOf = (id) => {
+    const key = 'form:' + norm(id);
+    if (!norm(id)) return null;
+    if (!layouts.has(key)) {
+      let structure = [];
+      try {
+        structure = metadataIndex.formStructure(key) ?? [];
+      } catch {
+        /* A form whose FormXml does not compile has no layout to prove its tabs by. */
+      }
+      layouts.set(key, layoutOfStructure(structure));
+    }
+    return layouts.get(key);
+  };
+  const withLayout = (row) => {
+    const layout = row && layoutOf(row.id);
+    return layout ? { ...row, layout } : row;
+  };
+  for (const form of [...(report.forms ?? []), ...(report.componentIndex?.forms ?? [])]) {
+    if (form.formXml) form.formXml = withLayout(form.formXml);
+    if (Array.isArray(form.formLayouts)) form.formLayouts = form.formLayouts.map(withLayout);
+  }
 }
 
 function addMetadataForms(forms, metadata) {
@@ -371,7 +441,7 @@ function exportIndex(portal, metadata, indexStore = null) {
     sourceFile: list.metadata?._file,
     pageReferenced: false,
     evidenceLabel: 'List in your sources; not used by this page',
-    ...listInspectionBindings(list),
+    ...listInspectionBindings(list, portal),
   }));
   index = {
     metadata,
@@ -439,7 +509,62 @@ function listInspectionViewIds(list) {
   return [...new Set(viewIds)];
 }
 
-function listInspectionBindings(list) {
+// The target an action opens (native-services.mjs actionTarget): its TargetType, else a form when it names one, else
+// a web page, else a URL. 0 form, 1 web page, 2 URL.
+function actionTargetType(action) {
+  if (action.TargetType == null || action.TargetType === '') {
+    if (action.EntityFormId) return 0;
+    if (action.RedirectWebpageId) return 1;
+    return action.RedirectUrl ? 2 : 0;
+  }
+  return Number(action.TargetType);
+}
+
+const RELATION_LIMIT = 100;
+// A relation to a web page: the page record when the export has it, else an unresolved reference.
+function pageRelation(kind, pageId, owner, portal, extra = {}) {
+  const id = norm(pageId);
+  if (!id) return null;
+  const page = (portal?.pages ?? []).find((row) => norm(row.id) === id);
+  return {
+    kind,
+    pageId: id,
+    name: page?.name ?? null,
+    url: page?.url ?? null,
+    sourceFile: page?.metadata?._file ?? null,
+    resolved: Boolean(page),
+    owner,
+    ...extra,
+  };
+}
+
+/**
+ * What a list or subgrid action leads to: the web page or URL it redirects to and the workflow it runs. The form an
+ * action opens stays on the action row (formId). Workflow identity is read from Workflow.Id or WorkflowId.
+ */
+function actionRelations(action, owner, portal) {
+  const name = String(action?.Type ?? 'action').replace('CrmEntityFormView-', '');
+  const via = `${owner} ${name}`;
+  const target = actionTargetType(action);
+  const relations = [];
+  if (target === 1 && action.RedirectWebpageId)
+    relations.push(pageRelation('action-page', action.RedirectWebpageId, via, portal, { action: name }));
+  if (target === 2 && action.RedirectUrl)
+    relations.push({ kind: 'action-url', url: String(action.RedirectUrl).slice(0, 2048), owner: via, action: name });
+  const workflow = action.Workflow?.Id ?? action.Workflow?.id ?? action.WorkflowId;
+  if (String(action?.Type ?? '').endsWith('WorkflowAction'))
+    relations.push({
+      kind: 'workflow',
+      workflowId: workflow ? norm(workflow) : null,
+      name: action.Workflow?.Name ?? null,
+      owner: via,
+      action: name,
+      resolved: false,
+    });
+  return relations.filter(Boolean);
+}
+
+function listInspectionBindings(list, portal = null) {
   let settings;
   try {
     settings = JSON.parse(portalField(list.metadata ?? {}, 'settings', '{}'));
@@ -447,19 +572,29 @@ function listInspectionBindings(list) {
     settings = {};
   }
   const actions = listInspectionActions(settings);
+  const allActions = [
+    ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
+    ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
+  ].filter((action) => action && typeof action === 'object');
+  const relations = [
+    pageRelation('details-page', portalField(list.metadata ?? {}, 'webpagefordetailsview'), list.name, portal),
+    pageRelation('create-page', portalField(list.metadata ?? {}, 'webpageforcreate'), list.name, portal),
+    ...allActions.flatMap((action) => actionRelations(action, list.name, portal)),
+  ]
+    .filter(Boolean)
+    .slice(0, RELATION_LIMIT);
   return {
     viewIds: listInspectionViewIds(list),
     actions: actions.map((action) => ({
       name: action.Type.replace('CrmEntityFormView-', ''),
-      formId:
-        action.EntityFormId &&
-        (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
-          ? norm(action.EntityFormId)
-          : null,
+      formId: action.EntityFormId && actionTargetType(action) === 0 ? norm(action.EntityFormId) : null,
       targetType: action.TargetType ?? null,
+      targetPageId: actionTargetType(action) === 1 && action.RedirectWebpageId ? norm(action.RedirectWebpageId) : null,
+      targetUrl: actionTargetType(action) === 2 && action.RedirectUrl ? String(action.RedirectUrl) : null,
       conditional: Boolean(action.FilterCriteria),
       evidence: 'exported-action',
     })),
+    relations,
   };
 }
 const indexedMarkupHints = (body, source, index) => {
@@ -470,64 +605,57 @@ const indexedMarkupHints = (body, source, index) => {
   return entry.hints.map(({ id, name, kind, sourceFile, ...hint }) => ({ ...structuredClone(hint), ...source }));
 };
 
-// Resolve declared browser resources against their browser URL, never a source directory.
+/**
+ * The lookup key of a web-file address, as the runtime serves web files (mirage/server.mjs: normalizePortalPath):
+ * case-insensitive, percent-decoded, without query, fragment, trailing slash or an application-relative `~/`.
+ */
+function webFileKey(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    return normalizePortalPath(value.replace(/^~(?=\/)/, '').split(/[?#]/, 1)[0] || '/');
+  } catch {
+    return null;
+  }
+}
+
+const ASSET_REFERENCE_LIMIT = 2000;
+// Resolve declared browser resources against their browser URL, never a source directory. Returns web-file keys.
 function assetPaths(text, basePath) {
   const values = [];
+  const source = String(text ?? '');
   const patterns = [
-    /\b(?:src|href)\s*=\s*['"]([^'"]+)['"]/gi,
+    /\b(?:src|href|poster)\s*=\s*['"]([^'"]+)['"]/gi,
     /\burl\(\s*['"]?([^'"\s)]+)['"]?\s*\)/gi,
     /@import\s+['"]([^'"]+)['"]/gi,
     null, // Static imports use a monotone scanner below; preserve this pattern's position in the result order.
     /\bimport\(\s*['"]([^'"]+)['"]\s*\)/gi,
+    // Literal script requests: fetch, jQuery requests, new URL and an options object's url.
+    /\bfetch\(\s*['"`]([^'"`$]+)['"`]/gi,
+    /(?:\$|\bjQuery)\.(?:get|getJSON|getScript|post|ajax)\(\s*['"`]([^'"`$]+)['"`]/g,
+    /\bnew\s+URL\(\s*['"`]([^'"`$]+)['"`]/g,
+    /\burl\s*:\s*['"`]([^'"`$]+)['"`]/g,
   ];
-  for (const pattern of patterns)
-    for (const match of pattern ? String(text ?? '').matchAll(pattern) : moduleImportMatches(String(text ?? ''))) {
-      try {
-        if (!match[1] || match[1].includes('{{') || match[1].startsWith('#')) continue;
-        const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
-        if (url.origin === 'http://inspect.invalid') values.push(decodeURIComponent(url.pathname)); // NOSONAR: reserved or loopback placeholder host, not a real transport
-      } catch {
-        /* Optional inspection or cleanup failure must not interrupt the owning operation. */
-      }
+  const add = (reference) => {
+    if (!reference || reference.includes('{{') || reference.startsWith('#') || values.length >= ASSET_REFERENCE_LIMIT)
+      return;
+    try {
+      const url = new URL(reference.replace(/^~(?=\/)/, ''), new URL(basePath, 'http://inspect.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
+      if (url.origin === 'http://inspect.invalid') values.push(webFileKey(url.pathname)); // NOSONAR: reserved or loopback placeholder host, not a real transport
+    } catch {
+      /* Optional inspection or cleanup failure must not interrupt the owning operation. */
     }
-  return values;
+  };
+  for (const pattern of patterns)
+    for (const match of pattern ? source.matchAll(pattern) : moduleImportMatches(source)) add(match[1]);
+  // srcset lists candidates separated by commas, each a URL and an optional descriptor.
+  for (const match of source.matchAll(/\bsrcset\s*=\s*(['"])([^'"]+)\1/gi))
+    for (const candidate of match[2].split(',').slice(0, 20)) add(candidate.trim().split(/\s+/)[0]);
+  return values.filter(Boolean);
 }
 
-/** Only configured roots are used. An unrelated project default never replaces this site. */
-export async function inspectionSources(cfg) {
-  const configured = cfg.mirageConfig ?? {};
-  const sourceDir = await fs.realpath(cfg.sourceDir);
-  let roots =
-      cfg.mirageSourceRoots?.filter(
-        (root) => path.resolve(root).toLowerCase() !== path.resolve(cfg.sourceDir).toLowerCase(),
-      ) ??
-      configured.solutionRoots ??
-      [],
-    order = configured.solutionOrder ?? 'derived';
-  let lcid = 1033,
-    observed = configured.observed,
-    dataModel = configured.dataModel;
-  let deploymentProfile = configured.deploymentProfile ?? null,
-    deploymentProfiles = configured.deploymentProfiles;
-  const diagnostics = [];
-  if (configured.project) {
-    try {
-      const project = await loadProjectConfig(configured.project);
-      const portal = project.portals.find((entry) => entry.sourceDir.toLowerCase() === sourceDir.toLowerCase());
-      if (!portal) throw new Error('The configured project does not select this portal source.');
-      roots = portal.solutionRoots;
-      order = project.solutionOrder;
-      lcid = project.lcid;
-      observed = portal.observed ?? observed;
-      dataModel = portal.dataModel ?? dataModel;
-      deploymentProfile = portal.deploymentProfile ?? deploymentProfile;
-      deploymentProfiles = portal.deploymentProfiles ?? deploymentProfiles;
-    } catch (error) {
-      diagnostics.push({ code: 'INSPECT_PROJECT_UNAVAILABLE', reason: error.message });
-    }
-  }
+/** The Solution roots that are directories, as real paths; each one that is not is reported in `diagnostics`. */
+async function existingSolutionRoots(roots, diagnostics) {
   const selected = [];
-  const activeProfile = deploymentProfiles ? await loadDeploymentProfiles(deploymentProfiles) : null;
   for (const root of roots) {
     try {
       const real = await fs.realpath(root);
@@ -540,6 +668,68 @@ export async function inspectionSources(cfg) {
       });
     }
   }
+  return selected;
+}
+
+/**
+ * Solution roots by the rule `mirage dev` applies (lense/commands/mirage.mjs launchSolutionRoots): the roots a running
+ * Mirage runtime reported, else the configured project's, else configured solutionRoots, else unpacked Solutions
+ * discovered next to the portal's repository. An unrelated project default never replaces this site. The selection
+ * and its reason are returned as `selection`, so a report never shows an empty Solution set silently.
+ */
+export async function inspectionSources(cfg) {
+  const configured = cfg.mirageConfig ?? {};
+  const sourceDir = await fs.realpath(cfg.sourceDir);
+  let rule = 'none';
+  let roots = [],
+    order = configured.solutionOrder ?? 'derived';
+  if (Array.isArray(cfg.mirageSourceRoots)) {
+    roots = cfg.mirageSourceRoots.filter(
+      (root) => path.resolve(root).toLowerCase() !== path.resolve(cfg.sourceDir).toLowerCase(),
+    );
+    rule = 'mirage-runtime';
+  } else if (Array.isArray(configured.solutionRoots)) {
+    roots = configured.solutionRoots;
+    rule = 'configured';
+  }
+  let lcid = 1033,
+    observed = configured.observed,
+    dataModel = configured.dataModel;
+  let deploymentProfile = configured.deploymentProfile ?? null,
+    deploymentProfiles = configured.deploymentProfiles,
+    pcf = configured.pcf;
+  const diagnostics = [];
+  if (configured.project) {
+    try {
+      const project = await loadProjectConfig(configured.project);
+      const portal = project.portals.find((entry) => entry.sourceDir.toLowerCase() === sourceDir.toLowerCase());
+      if (!portal) throw new Error('The configured project does not select this portal source.');
+      roots = portal.solutionRoots;
+      rule = 'project';
+      order = project.solutionOrder;
+      lcid = project.lcid;
+      observed = portal.observed ?? observed;
+      dataModel = portal.dataModel ?? dataModel;
+      deploymentProfile = portal.deploymentProfile ?? deploymentProfile;
+      deploymentProfiles = portal.deploymentProfiles ?? deploymentProfiles;
+      pcf = project.pcf ?? pcf;
+    } catch (error) {
+      diagnostics.push({ code: 'INSPECT_PROJECT_UNAVAILABLE', reason: error.message });
+    }
+  }
+  if (rule === 'none') {
+    roots = await discoverSolutionRoots(sourceDir).catch(() => []);
+    if (roots.length) {
+      rule = 'sibling-discovery';
+      diagnostics.push({
+        code: 'INSPECT_SOLUTION_ROOTS_DISCOVERED',
+        severity: 'info',
+        reason: `No Solution sources are configured; using ${roots.length} unpacked Solution folder(s) found next to the portal repository, as mirage dev does.`,
+      });
+    }
+  }
+  const activeProfile = deploymentProfiles ? await loadDeploymentProfiles(deploymentProfiles) : null;
+  const selected = await existingSolutionRoots(roots, diagnostics);
   return {
     sourceDir,
     roots: unique(
@@ -552,7 +742,24 @@ export async function inspectionSources(cfg) {
     dataModel,
     deploymentProfile: activeProfile?.profile ?? deploymentProfile,
     deploymentProfileFile: activeProfile?.pagesFile ?? null,
+    // pcf.sources build outputs (mirage/lib/pcf-sources.mjs), layered after the Solutions as Mirage layers them.
+    pcfLayers: await pcfBuildLayers(pcf, {
+      diagnostic: (entry) => diagnostics.push({ code: entry.code, reason: entry.message }),
+    }),
+    pcfImport: pcfImportOptions(pcf),
+    // The resolved pcf setting (platformLibraries for the Power Pages host admission, lense/pcf-audit.mjs).
+    pcf,
     diagnostics,
+    selection: {
+      rule,
+      reason: {
+        'mirage-runtime': 'The Solution roots of the running Mirage runtime.',
+        project: 'The Solution roots of the configured project.',
+        configured: 'The configured mirage.solutionRoots.',
+        'sibling-discovery': 'No Solution sources are configured; unpacked Solutions next to the portal repository.',
+        none: 'No Solution sources are configured and none were found next to the portal repository.',
+      }[rule],
+    },
   };
 }
 
@@ -625,7 +832,7 @@ export async function inspectionSources(cfg) {
     const frameContext = node.localName === 'iframe' ? definitionContext(frameAddress, node.ownerDocument.baseURI) : {};
     return {
       tag: node.tagName.toLowerCase(),
-      id: node.id.slice(0, 160),
+      id: (node.getAttribute('id') ?? '').slice(0, 160),
       name: (node.getAttribute('name') ?? '').slice(0, 160),
       type: (node.getAttribute('type') ?? '').slice(0, 40),
       entity: String(
@@ -716,7 +923,9 @@ export async function inspectionSources(cfg) {
     /* An inaccessible or changing selection cannot widen the scan. */
   }
   let scanned = 0,
+    inaccessibleFrames = 0,
     traversalTruncated = false,
+    assetsTruncated = false,
     shapeOverflow = false;
   // Visit each light/open-shadow element once; slots' assigned light children
   // are already in the light tree. Never enter the inspector's own shadow roots.
@@ -730,11 +939,14 @@ export async function inspectionSources(cfg) {
       if (elements.length < 2000) elements.push(node);
       else shapeOverflow = true;
     }
-    if (node.matches('script[src],link[href],img[src]') && assets.length < 300) {
+    if (node.matches('script[src],link[href],img[src]')) {
       const raw = node.getAttribute('src') ?? node.getAttribute('href');
       try {
         const url = new URL(raw, node.ownerDocument.baseURI);
-        if (url.origin === location.origin) assets.push({ kind: node.localName, path: url.pathname });
+        if (url.origin !== location.origin) {
+          /* Another site's file is not a source of this portal. */
+        } else if (assets.length < 300) assets.push({ kind: node.localName, path: url.pathname });
+        else assetsTruncated = true;
       } catch {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
       }
@@ -757,8 +969,10 @@ export async function inspectionSources(cfg) {
       try {
         const inner = node.contentDocument;
         if (inner?.documentElement) pending.push(inner.documentElement);
+        // A cross-origin or sandboxed frame has no document this page can read: a boundary, counted.
+        else inaccessibleFrames++;
       } catch {
-        /* Optional inspection or cleanup failure must not interrupt the owning operation. */
+        inaccessibleFrames++;
       }
     for (const children of [node.shadowRoot?.children ?? [], node.children]) {
       const count = Math.min(children.length, 8000 - scanned - pending.length);
@@ -799,14 +1013,55 @@ export async function inspectionSources(cfg) {
         break shapeLoop;
     }
   }
+  // Same-origin request paths only (never query values), so web files, server logic and cloud flows can be marked requested.
+  const requestPaths = [
+    ...new Set(
+      performance
+        .getEntriesByType('resource')
+        .slice(-300)
+        .map((entry) => pathname(entry.name))
+        .filter((route) => route && route.length <= 512),
+    ),
+  ];
+  // The multistep step the platform declares: the stepid key of the page address, and per multistep form control
+  // (WebFormControl_<form id>) the position of the active progress indicator entry. No text or field value is read.
+  let stepIds = [];
+  try {
+    stepIds = definitionQuery(new URL(location.href), { step: true })
+      .filter(([key]) => key === 'stepid')
+      .map(([, value]) => value.slice(0, 160))
+      .slice(0, 4);
+  } catch {
+    /* An unreadable address declares no step. */
+  }
+  const multistep = [
+    ...(typeof document.querySelectorAll === 'function' ? document.querySelectorAll('[id^="WebFormControl_"]') : []),
+  ]
+    .filter((node) => /^WebFormControl_[0-9a-f]{32}$/i.test(node.id) && own(node))
+    .slice(0, 10)
+    .map((node) => {
+      const indicator = document.getElementById(node.id + '_ProgressIndicator');
+      const items = indicator ? [...indicator.querySelectorAll('li.list-group-item')] : [];
+      let stepIndex = items.findIndex((item) => item.classList.contains('active'));
+      if (stepIndex < 0 && indicator) {
+        const number = indicator.querySelector('.number:not(.total)')?.textContent?.trim() ?? '';
+        stepIndex = /^\d{1,3}$/.test(number) ? Number(number) - 1 : -1;
+      }
+      return { formControlId: node.id.slice('WebFormControl_'.length), stepIndex: stepIndex >= 0 ? stepIndex : null };
+    });
   return {
     assets,
     controls,
     apiSets,
     ...(serverLogicPaths.length ? { serverLogicPaths } : {}),
+    ...(requestPaths.length ? { requestPaths } : {}),
+    ...(stepIds.length ? { stepIds } : {}),
+    ...(multistep.length ? { multistep } : {}),
     ids,
     markupTokens: [...tokens],
     truncated: controlsSeen > 300 || shapeTruncated || tokenTruncated,
+    ...(assetsTruncated ? { assetsTruncated } : {}),
+    ...(inaccessibleFrames ? { inaccessibleFrames } : {}),
   };
 }
 
@@ -929,19 +1184,25 @@ function inspectFormCodeBindings(current, cells, context) {
       addNativeCodeBinding(report, current, form, field, component, { definition, rendered, portal });
 }
 
-function appendSubgridSettingsActions(settings, component, owner, record, addForm) {
+function appendSubgridSettingsActions(settings, component, owner, record, addForm, portal) {
   for (const action of [
     ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
     ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
   ]) {
+    if (!action || typeof action !== 'object') continue;
+    if (component.relations.length < RELATION_LIMIT)
+      component.relations.push(
+        ...actionRelations(action, owner, portal)
+          .map((row) => ({ ...row, metadataSource: record._file ?? null }))
+          .slice(0, RELATION_LIMIT - component.relations.length),
+      );
     if (
       !['CrmEntityFormView-CreateAction', 'CrmEntityFormView-EditAction', 'CrmEntityFormView-DetailsAction'].includes(
         action.Type,
       )
     )
       continue;
-    const modal =
-      action.EntityFormId && (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0);
+    const modal = action.EntityFormId && actionTargetType(action) === 0;
     const formSource = modal
       ? addForm(
           action.EntityFormId,
@@ -961,7 +1222,7 @@ function appendSubgridSettingsActions(settings, component, owner, record, addFor
   }
 }
 
-function processSubgridRecord(record, cell, component, owner, addForm, report) {
+function processSubgridRecord(record, cell, component, owner, addForm, report, portal) {
   component.metadataSources.push({ name: 'Subgrid action settings', sourceFile: record._file });
   let settings;
   try {
@@ -976,7 +1237,7 @@ function processSubgridRecord(record, cell, component, owner, addForm, report) {
     });
     return;
   }
-  appendSubgridSettingsActions(settings, component, owner, record, addForm);
+  appendSubgridSettingsActions(settings, component, owner, record, addForm, portal);
 }
 
 function processSubgridActions(current, cell, component, owner, context) {
@@ -998,24 +1259,40 @@ function processSubgridActions(current, cell, component, owner, context) {
       owner,
       reason: 'Several settings records configure this subgrid; which actions show is unclear.',
     });
-  for (const record of records) processSubgridRecord(record, cell, component, owner, addForm, report);
+  for (const record of records) processSubgridRecord(record, cell, component, owner, addForm, report, portal);
+}
+
+function processLookupCell(current, cell, context) {
+  const { report, form, addEntity, addView } = context;
+  const targets = Array.isArray(cell.targets)
+    ? [...new Set(cell.targets.filter((name) => typeof name === 'string' && /^[a-z][a-z0-9_]*$/i.test(name)))]
+        .map((name) => name.toLowerCase())
+        .slice(0, 8)
+    : [];
+  if (cell.lookupViewId || targets.length)
+    report.nativeComponents.push({
+      kind: 'lookup',
+      id: cell.id ?? cell.name,
+      name: cell.label ?? cell.name,
+      formId: form.id,
+      owner: form.name + '.' + (cell.name ?? cell.id),
+      sourceFile: current.sourceFile,
+      viewId: cell.lookupViewId || null,
+      // The tables the lookup column targets (Solution relationship metadata).
+      targets,
+      // FormXml names no DefaultViewId: the lookup dialog uses each target table's default lookup view, resolved
+      // after every table is known (resolveDefaultLookupViews).
+      ...(cell.lookupViewId ? {} : { viewSource: 'table-default' }),
+    });
+  if (cell.lookupViewId)
+    addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
+  for (const target of cell.lookupViewId ? [] : targets) addEntity(target, 'lookup-target');
 }
 
 function processNativeFormCell(current, cell, depth, context) {
-  const { report, form, rendered, addEntity, addView } = context;
+  const { report, form, rendered, addEntity } = context;
   if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
-    if (cell.lookupViewId)
-      report.nativeComponents.push({
-        kind: 'lookup',
-        id: cell.id ?? cell.name,
-        name: cell.label ?? cell.name,
-        formId: form.id,
-        owner: form.name + '.' + (cell.name ?? cell.id),
-        sourceFile: current.sourceFile,
-        viewId: cell.lookupViewId,
-      });
-    if (cell.lookupViewId)
-      addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
+    processLookupCell(current, cell, context);
     return;
   }
   const owner = `${form.name}.${cell.id}`;
@@ -1034,6 +1311,7 @@ function processNativeFormCell(current, cell, depth, context) {
     viewId: cell.viewId ?? null,
     hidden: Boolean(cell.hidden),
     actions: [],
+    relations: [],
     metadataSources: [],
   };
   report.nativeComponents.push(component);
@@ -1068,7 +1346,9 @@ function walkFormSchema(current, depth, context) {
   for (const cell of cells) processNativeFormCell(current, cell, depth, context);
 }
 
-function addInspectionEntity(context, entity) {
+// A table row added during enrichment. Its metadata state, Webapi/<table>/* settings and unresolved entry are
+// derived once every table is known (finalizeInspectionTables).
+function addInspectionEntity(context, entity, evidence = 'form-dependency') {
   const { report, metadata } = context;
   if (!entity || report.tables.some((row) => row.logicalName === entity)) return;
   const table = metadata.entities?.[entity];
@@ -1079,7 +1359,7 @@ function addInspectionEntity(context, entity) {
     sourceFile: table?.sources?.[0],
     sourceFiles: table?.sources ?? [],
     fieldCount: Object.keys(table?.fields ?? {}).length,
-    evidence: 'form-dependency',
+    evidence,
   });
 }
 
@@ -1148,7 +1428,7 @@ function addInspectionForm(context, reference, owner, evidence) {
   }
   let item = report.forms.find((row) => norm(row.id) === norm(definition.id));
   if (!item) {
-    const schema = metadata.componentSchemas?.[definition.id] ?? metadata.componentSchemas?.[definition.name];
+    const schema = componentSchema(metadata, definition.id);
     item = {
       id: definition.id,
       name: definition.name,
@@ -1174,7 +1454,7 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
   report.nativeComponents = [];
   report.nativeCodeBindings = [];
   const context = { report, portal, metadata, rendered, queue };
-  context.addEntity = (entity) => addInspectionEntity(context, entity);
+  context.addEntity = (entity, evidence) => addInspectionEntity(context, entity, evidence);
   context.addFields = (entity, fields, evidence) => addInspectionFields(context, entity, fields, evidence);
   context.addView = (reference, entity, owner, evidence) =>
     addInspectionView(context, reference, entity, owner, evidence);
@@ -1186,21 +1466,93 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
     if (visited.has(norm(form.id))) continue;
     visited.add(norm(form.id));
     const definition = [...portal.forms, ...(portal.advancedForms ?? [])].find((row) => norm(row.id) === norm(form.id));
-    const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name];
+    const schema = componentSchema(metadata, form.id);
     if (!schema) continue;
     const walkContext = { ...context, form, definition };
     walkFormSchema(schema, 0, walkContext);
   }
 }
 
-function componentLiteral(text) {
+// Learn's Liquid objects: a dataset binding argument (Mirage's local contract) that starts with one is set at run time.
+const LIQUID_OBJECT_ROOTS = [
+  'ads',
+  'blogs',
+  'entities',
+  'entitylist',
+  'entityview',
+  'events',
+  'forloop',
+  'forums',
+  'knowledge',
+  'language',
+  'log',
+  'now',
+  'page',
+  'params',
+  'polls',
+  'request',
+  'searchindex',
+  'settings',
+  'sitemap',
+  'sitemarkers',
+  'snippets',
+  'tablerowloop',
+  'user',
+  'weblinks',
+  'website',
+];
+
+/**
+ * The control name of one codecomponent tag, read as the Power Pages Liquid host reads it (as in Mirage
+ * liquid.mjs codeComponentName): the raw text of the exact `name` argument. An unquoted
+ * token is the literal name (a schema name or a customcontrolid GUID), never a variable; a quoted name renders nothing
+ * on Power Pages (`quoted`), and neither does a braced one (`braced`, Mirage PCF_LIQUID_NAME_BRACED): both end the rest
+ * of the template there.
+ */
+// An unquoted GUID in braces ({<customcontrolid>}; any other braced name is an ordinary name), as Mirage liquid.mjs codeComponentName halts on it: upper-case and
+// hyphenless GUIDs render, a braced one ends the page there (pcf-parity summary-F section 3).
+const BRACED_NAME = /^\{[^{}]*\}$/;
+function codeComponentNameOf(markup) {
+  // The tag key is case-insensitive.
+  const parameter = /(?:^|\s)name\s*:\s*/i.exec(markup);
+  const text = parameter ? markup.slice(parameter.index + parameter[0].length) : '';
+  const value = /^(?:'([^']*)'|"([^"]*)"|([^\s,%]+))/.exec(text);
+  if (!value) return { name: '', dynamic: false, missing: true };
+  if (value[3] !== undefined)
+    // A name without a namespace is read as literal too; no capture has observed that form (Mirage marks it the same).
+    return {
+      name: value[3],
+      dynamic: false,
+      ...(BRACED_NAME.test(value[3]) && codeComponentGuid(value[3].slice(1, -1)) ? { braced: true } : {}),
+      ...(!value[3].includes('.') && !codeComponentGuid(value[3]) ? { unobserved: 'undotted-name' } : {}),
+    };
+  return { name: value[1] ?? value[2], dynamic: false, quoted: true };
+}
+
+/** The codecomponent tags of one Liquid body as `{ name, dynamic, quoted?, braced?, duplicate?, expression }`. */
+export function codeComponentReferences(source) {
+  // A tag inside {% raw %} or {% comment %} renders nothing (the inspection reads stripped bodies too).
+  const body = stripLiquidLiteralBlocks(String(source));
+  const seen = new Set();
+  return liquidTags(body, 'codecomponent').map((match) => {
+    const reference = { ...codeComponentNameOf(match[1]), expression: match[0], match };
+    const key = (codeComponentGuid(reference.name) ?? reference.name).toLowerCase();
+    // two-instances: a second tag of the same control renders neither.
+    if (!reference.quoted && !reference.braced && key && seen.has(key)) reference.duplicate = true;
+    seen.add(key);
+    return reference;
+  });
+}
+
+function componentLiteral(text, variables = new Set(LIQUID_OBJECT_ROOTS)) {
   const value = /^\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/.exec(text);
   const name = value?.[1] ?? value?.[2] ?? value?.[3] ?? '';
-  return {
-    name,
-    dynamic:
-      !value || Boolean(value[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)),
-  };
+  // An unquoted GUID (braced or without hyphens) or dotted schema name is the literal reference Mirage renders
+  // (liquid.mjs codecomponent): Learn's tag examples write `name:abc_SampleNamespace.MapControl`.
+  const literal =
+    codeComponentGuid(name) ||
+    (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(name) && !variables.has(name.split('.')[0].toLowerCase()));
+  return { name, dynamic: !value || Boolean(value[3] && !literal) };
 }
 
 function appendCodeDatasetReport(report, entity, view, table, item) {
@@ -1288,33 +1640,60 @@ function inspectMarkupDataset(match, dataset, schemaName, row, report, metadata)
   return item;
 }
 
-function inspectMarkupCodeReference(match, context) {
+function markupBindingKind(direct, schemaName) {
+  if (direct) return 'declared-schema-name';
+  return schemaName ? 'observed-component-mapping' : 'unknown';
+}
+
+function missingMarkupControlReason(dynamic, schemaName) {
+  if (dynamic) return 'The code component name is set at run time, so it cannot be matched to a file.';
+  if (schemaName) return 'Code component manifest not found in your Solution sources.';
+  return 'No code component in your Solution sources matches this name.';
+}
+
+const MARKUP_REFUSALS = {
+  PCF_LIQUID_NAME_QUOTED:
+    'Power Pages renders nothing for a quoted control name and ends the rest of the template: write name: unquoted.',
+  PCF_LIQUID_NAME_BRACED:
+    'Power Pages renders nothing for a control id in braces and ends the rest of the template: write the id without braces.',
+  PCF_LIQUID_DUPLICATE_CONTROL:
+    'Power Pages renders no host when a page renders the same control twice, and ends the rest of the template.',
+};
+
+// The control exists, but Power Pages renders nothing for this tag and ends the rest of the template.
+function noteRefusedMarkupReference(reference, row, report) {
+  let refused = null;
+  if (reference.quoted) refused = 'PCF_LIQUID_NAME_QUOTED';
+  else if (reference.braced) refused = 'PCF_LIQUID_NAME_BRACED';
+  else if (reference.duplicate) refused = 'PCF_LIQUID_DUPLICATE_CONTROL';
+  if (!refused) return;
+  row.refused = refused;
+  report.unresolved.push({ kind: 'code-component', expression: row.expression, reason: MARKUP_REFUSALS[refused] });
+}
+
+function inspectMarkupCodeReference(reference, context) {
   const { report, metadata, observed, catalogue } = context;
-  const nameParameter = /\bname\s*:\s*/i.exec(match[1]);
-  const { name, dynamic } = componentLiteral(
-    nameParameter ? match[1].slice(nameParameter.index + nameParameter[0].length) : '',
-  );
+  const { match, name, dynamic } = reference;
   const direct = !dynamic && [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(name));
-  const schemaName = dynamic ? null : (direct ?? observed?.codeComponents?.[norm(name)] ?? null);
-  let bindingKind = 'unknown';
-  if (direct) bindingKind = 'declared-schema-name';
-  else if (schemaName) bindingKind = 'observed-component-mapping';
+  const schemaName = dynamic
+    ? null
+    : (direct ?? observed?.codeComponents?.[codeComponentGuid(name) ?? norm(name)] ?? null);
   const row = {
     name,
     dynamic,
     schemaName,
     expression: match[0],
     evidence: dynamic ? 'dynamic-reference' : 'static-reference',
-    binding: bindingKind,
+    ...(reference.unobserved ? { unobserved: reference.unobserved } : {}),
+    binding: markupBindingKind(direct, schemaName),
   };
   const control = catalogue?.controls.get(schemaName);
   if (!control) {
-    let reason = 'No code component in your Solution sources matches this name.';
-    if (dynamic) reason = 'The code component name is set at run time, so it cannot be matched to a file.';
-    else if (schemaName) reason = 'Code component manifest not found in your Solution sources.';
+    const reason = missingMarkupControlReason(dynamic, schemaName);
     report.unresolved.push({ kind: 'code-component', expression: row.expression, reason });
     return row;
   }
+  noteRefusedMarkupReference(reference, row, report);
   Object.assign(row, {
     sourceFile: control.file,
     resources: control.resources.map((resource) => ({
@@ -1456,23 +1835,675 @@ function inspectNativeCodeBinding(binding, context) {
     inspectNativeBindingParameter(name, parameter, binding, row, report, metadata);
 }
 
+const LIQUID_TAG_LENGTH = 8192;
+/**
+ * Liquid tags of one name, each scanned to its closing `%}` outside quoted strings, so an argument such as
+ * width:'50%' does not end the tag. A quote left open within the length bound falls back to the first `%}`.
+ * Returns regex-like matches: [0] the tag, [1] its arguments. Local scanner until mirage/lib/liquid-source.mjs
+ * exports the shared quote-aware one.
+ */
+/** Where the tag whose opener ends at `start` closes (`%}` outside quotes), or the first `%}`; -1 when none. */
+function liquidTagEnd(text, start) {
+  const bound = Math.min(text.length, start + LIQUID_TAG_LENGTH);
+  let quote = null;
+  for (let index = start; index < bound - 1; index++) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '%' && text[index + 1] === '}') return index;
+  }
+  return text.indexOf('%}', start);
+}
+
+function liquidTags(text, name, limit = 500) {
+  const rows = [];
+  const opener = new RegExp(String.raw`\{%-?\s*${name}\b`, 'gi');
+  for (let match = opener.exec(text); match && rows.length < limit; match = opener.exec(text)) {
+    const start = opener.lastIndex;
+    const close = liquidTagEnd(text, start);
+    if (close < 0) break;
+    rows.push(Object.assign([text.slice(match.index, close + 2), text.slice(start, close)], { index: match.index }));
+    opener.lastIndex = close + 2;
+  }
+  return rows;
+}
+
 function inspectCodeComponents(report, body, metadata, observed, catalogue) {
   const context = { report, metadata, observed, catalogue };
   report.codeComponents = unique(
-    [...body.matchAll(/{%-?\s*codecomponent\b([^%]*)%}/gi)].map((match) => inspectMarkupCodeReference(match, context)),
+    codeComponentReferences(body).map((reference) => inspectMarkupCodeReference(reference, context)),
     (row) => row.expression,
   );
   for (const binding of report.nativeCodeBindings ?? []) inspectNativeCodeBinding(binding, context);
+}
+
+const PCF_ASSET_KINDS = { code: 'script', css: 'stylesheet' };
+function pcfAssetRow(catalogue, control, resource, url, evidence) {
+  return {
+    name: `${control.schemaName}/${resource.path}`,
+    url,
+    kind: PCF_ASSET_KINDS[resource.kind] ?? resource.kind,
+    mimeType: null,
+    sourceFile: catalogue.assets.get(resource.url)?.file,
+    evidence,
+    componentKey: 'pcf:' + control.schemaName.toLowerCase(),
+    schemaName: control.schemaName,
+    resourceKind: resource.kind,
+    resourcePath: resource.path,
+    manifestFile: control.file,
+  };
+}
+
+function pcfControlNamed(catalogue, name) {
+  return typeof name === 'string'
+    ? [...(catalogue?.controls?.values() ?? [])].find((item) => item.schemaName.toLowerCase() === name.toLowerCase())
+    : null;
+}
+
+function pcfUnresolvedRow(item) {
+  return {
+    kind: 'pcf-resource',
+    expression: item.url,
+    owner: typeof item.control === 'string' ? item.control : undefined,
+    reason: PCF_REFUSALS[item.refused] ?? PCF_REFUSALS['pcf-control-not-in-sources'],
+  };
+}
+
+/**
+ * The code component resources the page loads, as asset rows X-ray matches its `<script src>` and `<link href>`
+ * elements to. On a live portal, `rendered.pcfResources` names the `/_pcfwebresource/<guid>` addresses the session
+ * joined from the page's declarations (lense/pcf-resources.mjs); each is joined again here to this catalogue, so only a
+ * manifest-declared file of the named control is reported. In front of Mirage, the resources of the page's code
+ * components are its own `/__sim-static/pcf/` addresses.
+ */
+function appendCodeComponentAssets(report, rendered, catalogue, live) {
+  report.assets ??= [];
+  const known = new Set(report.assets.map((row) => String(row.url).toLowerCase()));
+  const requested = new Set(
+    [...(rendered.requestPaths ?? []).slice(0, REQUEST_PATH_LIMIT), ...(rendered.assets ?? []).map((row) => row.path)]
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.split(/[?#]/)[0].toLowerCase()),
+  );
+  const add = (row) => {
+    const key = row.url.toLowerCase();
+    if (known.has(key) || report.assets.length >= 1000) return;
+    known.add(key);
+    report.assets.push({ ...row, ...(requested.has(key) ? { observed: 'requested' } : {}) });
+  };
+  for (const item of (rendered.pcfResources ?? []).slice(0, 500)) {
+    if (!item || typeof item.url !== 'string' || !PCF_RESOURCE_PATH.test(item.url)) continue;
+    const control = pcfControlNamed(catalogue, item.control);
+    const resource =
+      !item.refused && control?.resources.find((entry) => entry.kind === item.kind && entry.path === item.path);
+    if (!resource || !catalogue.assets.get(resource.url)?.file) {
+      report.unresolved.push(pcfUnresolvedRow(item));
+      continue;
+    }
+    add(pcfAssetRow(catalogue, control, resource, item.url, 'pcf-declaration'));
+  }
+  if (live) return;
+  for (const component of report.codeComponents ?? []) {
+    const control = pcfControlNamed(catalogue, component.schemaName);
+    for (const resource of control?.resources ?? [])
+      if (resource.url && catalogue.assets.get(resource.url)?.file)
+        add(pcfAssetRow(catalogue, control, resource, resource.url, 'code-component'));
+  }
+}
+
+const activeRecord = (record) => Number(portalField(record, 'statecode', 0)) !== 1;
+const stepRecordsOf = (portal, formId) =>
+  (portal.records ?? []).filter(
+    (record) =>
+      record.kind === 'advancedformstep' &&
+      activeRecord(record) &&
+      norm(portalField(record, 'webform')) === norm(formId),
+  );
+
+/**
+ * The stylesheets the platform layout links for the page (mirage/lib/liquid.mjs contentStylesheetFiles, the rule the
+ * runtime renders with). Only pages whose template renders the site layout link them.
+ */
+function platformLinkedStylesheets(report, portal, page) {
+  if (!page) return { files: [], snippet: null };
+  const template = (portal.pageTemplates ?? []).find((row) => norm(row.id) === norm(page.pageTemplateId));
+  if (template && pageTemplateKind(template) !== 'rewrite' && template.useHeaderFooter === false)
+    return { files: [], snippet: null };
+  const selected = contentStylesheetFiles(portal, page);
+  const files = [selected.bootstrapFile, ...selected.content].filter((file) => file?.url).slice(0, 100);
+  return { files, snippet: selected.bootstrapSnippet != null ? bootstrapSnippetRow(portal) : null };
+}
+
+function bootstrapSnippetRow(portal) {
+  const record = effectiveSnippetRecords(
+    portal.records ?? [],
+    portal.selectedLanguageId ?? portalField(portal.website ?? {}, 'defaultlanguage'),
+  ).resolve('Head/Bootstrap');
+  return {
+    kind: 'content-snippet',
+    name: 'Head/Bootstrap',
+    sourceFile: bodyFile(record, 'value.html') ?? record?._file ?? null,
+    file: bodyFile(record, 'value.html') ?? record?._file ?? null,
+    recordId: record?.id ?? null,
+    fieldPath: 'value',
+    usedBy: ['page-shell'],
+    evidence: 'platform-linked-stylesheet',
+  };
+}
+
+const WEB_API_REFERENCE_LIMIT = 200;
+function scanWebApiBody(row, literal, dynamic) {
+  const text = stripLiquidLiteralBlocks(row.text);
+  for (const match of text.matchAll(/\/_api\/(\w*)(?:(['"])\s*\+|\$\{)?/g)) {
+    const segment = match[1];
+    // A string that ends right after the segment and is concatenated, or a template expression, builds the
+    // address at run time: '/_api/' + set, '/_api/x_' + suffix, `/_api/${set}`. A complete set name followed by
+    // concatenated keys ('/_api/x_items(' ...) is still literal; segment lets the caller tell the two apart.
+    const built = match[0].length > segment.length + 6;
+    if (built) {
+      if (NON_TABLE_API_SEGMENTS.has(segment.toLowerCase()) || dynamic.length >= WEB_API_REFERENCE_LIMIT) continue;
+      const expression = text
+        .slice(Math.max(0, match.index - 40), match.index + match[0].length + 40)
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!dynamic.some((item) => item.sourceFile === row.sourceFile && item.expression === expression))
+        dynamic.push({ name: row.name, sourceFile: row.sourceFile ?? null, expression, segment });
+    } else if (isEntitySetSegment(segment) && !literal.has(segment) && literal.size < WEB_API_REFERENCE_LIMIT)
+      literal.set(segment, row.name);
+  }
+}
+
+/**
+ * Web API addresses in the scanned bodies: literal entity sets (name -> first body naming it) and addresses built at
+ * run time ('/_api/' + name, `/_api/${name}`), each with the body that builds it.
+ */
+function webApiReferences(namedBodies) {
+  const literal = new Map(),
+    dynamic = [];
+  for (const row of namedBodies) scanWebApiBody(row, literal, dynamic);
+  return { literal, dynamic };
+}
+
+/**
+ * The table an entity set names: loaded (metadata.entities), defined by the selected Solution sources but not loaded
+ * (not-requested), matched only by a pluralized guess (pluralized-only), or absent from the sources.
+ */
+function entitySetTable(name, metadata) {
+  const declared = ([, table]) => table.entitySet === name && table.entitySetSource !== 'pluralized';
+  const loaded = Object.entries(metadata.entities ?? {}).find(declared);
+  if (loaded) return { logicalName: loaded[0], state: 'loaded' };
+  const listed = Object.entries(metadata.tableCatalog ?? {}).find(declared);
+  if (listed) return { logicalName: listed[0], state: 'not-requested' };
+  const guessed = Object.entries({ ...metadata.tableCatalog, ...metadata.entities }).find(
+    ([, table]) => table.entitySet === name,
+  );
+  return { logicalName: null, state: guessed ? 'pluralized-only' : 'absent', guess: guessed?.[0] ?? null };
+}
+
+function entitySetReason(resolved, metadata) {
+  if (!(metadata.roots ?? []).length) return 'No Solution sources are selected, so the entity set cannot be mapped.';
+  if (resolved.state === 'pluralized-only')
+    return `Only a pluralized guess of table ${resolved.guess} matches; the Solution sources declare no entity set name for it.`;
+  if (resolved.state === 'not-requested')
+    return 'The table is in the selected Solution sources but its definition was not loaded.';
+  return 'No table in the selected Solution sources has this entity set name.';
+}
+
+function resolveDefaultLookupView(report, metadata, row, entity) {
+  const candidates = (metadata.views ?? []).filter((view) => view.entity === entity && view.queryType === 64);
+  const view = candidates.find((item) => item.isDefault) ?? (candidates.length === 1 ? candidates[0] : null);
+  if (!view) {
+    if (metadata.entities?.[entity]) {
+      const reason =
+        candidates.length > 1
+          ? 'Several lookup views of this table are in the Solution sources and none is marked default.'
+          : 'The lookup uses the default lookup view of this table; the Solution sources do not contain it.';
+      report.unresolved.push({ kind: 'lookup-view', expression: entity, owner: row.owner, reason });
+    }
+    return;
+  }
+  row.defaultViews.push({ entity, viewId: view.id, name: view.name, sourceFile: view.file, tableDefault: true });
+  let item = report.views.find((existing) => norm(existing.id) === norm(view.id));
+  if (!item) {
+    item = {
+      id: view.id,
+      name: view.name,
+      entity: view.entity,
+      sourceFile: view.file,
+      fields: view.fields ?? [],
+      evidence: 'lookup-default-view',
+    };
+    report.views.push(item);
+  }
+  item.usedBy ??= [];
+  if (!item.usedBy.includes(`${row.owner} lookup`)) item.usedBy.push(`${row.owner} lookup`);
+}
+
+/**
+ * A lookup without DefaultViewId opens the target table's default lookup view (savedquery querytype 64; the one
+ * marked default when there are several). Each lookup row lists the view per target as `defaultViews`.
+ */
+function resolveDefaultLookupViews(report, metadata) {
+  for (const row of report.nativeComponents ?? []) {
+    if (row.kind !== 'lookup' || row.viewSource !== 'table-default') continue;
+    row.defaultViews = [];
+    for (const entity of row.targets ?? []) resolveDefaultLookupView(report, metadata, row, entity);
+  }
+}
+
+function applyTableDefinition(table, definition) {
+  table.sourceFile ??= definition.sources?.[0] ?? null;
+  if (!table.sourceFiles?.length) table.sourceFiles = definition.sources ?? [];
+  if (!table.fieldCount) table.fieldCount = Object.keys(definition.fields ?? {}).length;
+  if (table.file === null) table.file = table.sourceFile;
+  table.metadataState = 'loaded';
+}
+
+function markTableMetadata(report, metadata) {
+  const loaded = new Set();
+  for (const table of report.tables) {
+    const definition = metadata.entities?.[table.logicalName];
+    if (definition) {
+      loaded.add(table.logicalName);
+      applyTableDefinition(table, definition);
+    } else
+      table.metadataState = metadata.tableCatalog?.[table.logicalName] ? 'not-requested' : 'not-in-solution-sources';
+  }
+  return loaded;
+}
+
+function missingTableReason(table, metadata) {
+  if (!(metadata.roots ?? []).length) return 'No Solution sources are selected, so the table has no definition.';
+  return table.metadataState === 'not-requested'
+    ? 'The table is in the selected Solution sources but its definition was not loaded.'
+    : 'The table is not in the selected Solution sources.';
+}
+
+function reportMissingTables(report, metadata, loaded, tableRows) {
+  report.unresolved = report.unresolved.filter(
+    (row) => row.kind !== 'table' || !tableRows.has(row.expression) || !loaded.has(row.expression),
+  );
+  for (const table of report.tables) {
+    if (loaded.has(table.logicalName)) continue;
+    const existing = report.unresolved.find((row) => row.kind === 'table' && row.expression === table.logicalName);
+    if (existing) {
+      existing.reason = missingTableReason(table, metadata);
+      existing.metadataState = table.metadataState;
+    } else
+      report.unresolved.push({
+        kind: 'table',
+        expression: table.logicalName,
+        reason: missingTableReason(table, metadata),
+        metadataState: table.metadataState,
+      });
+  }
+}
+
+function addWebApiTableSettings(report, portal, tableRows) {
+  report.siteSettings ??= [];
+  const secret = new Set(portal.secretSettingNames ?? []);
+  const listed = new Set(report.siteSettings.map((row) => String(row.name).toLowerCase()));
+  for (const record of portal.records ?? []) {
+    if (record.kind !== 'sitesetting' || report.siteSettings.length >= 500) continue;
+    const name = String(record.name ?? '');
+    const table = /^webapi\/([^/]+)\//i.exec(name)?.[1]?.toLowerCase();
+    if (!table || !tableRows.has(table) || listed.has(name.toLowerCase())) continue;
+    listed.add(name.toLowerCase());
+    const value = portal.settings?.[name];
+    report.siteSettings.push({
+      kind: 'site-setting',
+      name,
+      sourceFile: record._file ?? null,
+      file: record._file ?? null,
+      relativePath: record._file && portal.sourceDir ? path.relative(portal.sourceDir, record._file) : null,
+      recordId: record.id ?? null,
+      fieldPath: 'value',
+      ...(secret.has(name)
+        ? { value: '[secret]', secret: true }
+        : { value: value == null ? null : String(value).slice(0, 400) }),
+      evidence: 'web-api-table-setting',
+    });
+  }
+}
+
+/**
+ * Once every table is known: each table's metadata state (loaded, not-requested: the selected sources define it but it
+ * was not loaded, not-in-solution-sources), one unresolved entry per table without metadata, and the
+ * Webapi/<table>/* site settings of every table, including tables found after the static report.
+ */
+function finalizeInspectionTables(report, portal, metadata) {
+  const loaded = markTableMetadata(report, metadata);
+  for (const column of report.columns)
+    if (loaded.has(column.entity) && !column.sourceFile)
+      column.sourceFile =
+        metadata.entities[column.entity].fields?.[column.name]?.source ?? metadata.entities[column.entity].sources?.[0];
+  const tableRows = new Map(report.tables.map((table) => [table.logicalName, table]));
+  reportMissingTables(report, metadata, loaded, tableRows);
+  addWebApiTableSettings(report, portal, tableRows);
+}
+
+/** The exported web role records that the page's permission rules and page access rules name, with their files. */
+function webRoleSources(portal, report, provenance) {
+  const users = new Map();
+  const use = (roleId, owner) => {
+    const key = norm(roleId);
+    if (!key) return;
+    if (!users.has(key)) users.set(key, new Set());
+    if (users.get(key).size < 50) users.get(key).add(owner);
+  };
+  for (const rule of report.permissionRules ?? []) for (const roleId of rule.roleIds ?? []) use(roleId, rule.name);
+  for (const rule of report.page?.access?.rules ?? []) for (const role of rule.roles ?? []) use(role.id, rule.name);
+  const records = new Map(
+    (portal.records ?? []).filter((record) => record.kind === 'webrole').map((record) => [norm(record.id), record]),
+  );
+  return [...users].slice(0, 200).map(([roleId, owners]) => {
+    const record = records.get(roleId);
+    // The role's record is a source of the shared index ($record, mirage/lib/portal-source-index.mjs): the row opens
+    // that record where the index locates it.
+    const ref = record ? provenance?.source(record, '$record') : null;
+    return {
+      kind: 'web-role',
+      id: roleId,
+      recordId: roleId,
+      name: record?.name ?? null,
+      sourceFile: ref?.file ?? record?._file ?? null,
+      resolved: Boolean(record),
+      active: record ? activeRecord(record) : null,
+      usedBy: [...owners],
+      ...(ref ? { ...hintIdentity(provenance, record, '$record', ref), componentKey: ref.componentKey } : {}),
+    };
+  });
+}
+
+// Solution metadata diagnostics about joining a form or list to its FormXml/view (solution-metadata.mjs).
+const COMPONENT_DIAGNOSTICS = new Set([
+  'SYSTEMFORM_UNRESOLVED',
+  'SYSTEMFORM_NAME_AMBIGUOUS',
+  'SYSTEMFORM_INELIGIBLE_TYPE',
+  'SYSTEMFORM_TAB_FALLBACK',
+  'SYSTEMFORM_MAPPING_ERROR',
+  'SYSTEMVIEW_UNRESOLVED',
+  'ADVANCEDFORM_UNRESOLVED',
+  'ADVANCEDFORM_STEP_UNRESOLVED',
+  'ADVANCEDFORM_STEP_MAPPING_ERROR',
+  'ADVANCEDFORM_STEP_REFERENCE_UNRESOLVED',
+  'ADVANCEDFORM_SHARED_STEP_REFERENCE',
+  'SOLUTION_LAYER_VARIANTS',
+]);
+
+function diagnosticOwner(diagnostic, components, layouts) {
+  if (diagnostic.code === 'SOLUTION_LAYER_VARIANTS') return layouts.get(norm(diagnostic.id));
+  return (
+    components.get(norm(diagnostic.id)) ??
+    components.get(norm(diagnostic.form)) ??
+    components.get(norm(diagnostic.from))
+  );
+}
+
+function diagnosticComponentKind(diagnostic) {
+  if (diagnostic.kind === 'view') return 'view';
+  return diagnostic.kind === 'form' ? 'form-xml' : null;
+}
+
+/** The page's own forms, steps and lists by normalized id, with what a diagnostic about them names. */
+function metadataComponents(report) {
+  const components = new Map();
+  const add = (id, row) => {
+    if (id && !components.has(norm(id))) components.set(norm(id), row);
+  };
+  for (const form of report.forms ?? []) {
+    add(form.id, { componentKind: form.kind ?? 'basic-form', name: form.name, sourceFile: form.sourceFile });
+    for (const step of form.steps ?? [])
+      add(step.id, { componentKind: 'advanced-form-step', name: step.name, sourceFile: step.sourceFile });
+  }
+  for (const component of report.components ?? [])
+    if (component.kind === 'list')
+      add(component.recordId ?? component.id, {
+        componentKind: 'list',
+        name: component.name,
+        sourceFile: component.sourceFile,
+      });
+  return components;
+}
+
+/** The failed or ambiguous form/list joins of the page's own components, as unresolved rows with their identity. */
+function componentMetadataDiagnostics(report, metadata) {
+  const components = metadataComponents(report);
+  const layouts = new Map();
+  for (const form of report.forms ?? []) if (form.formXml?.id) layouts.set(norm(form.formXml.id), form);
+  for (const view of report.views ?? []) if (view.id) layouts.set(norm(view.id), view);
+  let added = 0;
+  for (const diagnostic of metadata.diagnostics ?? []) {
+    if (!COMPONENT_DIAGNOSTICS.has(diagnostic.code) || added >= 200) continue;
+    const owner = diagnosticOwner(diagnostic, components, layouts);
+    if (!owner) continue;
+    added++;
+    report.unresolved.push({
+      kind: diagnostic.code === 'SOLUTION_LAYER_VARIANTS' ? 'solution-layer' : 'component-metadata',
+      code: diagnostic.code,
+      expression: owner.name ?? diagnostic.id,
+      componentId: norm(diagnostic.id),
+      componentKind: owner.componentKind ?? diagnosticComponentKind(diagnostic),
+      sourceFile: diagnostic.selected ?? diagnostic.sourceFile ?? owner.sourceFile ?? null,
+      reason: diagnostic.message ?? diagnostic.code,
+      ...(Array.isArray(diagnostic.candidates) ? { candidates: diagnostic.candidates.slice(0, 10) } : {}),
+    });
+  }
+}
+
+// adx_type of basic-form and multistep-form metadata rows, as the runtime reads them (mirage/lib/platform.mjs:
+// attribute, section, tab, subgrid, notes). Purchase (100000004) and timeline (100000006) follow the documented choice.
+const FORM_METADATA_TYPES = {
+  100000000: 'attribute',
+  100000001: 'section',
+  100000002: 'tab',
+  100000003: 'subgrid',
+  100000004: 'purchase',
+  100000005: 'notes',
+  100000006: 'timeline',
+};
+const FORM_METADATA_LIMIT = 200,
+  // Forms whose records are scanned (the dependency walk follows at most 80 forms as well).
+  COMPONENT_SCAN_LIMIT = 80;
+
+const FORM_METADATA_TARGETS = {
+  100000000: 'attributelogicalname',
+  100000001: 'sectionname',
+  100000002: 'tabname',
+  100000003: 'subgrid_name',
+};
+// The field a row of this type configures, else the first target field the row carries.
+const formMetadataTarget = (record, type) =>
+  [FORM_METADATA_TARGETS[type], 'attributelogicalname', 'subgrid_name', 'sectionname', 'tabname']
+    .filter(Boolean)
+    .map((name) => portalField(record, name))
+    .find((value) => value != null && value !== '') ?? null;
+
+// Every active metadata row of a basic form (entityform) or a multistep step (webformstep), with its type and target.
+function formMetadataRows(portal, ownerField, ownerId) {
+  return (portal.records ?? [])
+    .filter(
+      (record) =>
+        ['basicformmetadata', 'advancedformmetadata'].includes(record.kind) &&
+        activeRecord(record) &&
+        norm(portalField(record, ownerField)) === norm(ownerId),
+    )
+    .slice(0, FORM_METADATA_LIMIT)
+    .map((record) => {
+      const type = Number(portalField(record, 'type'));
+      return {
+        id: norm(record.id),
+        type: FORM_METADATA_TYPES[type] ?? (Number.isFinite(type) ? `type-${type}` : 'unknown'),
+        typeCode: Number.isFinite(type) ? type : null,
+        target: formMetadataTarget(record, type),
+        sourceFile: record._file ?? null,
+      };
+    });
+}
+
+// Where a basic form or a step sends the visitor after it succeeds: its redirect web page or URL.
+function redirectRelations(record, owner, portal) {
+  const relations = [];
+  const page = pageRelation('redirect-page', portalField(record ?? {}, 'redirectwebpage'), owner, portal);
+  if (page) relations.push(page);
+  const url = portalField(record ?? {}, 'redirecturl');
+  if (typeof url === 'string' && url) relations.push({ kind: 'redirect-url', url: url.slice(0, 2048), owner });
+  return relations;
+}
+
+/** Target pages, redirects and metadata rows of every resolved form and step (lists carry theirs from bindings). */
+function attachAdvancedFormRelations(form, portal) {
+  form.relations = [];
+  const steps = stepRecordsOf(portal, form.id);
+  const rows = new Map(steps.map((step) => [norm(step.id), step]));
+  form.steps ??= [];
+  for (const step of form.steps) {
+    const record = rows.get(norm(step.id));
+    if (!record) continue;
+    step.metadataRows = formMetadataRows(portal, 'webformstep', record.id);
+    step.relations = redirectRelations(record, `${form.name} ${record.name ?? 'step'}`, portal);
+    form.relations.push(...step.relations);
+  }
+}
+
+function attachBasicFormRelations(form, definition, portal) {
+  form.metadataRows = formMetadataRows(portal, 'entityform', definition.id);
+  // On success 756150001 redirects; the redirect fields of any other outcome are not followed by the platform.
+  const onSuccess = Number(portalField(definition.metadata ?? {}, 'onsuccess') ?? 756150000);
+  form.relations = onSuccess === 756150001 ? redirectRelations(definition.metadata, form.name, portal) : [];
+  form.onSuccess = onSuccess === 756150001 ? 'redirect' : 'message';
+}
+
+function reportUnresolvedTargetPages(report, relations, reason) {
+  for (const relation of relations)
+    if (relation.kind.endsWith('-page') && !relation.resolved)
+      report.unresolved.push({ kind: 'target-page', expression: relation.pageId, owner: relation.owner, reason });
+}
+
+/** Target pages, redirects and metadata rows of every resolved form and step (lists carry theirs from bindings). */
+function attachComponentRelations(report, portal) {
+  for (const form of (report.forms ?? []).slice(0, COMPONENT_SCAN_LIMIT)) {
+    const definition = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].find(
+      (row) => norm(row.id) === norm(form.id),
+    );
+    if (!definition) continue;
+    const advanced = definition.metadata?.kind === 'advancedform' || form.kind === 'advanced-form';
+    if (advanced) attachAdvancedFormRelations(form, portal);
+    else attachBasicFormRelations(form, definition, portal);
+    reportUnresolvedTargetPages(
+      report,
+      form.relations,
+      'The form redirects to a web page that is not in your portal sources.',
+    );
+  }
+  for (const component of report.components ?? [])
+    reportUnresolvedTargetPages(
+      report,
+      component.kind === 'list' ? (component.relations ?? []) : [],
+      'The list action or setting opens a web page that is not in your portal sources.',
+    );
+}
+
+/** The custom JavaScript of every resolved form, multistep step and list: it runs on the page too. */
+function componentScriptBodies(report, portal) {
+  const rows = [];
+  const seen = new Set();
+  const add = (text, name, record) => {
+    const sourceFile = bodyFile(record, 'custom_javascript.js');
+    const key = `${sourceFile}#${norm(record?.id)}`;
+    if (typeof text !== 'string' || !text || seen.has(key) || rows.length >= 200) return;
+    seen.add(key);
+    rows.push({ text, name, sourceFile });
+  };
+  for (const form of (report.forms ?? []).slice(0, COMPONENT_SCAN_LIMIT)) {
+    const definition = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].find(
+      (row) => norm(row.id) === norm(form.id),
+    );
+    if (definition) add(definition.js, `${definition.name} JavaScript`, definition.metadata);
+    for (const step of stepRecordsOf(portal, form.id))
+      add(step.customJavascript, `${step.name ?? 'Step'} JavaScript`, step);
+  }
+  for (const component of report.components ?? []) {
+    if (component.kind !== 'list') continue;
+    const list = (portal.lists ?? []).find((row) => norm(row.id) === norm(component.recordId ?? component.id));
+    if (list) add(list.js, `${list.name} JavaScript`, list.metadata);
+  }
+  return rows;
+}
+
+/** The step the progress indicator shows: the start step followed `stepIndex` next-step links (a condition ends it). */
+function progressIndicatorStep(form, portal, byId, stepIndex) {
+  const definition = (portal.advancedForms ?? []).find((row) => norm(row.id) === norm(form.id));
+  let step = byId.get(norm(portalField(definition?.metadata ?? {}, 'startstep')));
+  const visited = new Set();
+  for (let index = 0; step && index < stepIndex && !visited.has(norm(step.id)); index++) {
+    visited.add(norm(step.id));
+    step =
+      Number(portalField(step, 'type', 100000001)) === 100000000 ? null : byId.get(norm(portalField(step, 'nextstep')));
+  }
+  return step && Number(portalField(step, 'type', 100000001)) !== 100000000 ? step : null;
+}
+
+function markRenderedStep(form, portal, rendered, observedSteps) {
+  const compact = norm(form.id).replaceAll('-', '');
+  const observedForm = observedSteps.find((row) => norm(row.formControlId).replaceAll('-', '') === compact) ?? null;
+  const steps = stepRecordsOf(portal, form.id);
+  const byId = new Map(steps.map((step) => [norm(step.id), step]));
+  const declared = [...new Set([...(observedForm?.stepIds ?? []), ...(rendered.stepIds ?? [])].map(norm))].filter(
+    (id) => byId.has(id),
+  );
+  let current = null,
+    evidence = null;
+  if (declared.length === 1) {
+    current = byId.get(declared[0]);
+    evidence = 'page-address-stepid';
+  } else if (!declared.length && Number.isSafeInteger(observedForm?.stepIndex) && observedForm.stepIndex >= 0) {
+    // Follow the start step's next-step chain; a condition step makes the position ambiguous.
+    const step = progressIndicatorStep(form, portal, byId, observedForm.stepIndex);
+    if (step) {
+      current = step;
+      evidence = 'progress-indicator';
+    }
+  }
+  form.currentStep = current
+    ? { id: norm(current.id), name: current.name ?? null, evidence }
+    : { state: 'unknown', ...(declared.length > 1 ? { reason: 'The page declares several steps.' } : {}) };
+  for (const step of form.steps ?? []) if (current && norm(step.id) === norm(current.id)) step.current = true;
+}
+
+/**
+ * The multistep step the page shows: the `stepid` the platform puts in the page address, else the active entry of
+ * the progress indicator when the step chain to it is linear. Each advanced form row gets `currentStep`
+ * ({ id, name, evidence } or { state: 'unknown' }) and its matching step `current: true`.
+ */
+function markRenderedSteps(report, portal, rendered) {
+  const observedSteps = Array.isArray(rendered.multistep) ? rendered.multistep.slice(0, 10) : [];
+  for (const form of (report.forms ?? []).slice(0, COMPONENT_SCAN_LIMIT))
+    if (form.kind === 'advanced-form') markRenderedStep(form, portal, rendered, observedSteps);
 }
 
 /** Enrich a shared report with source provenance and observed DOM, never a live access verdict. */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function enrichInspection(
   report,
   portal,
-  { metadata = {}, rendered = {}, live = false, observed = null, codeCatalogue = null, sourceIndexStore = null } = {},
+  {
+    metadata = {},
+    rendered = {},
+    live = false,
+    observed = null,
+    codeCatalogue = null,
+    sourceIndexStore = null,
+    // async (logicalNames) => metadata with those Solution tables loaded too, or null; see createSourceInspector.
+    loadTables = null,
+  } = {},
 ) {
   if (!report || typeof report !== 'object' || Array.isArray(report))
     throw new TypeError('Source inspection requires a page report object.');
+  report.tables ??= [];
+  report.columns ??= [];
+  report.views ??= [];
+  report.forms ??= [];
+  report.unresolved ??= [];
   report.evidence = {
     mode: live ? 'live-sources' : 'local-runtime',
     rendered: 'Observed controls and same-origin asset paths. Field values and request query values are excluded.',
@@ -1508,6 +2539,8 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
   };
   if (report.page && page) {
     report.page.entityFormId = page.formId ?? portalField(page.metadata ?? {}, 'entityform') ?? null;
+    // The multistep form the page renders (adx_webform): the page-bound #WebFormControl wrapper carries no form ID.
+    report.page.webFormId = page.advancedFormId ?? portalField(page.metadata ?? {}, 'webform') ?? null;
     report.page.listId = page.listId ?? portalField(page.metadata ?? {}, 'entitylist') ?? null;
   }
   report.pageSources = [];
@@ -1532,7 +2565,7 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     const existing = form && (report.forms ?? []).find((row) => norm(row.id) === norm(form.id));
     if (existing) existing.evidence = 'rendered-component-id';
     if (form && !(report.forms ?? []).some((row) => norm(row.id) === norm(form.id))) {
-      const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name];
+      const schema = componentSchema(metadata, form.id);
       report.forms ??= [];
       report.forms.push({
         id: form.id,
@@ -1618,7 +2651,7 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
         component.customization = { name: 'List custom JavaScript', sourceFile: component.sourceFile };
       component.sourceFile = definition.metadata?._file ?? component.sourceFile;
       component.fieldPath = null;
-      Object.assign(component, listInspectionBindings(definition));
+      Object.assign(component, listInspectionBindings(definition, portal));
       for (const viewId of component.viewIds) {
         const view = metadata.views?.find(
           (row) => norm(row.id) === norm(viewId) && (!component.entity || row.entity === component.entity),
@@ -1655,13 +2688,26 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
       }
     }
   inspectFormDependencies(report, portal, metadata, rendered);
-  const sourceBodies = [
-    page?.html,
-    page?.js,
-    page?.css,
-    ...(report.webTemplates ?? []).map((row) => portal.templates?.[row.name]?.source),
-    ...(report.snippets ?? []).map((row) => portal.snippets?.[row.name]),
-  ].filter(Boolean);
+  attachComponentRelations(report, portal);
+  // Every scanned body keeps its name and file, so a dynamic Web API construction can name where it is.
+  const namedBodies = [
+    { text: page?.html, name: 'Page copy', sourceFile: bodyFile(page?.metadata, 'copy.html') },
+    { text: page?.js, name: 'Page JavaScript', sourceFile: bodyFile(page?.metadata, 'custom_javascript.js') },
+    { text: page?.css, name: 'Page CSS', sourceFile: bodyFile(page?.metadata, 'custom_css.css') },
+    ...(report.webTemplates ?? []).map((row) => ({
+      text: portal.templates?.[row.name]?.source,
+      name: row.name,
+      sourceFile: row.sourceFile ?? null,
+    })),
+    ...(report.snippets ?? []).map((row) => ({
+      text: portal.snippets?.[row.name],
+      name: row.name,
+      sourceFile: row.sourceFile ?? null,
+    })),
+    // The custom JavaScript of every resolved form, multistep form step and list runs on the page as well.
+    ...componentScriptBodies(report, portal),
+  ].filter((row) => typeof row.text === 'string' && row.text);
+  const sourceBodies = namedBodies.map((row) => row.text);
   const markup = [
     ...report.pageSources
       .filter((row) => row.fieldPath === 'copy')
@@ -1727,20 +2773,48 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
       kind: 'script',
       ...hintIdentity(provenance, page?.metadata, 'customjavascript'),
     });
-  const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
+  // Relative references resolve against the address the browser requested (its trailing slash and language prefix
+  // included), else the page's own URL; the lower-cased, slash-stripped report path is a lookup key, not a base.
+  const browserBase = report.requestPath ?? page?.url ?? report.path ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
-  const observedPaths = new Set((rendered.assets ?? []).map((row) => row.path));
+  const observedPaths = new Set((rendered.assets ?? []).map((row) => webFileKey(row.path)).filter(Boolean));
+  const requestedPaths = new Set(
+    (rendered.requestPaths ?? []).slice(0, REQUEST_PATH_LIMIT).map(webFileKey).filter(Boolean),
+  );
+  // Stylesheets the platform layout links for this page without any markup naming them (shared runtime rule).
+  const platformLinked = platformLinkedStylesheets(report, portal, page);
+  const linkedKeys = new Set(platformLinked.files.map((file) => webFileKey(file.url)));
   const matchedFiles = new Map();
+  const fileKeys = new Map(
+    (portal.webFiles ?? []).filter((file) => file.url).map((file) => [file, webFileKey(file.url)]),
+  );
+  const assetEvidence = (key) => {
+    if (observedPaths.has(key)) return 'rendered-asset';
+    if (linkedKeys.has(key) && !referencedPaths.has(key)) return 'platform-linked-stylesheet';
+    return 'static-reference';
+  };
   // Follow only exported assets. Reads stay bounded; no URL is fetched.
+  const pendingFiles = () =>
+    (portal.webFiles ?? []).filter((file) => {
+      const key = fileKeys.get(file);
+      return (
+        key &&
+        !matchedFiles.has(file.url) &&
+        (observedPaths.has(key) || referencedPaths.has(key) || requestedPaths.has(key) || linkedKeys.has(key))
+      );
+    });
+  let webFilesTruncated = false,
+    roundsTruncated = false;
   for (let round = 0; round < 8; round++) {
-    const pending = (portal.webFiles ?? []).filter(
-      (file) =>
-        file.url && !matchedFiles.has(file.url) && (observedPaths.has(file.url) || referencedPaths.has(file.url)),
-    );
+    const pending = pendingFiles();
     if (!pending.length) break;
     for (const file of pending) {
       matchedFiles.set(file.url, file);
-      if (!['script', 'stylesheet'].includes(assetKind(file.mimeType, file.file)) || matchedFiles.size > 100) continue;
+      if (!['script', 'stylesheet'].includes(assetKind(file.mimeType, file.file))) continue;
+      if (matchedFiles.size > 100) {
+        webFilesTruncated = true;
+        continue;
+      }
       try {
         const real = await fs.realpath(file.file);
         if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
@@ -1753,24 +2827,42 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
               ...hintIdentity(provenance, file.metadata, '$content'),
             });
           sourceBodies.push(text);
+          namedBodies.push({ text, name: file.name ?? file.url, sourceFile: real });
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
       } catch {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
       }
     }
+    // The eighth level still named web files: they are not followed.
+    if (round === 7 && pendingFiles().length) roundsTruncated = true;
   }
+  report.inputLimits = {
+    ...report.inputLimits,
+    assetsTruncated: Boolean(rendered.assetsTruncated),
+    webFilesTruncated,
+    roundsTruncated,
+  };
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n'); // NOSONAR: preserve callback identity and iteration arguments
-  report.assets = [...matchedFiles.values()].map((file) => ({
-    name: file.name ?? file.url,
-    url: file.url,
-    kind: assetKind(file.mimeType, file.file),
-    mimeType: file.mimeType ?? null,
-    sourceFile: file.file,
-    metadataSource: file.metadata?._file,
-    evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference',
-    ...hintIdentity(provenance, file.metadata, '$content'),
-  }));
+  report.assets = [...matchedFiles.values()].map((file) => {
+    const key = fileKeys.get(file);
+    return {
+      name: file.name ?? file.url,
+      url: file.url,
+      kind: assetKind(file.mimeType, file.file),
+      mimeType: file.mimeType ?? null,
+      sourceFile: file.file,
+      metadataSource: file.metadata?._file,
+      evidence: assetEvidence(key),
+      // requested: the browser session requested this path (live request observer); otherwise not observed here.
+      ...(observedPaths.has(key) || requestedPaths.has(key) ? { observed: 'requested' } : {}),
+      ...hintIdentity(provenance, file.metadata, '$content'),
+    };
+  });
+  if (platformLinked.snippet && !(report.snippets ?? []).some((row) => row.name === platformLinked.snippet.name)) {
+    report.snippets ??= [];
+    report.snippets.push(platformLinked.snippet);
+  }
   // The complete export index can be incomplete even when an omitted source is
   // unreferenced. Report its bounded summary without attributing it to a node.
   report.elementSourceLimits = {
@@ -1790,17 +2882,42 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     truncated:
       scriptTruncated || candidateTruncated || Boolean(rendered.truncated) || whole.markupOmittedSourceCount > 0,
   };
-  // Literal Web API entity sets resolve only through selected Solution definitions.
-  // Dynamic expressions stay unknown rather than assuming an English plural table name.
+  // Literal Web API entity sets resolve only through selected Solution definitions (EntitySetName, else the logical
+  // collection name). A set built at run time is named as a dynamic reference with its file, never guessed.
   const observedApiSets = new Set((rendered.apiSets ?? []).filter(isEntitySetSegment));
+  const scannedApi = webApiReferences(namedBodies);
+  // A built address whose literal part is a complete entity set ('/_api/x_items(' + id + ')') names that set.
+  const completeSet = (segment) =>
+    isEntitySetSegment(segment) && ['loaded', 'not-requested'].includes(entitySetTable(segment, metadata).state);
+  for (const reference of scannedApi.dynamic)
+    if (completeSet(reference.segment) && !scannedApi.literal.has(reference.segment))
+      scannedApi.literal.set(reference.segment, reference.name);
   const apiSets = unique(
-    [...body.matchAll(/\/_api\/([a-z]\w*)\b/gi)]
-      .map((match) => match[1])
-      .filter(isEntitySetSegment)
-      .map((name) => ({ name }))
-      .concat([...observedApiSets].map((name) => ({ name }))),
+    [...scannedApi.literal.keys()].map((name) => ({ name })).concat([...observedApiSets].map((name) => ({ name }))),
     (row) => row.name,
   );
+  for (const reference of scannedApi.dynamic)
+    if (!completeSet(reference.segment))
+      report.unresolved.push({
+        kind: 'web-api-dynamic',
+        expression: reference.expression,
+        owner: reference.name,
+        sourceFile: reference.sourceFile,
+        reason: 'The Web API address is built at run time, so its table cannot be named from the source.',
+      });
+  // Tables reached only through Liquid, the Web API or a lookup are loaded from the selected Solution sources on demand.
+  const wanted = new Set();
+  for (const { name } of apiSets) {
+    const resolved = entitySetTable(name, metadata);
+    if (resolved.state === 'not-requested') wanted.add(resolved.logicalName);
+  }
+  for (const table of report.tables)
+    if (!metadata.entities?.[table.logicalName] && metadata.tableCatalog?.[table.logicalName])
+      wanted.add(table.logicalName);
+  if (wanted.size && loadTables) {
+    const loaded = await loadTables([...wanted].slice(0, 100)).catch(() => null);
+    if (loaded?.entities) metadata = loaded;
+  }
   const addTableColumns = (entity, evidence) => {
     const table = metadata.entities?.[entity];
     for (const [column, field] of Object.entries(table?.fields ?? {}))
@@ -1817,39 +2934,43 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
         });
   };
   report.apiReferences = apiSets.map(({ name }) => {
-    const entity = Object.entries(metadata.entities ?? {}).find(
-      ([, table]) => table.entitySet === name && table.entitySetSource !== 'pluralized',
-    );
-    if (entity && !(report.tables ?? []).some((row) => row.logicalName === entity[0])) {
-      const [logicalName, table] = entity;
-      report.tables ??= [];
+    const resolved = entitySetTable(name, metadata);
+    const table = resolved.state === 'loaded' ? metadata.entities[resolved.logicalName] : null;
+    if (table && !report.tables.some((row) => row.logicalName === resolved.logicalName))
       report.tables.push({
         kind: 'table',
-        logicalName,
-        name: logicalName,
+        logicalName: resolved.logicalName,
+        name: resolved.logicalName,
         entitySet: name,
         sourceFile: table.sources?.[0],
         sourceFiles: table.sources ?? [],
         fieldCount: Object.keys(table.fields ?? {}).length,
         evidence: 'web-api-source',
       });
-    }
-    if (entity) addTableColumns(entity[0], 'web-api-table-candidate');
+    if (table) addTableColumns(resolved.logicalName, 'web-api-table-candidate');
+    else
+      report.unresolved.push({
+        kind: 'web-api-entity-set',
+        expression: name,
+        owner: scannedApi.literal.get(name) ?? (observedApiSets.has(name) ? 'Observed request' : null),
+        reason: entitySetReason(resolved, metadata),
+      });
     return {
       name,
-      entity: entity?.[0] ?? null,
-      sourceFile: entity?.[1].sources?.[0] ?? null,
+      entity: table ? resolved.logicalName : null,
+      sourceFile: table?.sources?.[0] ?? null,
       evidence: observedApiSets.has(name) ? 'observed-api-request' : 'static-reference',
+      ...(observedApiSets.has(name) ? { observed: 'requested' } : {}),
     };
   });
+  resolveDefaultLookupViews(report, metadata);
   // A rendered custom grid may declare a table without issuing a Web API
   // request or sharing its enclosing form's table. Load that table's exported
   // definitions as context; the node observer separately verifies ownership.
   for (const entity of new Set((rendered.controls ?? []).map((row) => row.gridTable?.toLowerCase()))) {
     if (!/^[a-z][a-z0-9_]*$/.test(entity ?? '') || !metadata.entities?.[entity]) continue;
     const table = metadata.entities[entity];
-    if (!(report.tables ?? []).some((row) => row.logicalName === entity)) {
-      report.tables ??= [];
+    if (!report.tables.some((row) => row.logicalName === entity)) {
       report.tables.push({
         kind: 'table',
         logicalName: entity,
@@ -1863,6 +2984,10 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     addTableColumns(entity, 'declared-grid-table-candidate');
   }
   inspectCodeComponents(report, body, metadata, observed, codeCatalogue);
+  appendCodeComponentAssets(report, rendered, codeCatalogue, live);
+  attachFormLayouts(report, provenance.metadataIndex);
+  // Every table is known now: derive each one's metadata state, unresolved entry and Webapi/<table>/* settings.
+  finalizeInspectionTables(report, portal, metadata);
   const permissionState = { tables: {}, mappings: {}, permissions: [], settings: {}, simulator: {} };
   const permissions = buildPermissionModel(portal, permissionState, {
     source: 'exported',
@@ -1888,12 +3013,14 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
       scope: row.scope,
       operations: row.operations,
       roles: row.roles,
+      roleIds: row.roleIds ?? [],
       relationshipName: row.relationshipName,
       parentPermissionId: row.parentPermissionId,
       sourceFile: row.provenance?.file,
       evidence: 'exported-rule',
       effective: live ? 'unknown' : 'local-session',
     }));
+  report.webRoles = webRoleSources(portal, report, provenance);
   if (live) {
     for (const row of report.page?.access?.rules ?? []) {
       row.matches = null;
@@ -1936,22 +3063,25 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     const inputs = step.filteringAttributes.length ? ` · input attributes: ${step.filteringAttributes.join(', ')}` : '';
     return `${step.entity} ${step.message ?? 'Unknown message'} · ${step.stageName} · rank ${step.rank ?? 'unknown'} · ${mode}${inputs} · ${step.enabled ? 'export enabled' : 'export disabled'} · live execution unknown`;
   };
+  const requestedFlow = (row) => Boolean(row.path && requestedPaths.has(webFileKey(row.path)));
   report.logic = [
     ...serverLogicReferences(portal.serverLogics ?? [], {
       body,
       observedRoutes: (rendered.serverLogicPaths ?? []).join('\n'),
-    }),
+    }).map((row) => (row.evidence === 'observed-request' ? { ...row, observed: 'requested' } : row)),
     ...(portal.cloudFlows ?? [])
       .filter(
         (row) =>
           (row.path && body.includes(row.path)) ||
-          (row.processId && body.toLowerCase().includes(row.processId.toLowerCase())),
+          (row.processId && body.toLowerCase().includes(row.processId.toLowerCase())) ||
+          requestedFlow(row),
       )
       .map((row) => ({
         ...row,
         sourceFile: portal.records.find((record) => norm(record.id) === norm(row.id))?._file,
         kind: 'cloud-flow',
-        evidence: 'static-reference',
+        evidence: requestedFlow(row) ? 'observed-request' : 'static-reference',
+        ...(requestedFlow(row) ? { observed: 'requested' } : {}),
       })),
     ...(metadata.plugins?.steps ?? [])
       .filter((step) => needed.has(step.entity))
@@ -1988,6 +3118,8 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
     applicable: report.logic.filter((item) => item.kind === 'plugin-step').length,
     effective: 'unknown',
   };
+  componentMetadataDiagnostics(report, metadata);
+  markRenderedSteps(report, portal, rendered);
   report.unresolved = unique(report.unresolved ?? [], (row) => JSON.stringify(row));
   return report;
 }
@@ -2008,7 +3140,11 @@ export function createSourceInspector(cfg) {
     JSON.stringify([
       sources,
       ...(await Promise.all([
-        Promise.all([sources.sourceDir, ...sources.roots].map(inspectionDirectoryStamp)),
+        Promise.all(
+          [sources.sourceDir, ...sources.roots, ...sources.pcfLayers.map((layer) => layer.dir)].map(
+            inspectionDirectoryStamp,
+          ),
+        ),
         mappedPluginStamps(sources),
         sources.deploymentProfileFile ? fileStamp(sources.deploymentProfileFile) : null,
       ])),
@@ -2072,7 +3208,10 @@ export function createSourceInspector(cfg) {
                     observed: sources.observed,
                   })
                 : {};
-              const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
+              const codeCatalogue = await importCodeComponents(
+                [...(metadata.layers ?? []), ...sources.pcfLayers],
+                sources.pcfImport,
+              );
               return { portal, metadata, codeCatalogue };
             })(),
           );
@@ -2082,14 +3221,15 @@ export function createSourceInspector(cfg) {
       // never label an older parsed body with the newer file's stamp.
       const signature = await fingerprint(sources);
       const initial = await variant();
-      const select = async (route, rendered = {}) => {
+      const select = async (route, rendered = {}, requestLanguageId = null) => {
         const pathname = String(route ?? '/').split(/[?#]/)[0];
         const prefix = pathname.split('/')[1];
         const direct = initial.portal.pages.some(
           (page) => normalizePortalPath(page.url) === normalizePortalPath(pathname),
         );
-        const language =
+        const pathLanguage =
           !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
+        const language = pathLanguage || initial.portal.websiteLanguages?.find((row) => row.id === requestLanguageId);
         const selected = language ? await variant(language) : initial;
         const admitted = admittedTables.get(language?.id ?? '') ?? new Set();
         const declared = [
@@ -2098,56 +3238,64 @@ export function createSourceInspector(cfg) {
             ...(rendered.controls ?? []).slice(0, 300).map((row) => row.gridTable?.toLowerCase()),
           ]),
         ].filter((name) => typeof name === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(name));
-        if (sources.roots.length && declared.some((name) => !selected.metadata.entities?.[name])) {
-          // Serialize admissions so concurrent selections cannot replace each
-          // other's newly admitted definitions. Keep only exported tables, not
-          // arbitrary page declarations, in the language's current catalogue.
-          const admission = (selected.admission ?? Promise.resolve())
-            .catch(() => {})
-            .then(async () => {
-              const missing = [];
-              for (const name of declared) if (!selected.metadata.entities?.[name]) missing.push(name);
-              if (!missing.length) return;
-              const metadata = await importSolutionMetadata(sources.roots, {
-                cache: fileCache,
-                portal: selected.portal,
-                entities: [
-                  ...new Set([
-                    ...portalMetadataEntities(selected.portal),
-                    ...Object.keys(selected.metadata.entities ?? {}),
-                    ...missing,
-                  ]),
-                ],
-                lcid: language?.lcid ?? sources.lcid,
-                order: sources.order,
-                observed: sources.observed,
-              });
-              let hasAdmittedEntity = false;
-              for (const name of missing)
-                if (metadata.entities?.[name]) {
-                  hasAdmittedEntity = true;
-                  break;
-                }
-              if (!hasAdmittedEntity) return;
-              for (const name of missing) if (metadata.entities?.[name] && admitted.size < 300) admitted.add(name);
-              admittedTables.set(language?.id ?? '', admitted);
-              selected.metadata = metadata;
-              reports = new Map();
-              reportBytes = 0;
-            });
-          selected.admission = admission;
-          try {
-            await admission;
-          } finally {
-            if (selected.admission === admission) selected.admission = null;
-          }
-        }
+        if (sources.roots.length && declared.some((name) => !selected.metadata.entities?.[name]))
+          await admit(selected, language, declared);
         return {
           ...selected,
           language,
-          route: language ? pathname.slice(prefix.length + 1) || '/' : pathname,
+          route: pathLanguage ? pathname.slice(prefix.length + 1) || '/' : pathname,
           requestPath: pathname,
+          // Load further exported tables the enrichment finds (Liquid, Web API, lookups) into this language's catalogue.
+          loadTables: (names) => admit(selected, language, names),
         };
+      };
+      // Serialize admissions so concurrent selections cannot replace each
+      // other's newly admitted definitions. Keep only exported tables, not
+      // arbitrary page declarations, in the language's current catalogue.
+      const admit = async (selected, language, names) => {
+        if (!sources.roots.length) return null;
+        const admitted = admittedTables.get(language?.id ?? '') ?? new Set();
+        const wanted = names.filter((name) => typeof name === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(name));
+        const admission = (selected.admission ?? Promise.resolve())
+          .catch(() => {})
+          .then(async () => {
+            const missing = [];
+            for (const name of wanted) if (!selected.metadata.entities?.[name]) missing.push(name);
+            if (!missing.length || admitted.size >= 300) return;
+            const metadata = await importSolutionMetadata(sources.roots, {
+              cache: fileCache,
+              portal: selected.portal,
+              entities: [
+                ...new Set([
+                  ...portalMetadataEntities(selected.portal),
+                  ...Object.keys(selected.metadata.entities ?? {}),
+                  ...missing,
+                ]),
+              ],
+              lcid: language?.lcid ?? sources.lcid,
+              order: sources.order,
+              observed: sources.observed,
+            });
+            let hasAdmittedEntity = false;
+            for (const name of missing)
+              if (metadata.entities?.[name]) {
+                hasAdmittedEntity = true;
+                break;
+              }
+            if (!hasAdmittedEntity) return;
+            for (const name of missing) if (metadata.entities?.[name] && admitted.size < 300) admitted.add(name);
+            admittedTables.set(language?.id ?? '', admitted);
+            selected.metadata = metadata;
+            reports = new Map();
+            reportBytes = 0;
+          });
+        selected.admission = admission;
+        try {
+          await admission;
+        } finally {
+          if (selected.admission === admission) selected.admission = null;
+        }
+        return selected.metadata;
       };
       return { sources, select, signature };
     })().catch((error) => {
@@ -2194,9 +3342,20 @@ export function createSourceInspector(cfg) {
       const { select } = await load();
       return (await select(route)).metadata.plugins?.sourceRoots ?? [];
     },
-    async sourceIndexFor(route = '/', selection = null) {
+    /**
+     * The code component catalogue of the page's selection (mirage/lib/code-components.mjs importCodeComponents: only
+     * manifest-declared files inside each control folder) and the Solution roots it was read from.
+     */
+    async codeComponents(route = '/') {
       const { select, sources } = await load();
       const selected = await select(route);
+      // A build output names its files as a Solution root does, so the overlay can serve them.
+      const roots = [...sources.roots, ...sources.pcfLayers.map((layer) => layer.dir)];
+      return { catalogue: selected.codeCatalogue, roots, sourceDir: sources.sourceDir };
+    },
+    async sourceIndexFor(route = '/', selection = null, languageId = null) {
+      const { select, sources } = await load();
+      const selected = await select(route, {}, languageId);
       let { portal, metadata } = selected;
       const { language } = selected;
       if (
@@ -2231,12 +3390,13 @@ export function createSourceInspector(cfg) {
       contentRevision,
       region,
       route = '/',
+      languageId = null,
       selection = null,
       portalProfile = selection,
     } = {}) {
       // Editor links must re-import current identities, never trust a stale file+array ordinal.
       this.invalidate();
-      const index = await this.sourceIndexFor(route, portalProfile);
+      const index = await this.sourceIndexFor(route, portalProfile, languageId);
       const matches = [...index.sources.values()].filter(
         (source) => source.key === sourceKey || source.id === sourceKey,
       );
@@ -2308,18 +3468,27 @@ export function createSourceInspector(cfg) {
         throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const route = report.requestPath ?? report.path;
-      const { codeCatalogue } = await select(route, rendered);
-      const index = await this.sourceIndexFor(route, report.portalProfile);
+      const languageId = report.language?.id ?? null;
+      const selected = await select(route, rendered, languageId);
+      const { codeCatalogue } = selected;
+      const index = await this.sourceIndexFor(route, report.portalProfile, languageId);
       const { portal, metadata } = index;
-      const enriched = await remember('enrich:' + JSON.stringify([report, rendered]), () => {
+      const enriched = await remember('enrich:' + JSON.stringify([report, rendered]), async () => {
         counters.enrichments++;
-        return enrichInspection(structuredClone(report), portal, {
+        const result = await enrichInspection(structuredClone(report), portal, {
           metadata,
           rendered,
           observed: sources.observed,
           codeCatalogue,
           sourceIndexStore,
+          // A deployment-profile import has its own metadata; on-demand tables load only into the selected catalogue.
+          loadTables: metadata === selected.metadata ? selected.loadTables : null,
         });
+        // The same source-selection diagnostics as inspect, so the Mirage path is not silent about them either.
+        result.sourceSelection = { ...sources.selection, roots: sources.roots };
+        result.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
+        result.unresolved = unique(result.unresolved, (row) => JSON.stringify(row));
+        return result;
       });
       // These are current export refs, independent of the immutable refs observed
       // when a response was rendered or fulfilled. Preserve the trusted profile.
@@ -2343,10 +3512,12 @@ export function createSourceInspector(cfg) {
           observed: sources.observed,
           codeCatalogue,
           sourceIndexStore,
+          loadTables: selected.loadTables,
         });
         const index = provenanceIndex(portal, metadata, codeCatalogue);
         report.portalSources = index.snapshot(report);
         report.sourceRevision = index.sourceRevision;
+        report.sourceSelection = { ...sources.selection, roots: sources.roots };
         report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
         return {
           report,

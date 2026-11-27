@@ -3,6 +3,7 @@ import { parse } from 'parse5';
 import { validateLivePath } from './live.mjs';
 import { officeFontPath } from './asset-cache.mjs';
 import { captureRichTextConfiguration, findRichTextResource } from './richtext-config.mjs';
+import { portalField } from './portal-field.mjs';
 
 const base = '/webresources/msdyn_/RichTextEditorControl/',
   editor = base + 'libs/ckeditor_latest/';
@@ -192,6 +193,50 @@ const fieldsIn = (schemas) => {
   return { fields, truncated: pending.some((value) => value && typeof value === 'object' && !seen.has(value)) };
 };
 
+// The rich text editor renders only on a column whose form metadata sets Control Style to Code Component; a FormXml-only
+// binding renders the plain textarea (platform.mjs formRichTextField, hosted F2), so it needs no editor assets.
+const CODE_COMPONENT_STYLE = 756150001;
+const idText = (value) =>
+  String(value?.id ?? value ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase();
+function editorColumns(portal) {
+  const rows = (portal?.records ?? []).filter(
+    (row) =>
+      ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
+      Number(portalField(row, 'type') ?? 100000000) === 100000000 &&
+      Number(portalField(row, 'controlstyle')) === CODE_COMPONENT_STYLE,
+  );
+  return rows.map((row) => ({
+    column: String(portalField(row, 'attributelogicalname') ?? '').toLowerCase(),
+    forms: [idText(portalField(row, 'entityform')), idText(portalField(row, 'webformstep'))].filter(Boolean),
+  }));
+}
+/** The discovered fields the editor renders on: each top-level schema is a form (or its steps) of the sources. */
+function editorFields(schemas, portal) {
+  if (!Array.isArray(portal?.records)) return fieldsIn(schemas);
+  const enabled = editorColumns(portal);
+  const fields = [];
+  let truncated = false;
+  for (const [key, schema] of Object.entries(schemas ?? {})) {
+    const found = fieldsIn({ [key]: schema });
+    truncated ||= found.truncated;
+    // The form key and the step ids under it name the metadata rows that apply.
+    const owners = new Set([idText(key), idText(schema?.id)]);
+    for (const step of Array.isArray(schema?.steps) ? schema.steps : Object.values(schema?.steps ?? {}))
+      if (step?.stepId) owners.add(idText(step.stepId));
+    fields.push(
+      ...found.fields.filter((field) =>
+        enabled.some(
+          (entry) =>
+            entry.column === String(field.name ?? '').toLowerCase() && entry.forms.some((form) => owners.has(form)),
+        ),
+      ),
+    );
+  }
+  return { fields, truncated };
+}
+
 /** Extract static PCF definitions only; controlcontext and record values are never copied. */
 function collectManagedManifest(value, context) {
   try {
@@ -289,7 +334,7 @@ export function extractManagedRichTextControls(html) {
   const captured = [],
     failures = [],
     diagnostics = [],
-    discovery = fieldsIn(schemas),
+    discovery = editorFields(schemas, portal),
     fields = discovery.fields,
     result = {
       required: fields.length > 0,

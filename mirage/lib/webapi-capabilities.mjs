@@ -21,6 +21,7 @@ export const WEBAPI_HEADERS = new Set([
   'MSCRM.SuppressDuplicateDetection',
   'OData-MaxVersion',
   'OData-Version',
+  'Range',
   '__RequestVerificationToken',
   'X-Requested-With',
 ]);

@@ -7,7 +7,25 @@ import path from 'node:path';
 import { chooserReport, chooserResults, chooserSearch, CHOOSER_PARAMETERS } from './persona-chooser.mjs';
 import { identityProviderSettings, newUserPolicy } from './identity-provider-settings.mjs';
 import { recordHttpError } from './trace-store.mjs';
+import {
+  CLAIM_TYPES,
+  FederationProblem,
+  identityProviderMetadata,
+  inflateMessage,
+  logoutResponseXml,
+  messageId,
+  postMessage,
+  readAuthnRequest,
+  readLogoutRequest,
+  SAML,
+  signedAssertion,
+  signedRedirectQuery,
+  signedResponse,
+  verifyRedirectQuery,
+  wsFederationResult,
+} from './identity-federation.mjs';
 import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
+import { createOauth1Provider, Oauth1Problem } from './identity-oauth1.mjs';
 
 /**
  * Local identity provider for the portal's external sign-in. Each runtime starts one on its
@@ -27,6 +45,19 @@ import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
  * login_required; prompt=login, select_account, consent and create always show the page.
  * acr_values come back as the id_token's acr claim. Its pages are plainly a local simulation
  * and never imitate an online provider's sign-in screen.
+ *
+ * OAuth 2.0 providers (type oauth2) use the same authorize page with response_type code only and no OpenID Connect
+ * parameters; their token endpoint answers an access token without id_token, which reads openid/userinfo as the
+ * provider's user profile.
+ *
+ * SAML 2.0 providers (type saml2) serve, under the same local authority, federationmetadata/2007-06/
+ * federationmetadata.xml (entityID = the provider's AuthenticationType, its signing key), saml2 (HTTP-Redirect
+ * AuthnRequest; the chooser answers a signed Response and signed assertion posted to the registered assertion
+ * consumer service URL), saml2/idpinitiated (an unsolicited response, RelayState passed through) and saml2/logout (a
+ * LogoutRequest signed with the key registered under the site's ExternalLogoutCertThumbprint, answered with a
+ * signed LogoutResponse redirect to the reply URL). WS-Federation providers (type wsfederation) serve the metadata
+ * and wsfed: wa=wsignin1.0 for the registered wtrealm and wreply answers a RequestSecurityTokenResponse with a signed
+ * SAML 2.0 assertion; wa=wsignout1.0 ends the provider session and follows a wreply on the portal's origin.
  */
 
 const escapeHtml = (value) =>
@@ -70,6 +101,8 @@ const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-b
 const CODE_LIFETIME_MS = 5 * 60 * 1000;
 const TOKEN_LIFETIME_S = 3600;
 const LIMIT = 500;
+/** Provider types served with SAML 2.0 and WS-Federation messages instead of OpenID Connect. */
+const FEDERATED = new Set(['saml2', 'wsfederation']);
 
 const normalizeResponseType = (value) =>
   String(value ?? '')
@@ -148,6 +181,7 @@ function verifyPkce(entry, verifier) {
   assets = [],
   fullPicker = null,
   provision = async () => {},
+  siteAdmission = () => false,
   allowRedirect = () => false,
   clock = () => Date.now(),
   // The runtime's trace store (docs/design/tracing.md): each request is an http root of host identity-provider, joined to
@@ -273,11 +307,34 @@ function verifyPkce(entry, verifier) {
         .slice(0, 20),
     );
   /** Like an online provider: an unknown client or unregistered reply URL is never redirected to. */
-  const validateAuthorize = (provider, params) => {
+  const registrationProblem = (provider, params) => {
     if (params.client_id !== provider.clientId)
       return `The client_id "${params.client_id}" is not registered for this provider (expected "${provider.clientId}").`;
     if (params.redirect_uri !== provider.redirectUri)
       return `The redirect_uri "${params.redirect_uri}" is not the provider's registered reply URL (${provider.redirectUri}).`;
+    return null;
+  };
+  const promptProblem = (params) => {
+    const prompts = params.prompt.split(/\s+/).filter(Boolean);
+    if (prompts.some((value) => !PROMPTS.includes(value)))
+      return `prompt "${params.prompt}" is not supported (supported: ${PROMPTS.join(', ')}).`;
+    if (prompts.includes('none') && prompts.length > 1)
+      return 'prompt=none cannot be combined with another prompt value.';
+    return null;
+  };
+  /** OAuth 2.0 (RFC 6749 4.1): the authorization code grant, answered on the redirect URI's query string. */
+  const validateOauthAuthorize = (provider, params) => {
+    const registration = registrationProblem(provider, params);
+    if (registration) return registration;
+    if (params.response_type !== 'code') return 'This OAuth 2.0 provider answers response_type code only.';
+    if (params.response_mode !== 'query') return 'An OAuth 2.0 authorization code is returned on the query string.';
+    if (!params.state) return 'state is required.';
+    return promptProblem(params);
+  };
+  const validateAuthorize = (provider, params) => {
+    if (provider.type === 'oauth2') return validateOauthAuthorize(provider, params);
+    const registration = registrationProblem(provider, params);
+    if (registration) return registration;
     const type = normalizeResponseType(params.response_type);
     if (!RESPONSE_TYPES.map(normalizeResponseType).includes(type))
       return `response_type "${params.response_type}" is not supported (supported: ${RESPONSE_TYPES.join(', ')}).`;
@@ -285,11 +342,8 @@ function verifyPkce(entry, verifier) {
     if (!/(?:^|\s)openid(?:\s|$)/.test(params.scope)) return 'scope must include openid.';
     // A nonce is required wherever the id_token comes from this endpoint (implicit and hybrid).
     if (!params.state || (/\bid_token\b/.test(type) && !params.nonce)) return 'state and nonce are required.';
-    const prompts = params.prompt.split(/\s+/).filter(Boolean);
-    if (prompts.some((value) => !PROMPTS.includes(value)))
-      return `prompt "${params.prompt}" is not supported (supported: ${PROMPTS.join(', ')}).`;
-    if (prompts.includes('none') && prompts.length > 1)
-      return 'prompt=none cannot be combined with another prompt value.';
+    const prompt = promptProblem(params);
+    if (prompt) return prompt;
     if (params.code_challenge && !/^[A-Za-z0-9._~-]{43,128}$/.test(params.code_challenge))
       return 'code_challenge must be 43 to 128 unreserved characters.';
     if (
@@ -395,22 +449,28 @@ function verifyPkce(entry, verifier) {
         : {}),
       state: params.state,
     };
-    const session = randomBytes(18).toString('base64url');
-    remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: clock() });
-    return deliver(res, params, fields, { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` });
+    return deliver(res, params, fields, startSession(provider, user));
   };
-  const chooser = (provider, params, extras, list, query) /* NOSONAR */ => {
+  /** This browser's session at the provider (prompt=none, sign-out); the header that sets its cookie. */
+  const startSession = (provider, user, sessionIndex = null) => {
+    const session = randomBytes(18).toString('base64url');
+    remember(sessions, session, { subject: user.subject, provider: provider.slug, user, sessionIndex, at: clock() });
+    return { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` };
+  };
+  const chooser = (provider, params, extras, list, query, route = 'oauth2/authorize') /* NOSONAR */ => {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const hidden = Object.entries({ ...extras, ...params })
       .filter(([, value]) => value)
       .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
       .join('');
-    const action = `/${provider.slug}/oauth2/authorize`,
+    const action = `/${provider.slug}/${route}`,
       report = chooserReport(personaCatalog(), list);
     const parameters = new URLSearchParams(query);
     for (const [key, value] of Object.entries({ ...extras, ...params })) if (value) parameters.set(key, value);
     if (parameters.get('view') === 'picker') return chooserResults(report, parameters, action, chooserWork);
-    const policy = newUserPolicy(settings, registration(), provider, params),
+    const policy = siteAdmission(params)
+        ? { allowed: false }
+        : newUserPolicy(settings, registration(), provider, params),
       presentation = parameters.get('presentation') === 'dialog' ? 'dialog' : settings.presentation;
     const requested =
       [
@@ -559,7 +619,10 @@ function verifyPkce(entry, verifier) {
       access_token: accessToken,
       expires_in: TOKEN_LIFETIME_S,
       scope: entry.scope,
-      id_token: await signToken(idTokenClaims(provider, params, entry.user, { accessToken })),
+      // An OAuth 2.0 provider issues no id_token: the portal reads the user profile with the access token.
+      ...(provider.type === 'oauth2'
+        ? {}
+        : { id_token: await signToken(idTokenClaims(provider, params, entry.user, { accessToken })) }),
     });
   }
   function userinfo(req, res, provider) {
@@ -576,6 +639,340 @@ function verifyPkce(entry, verifier) {
         { 'www-authenticate': `Bearer error="invalid_token"` },
       );
     return json(res, 200, userInfoClaims(entry.user));
+  }
+
+  /** The user the chooser's form names: a preset user (its identity recorded first) or a new user; null after a refusal. */
+  async function chosenUser(res, provider, params, form, list) {
+    if (form.subject === 'new') {
+      if (siteAdmission(params)) {
+        fail(res, 403, 'Private site admission requires an existing local identity.');
+        return null;
+      }
+      const policy = newUserPolicy(settings, registration(), provider, params);
+      if (!policy.allowed) {
+        fail(
+          res,
+          403,
+          'Registration is disabled by ' + (policy.disabled.join(', ') || 'mirage.identityProvider.newUser=never'),
+        );
+        return null;
+      }
+      const email = String(form.email ?? '').trim();
+      const given = String(form.given_name ?? '').trim();
+      const family = String(form.family_name ?? '').trim();
+      const phone = String(form.phone_number ?? '').trim();
+      if (
+        !email.includes('@') ||
+        !given ||
+        !family ||
+        email.length > 200 ||
+        given.length > 100 ||
+        family.length > 100 ||
+        phone.length > 50
+      ) {
+        fail(res, 400, 'A new user needs a given name, a family name and an email address.');
+        return null;
+      }
+      return {
+        subject: randomUUID(),
+        email,
+        givenName: given,
+        familyName: family,
+        name: `${given} ${family}`,
+        ...(phone ? { phone } : {}),
+      };
+    }
+    const user = list.find((item) => item.subject === form.subject);
+    if (!user) {
+      fail(res, 400, 'Choose one of the preset users.');
+      return null;
+    }
+    if (!siteAdmission(params)) await provision(provider, user);
+    return user;
+  }
+  /** Ends this browser's provider session and follows `target` when the portal's origin holds it. */
+  function endSession(req, res, target, extra = {}) {
+    const current = sessionCookie(req);
+    if (current) sessions.delete(current);
+    const cleared = { 'set-cookie': `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` };
+    if (target && allowRedirect(target)) {
+      const next = new URL(target);
+      for (const [name, value] of Object.entries(extra)) if (value) next.searchParams.set(name, value);
+      res.writeHead(302, { ...cleared, location: next.href, 'cache-control': 'no-store' });
+      return res.end();
+    }
+    return respond(
+      res,
+      200,
+      page(
+        `<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${target ? `<p role="alert">The sign-out reply URL is not on the portal's origin and was not followed.</p>` : ''}`, // NOSONAR: preserve template coercion and selected evaluation
+      ),
+      cleared,
+    );
+  }
+
+  /** The provider list's link to a provider's metadata: federation metadata or the OpenID Connect discovery document. */
+  const metadataLink = (provider) => {
+    const federated = FEDERATED.has(provider.type);
+    const target = federated ? 'federationmetadata/2007-06/federationmetadata.xml' : '.well-known/openid-configuration';
+    return `<a href="/${escapeHtml(provider.slug)}/${target}">${federated ? 'Federation metadata' : 'Discovery document'}</a>`;
+  };
+
+  // ---- SAML 2.0 and WS-Federation ----
+  const ssoUrl = (provider) => `${authority(provider)}saml2`;
+  const sloUrl = (provider) => `${authority(provider)}saml2/logout`;
+  const passiveUrl = (provider) => `${authority(provider)}wsfed`;
+  /** The claims of a user as SAML attributes (System.Security.Claims.ClaimTypes names). */
+  const federatedClaims = (user) => {
+    const { name, given, family } = nameParts(user);
+    return {
+      [CLAIM_TYPES.name]: name,
+      ...(given ? { [CLAIM_TYPES.givenName]: given } : {}),
+      ...(family ? { [CLAIM_TYPES.surname]: family } : {}),
+      ...(user.email ? { [CLAIM_TYPES.email]: user.email } : {}),
+      ...(user.phone ? { [CLAIM_TYPES.mobilePhone]: user.phone } : {}),
+    };
+  };
+  /** The AuthnRequest of the redirect (or of the chooser's form), checked against the service provider registration. */
+  function samlRequestOf(provider, encoded) {
+    const request = readAuthnRequest(inflateMessage(encoded));
+    if (request.issuer !== provider.clientId)
+      throw new FederationProblem(
+        `The AuthnRequest issuer "${request.issuer ?? ''}" is not the registered service provider realm (${provider.clientId}).`,
+      );
+    if (request.destination && request.destination !== ssoUrl(provider))
+      throw new FederationProblem('The AuthnRequest is addressed to another endpoint.');
+    if ((request.acs ?? provider.redirectUri) !== provider.redirectUri)
+      throw new FederationProblem(
+        `The AssertionConsumerServiceURL "${request.acs}" is not the registered reply URL (${provider.redirectUri}).`,
+      );
+    if (request.binding && request.binding !== SAML.post)
+      throw new FederationProblem('This provider answers with the HTTP-POST binding only.');
+    if (request.nameIdFormat && ![SAML.persistent, SAML.unspecified].includes(request.nameIdFormat))
+      throw new FederationProblem('This provider issues persistent name identifiers only.');
+    return request;
+  }
+  /** The signed Response for `user` (or, with `subStatus`, an unsuccessful one), posted to the reply URL. */
+  async function samlAnswer(res, provider, { user = null, request, relayState, subStatus = null }) {
+    const { privateKey } = await signingKey();
+    const now = clock();
+    const sessionIndex = messageId();
+    const inResponseTo = request?.id ?? null;
+    const assertion = user
+      ? signedAssertion({
+          issuer: provider.id,
+          subject: user.subject,
+          audience: provider.clientId,
+          claims: federatedClaims(user),
+          recipient: provider.redirectUri,
+          inResponseTo,
+          sessionIndex,
+          now,
+          privateKey,
+        })
+      : '';
+    const response = signedResponse({
+      issuer: provider.id,
+      destination: provider.redirectUri,
+      inResponseTo,
+      assertion,
+      ...(subStatus ? { status: SAML.responder, subStatus } : {}),
+      now,
+      privateKey,
+    });
+    return deliver(
+      res,
+      { redirect_uri: provider.redirectUri, response_mode: 'form_post' },
+      { SAMLResponse: postMessage(response), ...(relayState ? { RelayState: relayState } : {}) },
+      user ? startSession(provider, user, sessionIndex) : {},
+    );
+  }
+  /**
+   * The AuthnRequest's IsPassive (saml-core-2.0-os 3.4.1): no page; this browser's provider session answers, else a
+   * Responder/NoPassive status. With ForceAuthn as well, the session cannot answer, so the status is NoPassive.
+   */
+  function samlPassive(req, res, provider, request, relayState) {
+    const user = request.forceAuthn ? null : sessionUser(req, provider);
+    return samlAnswer(res, provider, { user, request, relayState, ...(user ? {} : { subStatus: SAML.noPassive }) });
+  }
+  async function samlSignOn(req, res, provider, url, unsolicited) {
+    const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
+    const relayState = typeof form.RelayState === 'string' && form.RelayState.length <= 1024 ? form.RelayState : '';
+    const request = unsolicited ? null : samlRequestOf(provider, form.SAMLRequest);
+    if (req.method === 'GET' && request?.passive) return samlPassive(req, res, provider, request, relayState);
+    const params = {
+      redirect_uri: provider.redirectUri,
+      prompt: '',
+      acr_values: '',
+      ...(request ? { SAMLRequest: form.SAMLRequest } : {}),
+      RelayState: relayState,
+    };
+    const list = await presetUsers(provider);
+    // ForceAuthn: a fresh authentication; the chooser answers it and never this browser's earlier session.
+    const details = request?.forceAuthn ? { ForceAuthn: 'true' } : {};
+    if (req.method === 'GET')
+      return respond(
+        res,
+        200,
+        chooser(provider, params, details, list, url.searchParams, unsolicited ? 'saml2/idpinitiated' : 'saml2'),
+      );
+    const user = await chosenUser(res, provider, params, form, list);
+    return user ? samlAnswer(res, provider, { user, request, relayState }) : undefined;
+  }
+  /** A LogoutRequest signed with the key registered for the site's logout certificate; answered with a signed LogoutResponse. */
+  async function samlLogout(req, res, provider, url) {
+    const keys = (provider.logoutKeys ?? []).map((key) => createPublicKey({ key, format: 'jwk' }));
+    if (!keys.length)
+      throw new FederationProblem(
+        'No logout certificate is registered for this service provider (ExternalLogoutCertThumbprint).',
+      );
+    const { message, relayState } = verifyRedirectQuery(url.search.slice(1), 'SAMLRequest', keys);
+    const request = readLogoutRequest(message);
+    if (request.issuer !== provider.clientId)
+      throw new FederationProblem('The LogoutRequest is not issued by the registered service provider.');
+    if (request.destination !== sloUrl(provider))
+      throw new FederationProblem('The LogoutRequest is addressed to another endpoint.');
+    const current = sessionCookie(req);
+    const entry = sessions.get(current ?? '');
+    if (entry?.provider === provider.slug && entry.subject === request.nameId) sessions.delete(current);
+    const { privateKey } = await signingKey();
+    const query = signedRedirectQuery(
+      'SAMLResponse',
+      logoutResponseXml({
+        issuer: provider.id,
+        destination: provider.redirectUri,
+        inResponseTo: request.id,
+        now: clock(),
+      }),
+      relayState,
+      privateKey,
+    );
+    res.writeHead(302, {
+      location: provider.redirectUri + (provider.redirectUri.includes('?') ? '&' : '?') + query,
+      'cache-control': 'no-store',
+      'set-cookie': `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+    });
+    return res.end();
+  }
+  /** The passive requestor endpoint: wa=wsignin1.0 for the registered wtrealm and wreply, wa=wsignout1.0. */
+  async function wsFederation(req, res, provider, url) {
+    const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
+    const wa = String(form.wa ?? '');
+    if (wa === 'wsignout1.0' || wa === 'wsignoutcleanup1.0') return endSession(req, res, form.wreply);
+    if (wa !== 'wsignin1.0') throw new FederationProblem(`wa "${wa}" is not wsignin1.0 or wsignout1.0.`);
+    if (form.wtrealm !== provider.clientId)
+      throw new FederationProblem(
+        `The wtrealm "${form.wtrealm ?? ''}" is not registered for this provider (expected "${provider.clientId}").`,
+      );
+    const reply = form.wreply || provider.redirectUri;
+    if (reply !== provider.redirectUri)
+      throw new FederationProblem(`The wreply "${reply}" is not the provider's registered reply URL.`);
+    const wctx = typeof form.wctx === 'string' && form.wctx.length <= 2048 ? form.wctx : '';
+    const whr = typeof form.whr === 'string' ? form.whr.slice(0, 256) : '';
+    const params = {
+      redirect_uri: reply,
+      prompt: '',
+      acr_values: '',
+      wa,
+      wtrealm: form.wtrealm,
+      wreply: form.wreply ?? '',
+      wctx,
+    };
+    const list = await presetUsers(provider);
+    if (req.method === 'GET')
+      return respond(res, 200, chooser(provider, params, whr ? { whr } : {}, list, url.searchParams, 'wsfed'));
+    const user = await chosenUser(res, provider, params, form, list);
+    if (!user) return undefined;
+    const { privateKey } = await signingKey();
+    const now = clock();
+    const assertion = signedAssertion({
+      issuer: provider.id,
+      subject: user.subject,
+      audience: provider.clientId,
+      claims: federatedClaims(user),
+      now,
+      privateKey,
+    });
+    return deliver(
+      res,
+      { redirect_uri: reply, response_mode: 'form_post' },
+      {
+        wa: 'wsignin1.0',
+        wresult: wsFederationResult({ assertion, realm: provider.clientId, now }),
+        ...(wctx ? { wctx } : {}),
+      },
+      startSession(provider, user),
+    );
+  }
+  // ---- OAuth 1.0a (the Twitter provider) ----
+  const oauth1 = createOauth1Provider({ clock: () => clock() });
+  /** A Twitter-style screen name of a user: letters, digits and underscores, at most 15. */
+  const screenNameOf = (user) =>
+    String(user.email?.split('@')[0] ?? user.name ?? user.subject)
+      .replace(/\W/g, '_')
+      .slice(0, 15) || 'user';
+  const formAnswer = (res, fields) => {
+    res.writeHead(200, {
+      'content-type': 'application/x-www-form-urlencoded; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    return res.end(new URLSearchParams(fields).toString());
+  };
+  /** POST oauth/request_token, GET and POST oauth/authenticate, POST oauth/access_token. */
+  async function oauth1Route(req, res, provider, route, url) {
+    const signed = async () => ({
+      method: req.method,
+      url: url.href,
+      header: req.headers.authorization,
+      body: req.method === 'POST' ? await readForm(req) : {},
+    });
+    if (req.method === 'POST' && route === 'oauth/request_token')
+      return formAnswer(res, oauth1.requestToken(provider, await signed()));
+    if (req.method === 'POST' && route === 'oauth/access_token')
+      return formAnswer(res, oauth1.accessToken(provider, await signed()));
+    if (route !== 'oauth/authenticate' || !['GET', 'POST'].includes(req.method))
+      return fail(res, 404, 'Unknown identity provider endpoint.');
+    const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
+    if (!oauth1.pendingToken(provider, form.oauth_token))
+      return fail(res, 400, 'The request token is unknown, expired or already authorized.');
+    const params = { redirect_uri: provider.redirectUri, prompt: '', acr_values: '', oauth_token: form.oauth_token };
+    const list = await presetUsers(provider);
+    if (req.method === 'GET')
+      return respond(res, 200, chooser(provider, params, {}, list, url.searchParams, 'oauth/authenticate'));
+    const user = await chosenUser(res, provider, params, form, list);
+    if (!user) return undefined;
+    const location = oauth1.authorize(provider, form.oauth_token, { ...user, screenName: screenNameOf(user) });
+    res.writeHead(302, { location, 'cache-control': 'no-store', ...startSession(provider, user) });
+    return res.end();
+  }
+
+  async function federated(req, res, provider, route, url) {
+    if (req.method === 'GET' && route === 'federationmetadata/2007-06/federationmetadata.xml') {
+      const { jwk } = await signingKey();
+      res.writeHead(200, {
+        'content-type': 'application/samlmetadata+xml; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      return res.end(
+        identityProviderMetadata({
+          protocol: provider.type,
+          entityId: provider.id,
+          jwk,
+          endpoint: provider.type === 'saml2' ? ssoUrl(provider) : passiveUrl(provider),
+          logoutEndpoint: sloUrl(provider),
+        }),
+      );
+    }
+    const methods = ['GET', 'POST'].includes(req.method);
+    if (provider.type === 'saml2' && methods && route === 'saml2') return samlSignOn(req, res, provider, url, false);
+    if (provider.type === 'saml2' && methods && route === 'saml2/idpinitiated')
+      return samlSignOn(req, res, provider, url, true);
+    if (provider.type === 'saml2' && req.method === 'GET' && route === 'saml2/logout')
+      return samlLogout(req, res, provider, url);
+    if (provider.type === 'wsfederation' && methods && route === 'wsfed') return wsFederation(req, res, provider, url);
+    return fail(res, 404, 'Unknown identity provider endpoint.');
   }
 
   async function /* NOSONAR */ handle(req, res) {
@@ -605,7 +1002,7 @@ function verifyPkce(entry, verifier) {
       const items = providers()
         .map(
           (provider) =>
-            `<li><span><strong>${escapeHtml(provider.caption ?? provider.key)}</strong> <small>${escapeHtml(provider.key)}</small><br><code>${escapeHtml(authority(provider))}</code></span><a href="/${escapeHtml(provider.slug)}/.well-known/openid-configuration">Discovery document</a></li>`,
+            `<li><span><strong>${escapeHtml(provider.caption ?? provider.key)}</strong> <small>${escapeHtml(provider.key)}</small><br><code>${escapeHtml(authority(provider))}</code></span>${metadataLink(provider)}</li>`,
         )
         .join('');
       return respond(
@@ -620,6 +1017,22 @@ function verifyPkce(entry, verifier) {
     const route = rest.join('/');
     const provider = SLUG.test(slug ?? '') ? (providers().find((item) => item.slug === slug) ?? null) : null;
     if (!provider) return fail(res, 404, 'Unknown provider.');
+    if (provider.protocol === 'oauth1')
+      try {
+        return (await oauth1Route(req, res, provider, route, url)) ?? undefined;
+      } catch (error) {
+        if (!(error instanceof Oauth1Problem)) throw error;
+        refusals.set(res, { code: 'IdentityProviderRequestRejected', message: error.message });
+        return json(res, error.status, { error: error.message });
+      }
+    if (FEDERATED.has(provider.type)) {
+      try {
+        return (await federated(req, res, provider, route, url)) ?? undefined;
+      } catch (error) {
+        if (error instanceof FederationProblem) return fail(res, 400, error.message);
+        throw error;
+      }
+    }
     if (req.method === 'GET' && route === '.well-known/openid-configuration')
       return json(res, 200, {
         issuer: authority(provider),
@@ -668,6 +1081,8 @@ function verifyPkce(entry, verifier) {
     if (route === 'oauth2/authorize' && ['GET', 'POST'].includes(req.method)) {
       const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
       const params = authorizeParams(form);
+      // An OAuth 2.0 authorization code comes back on the query string (RFC 6749 4.1.2).
+      if (provider.type === 'oauth2' && !params.response_mode) params.response_mode = 'query';
       const extras = extrasOf(form);
       const problem = validateAuthorize(provider, params);
       if (problem) return fail(res, 400, problem);
@@ -684,71 +1099,21 @@ function verifyPkce(entry, verifier) {
               'login_required',
               'prompt=none: no user is signed in to the local identity provider in this browser and login_hint names no preset user.',
             );
-          if (silent.contactId) await provision(provider, silent);
+          if (silent.contactId && !siteAdmission(params)) await provision(provider, silent);
           return answer(res, provider, params, silent);
         }
         const match = prompts.length ? null : hinted(list, params.login_hint);
         if (!match) return respond(res, 200, chooser(provider, params, extras, list, url.searchParams));
-        await provision(provider, match);
+        if (!siteAdmission(params)) await provision(provider, match);
         return answer(res, provider, params, match);
       }
-      if (form.subject === 'new') {
-        const policy = newUserPolicy(settings, registration(), provider, params);
-        if (!policy.allowed)
-          return fail(
-            res,
-            403,
-            'Registration is disabled by ' + (policy.disabled.join(', ') || 'mirage.identityProvider.newUser=never'),
-          );
-        const email = String(form.email ?? '').trim();
-        const given = String(form.given_name ?? '').trim();
-        const family = String(form.family_name ?? '').trim();
-        const phone = String(form.phone_number ?? '').trim();
-        if (
-          !email.includes('@') ||
-          !given ||
-          !family ||
-          email.length > 200 ||
-          given.length > 100 ||
-          family.length > 100 ||
-          phone.length > 50
-        )
-          return fail(res, 400, 'A new user needs a given name, a family name and an email address.');
-        return answer(res, provider, params, {
-          subject: randomUUID(),
-          email,
-          givenName: given,
-          familyName: family,
-          name: `${given} ${family}`,
-          ...(phone ? { phone } : {}),
-        });
-      }
-      const user = list.find((item) => item.subject === form.subject);
-      if (!user) return fail(res, 400, 'Choose one of the preset users.');
-      await provision(provider, user);
-      return answer(res, provider, params, user);
+      const user = await chosenUser(res, provider, params, form, list);
+      return user ? answer(res, provider, params, user) : undefined;
     }
-    if (req.method === 'GET' && route === 'oauth2/logout') {
-      const current = sessionCookie(req);
-      if (current) sessions.delete(current);
-      const cleared = { 'set-cookie': `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` };
-      const target = url.searchParams.get('post_logout_redirect_uri');
-      if (target && allowRedirect(target)) {
-        const next = new URL(target);
-        const state = url.searchParams.get('state');
-        if (state) next.searchParams.set('state', state);
-        res.writeHead(302, { ...cleared, location: next.href, 'cache-control': 'no-store' });
-        return res.end();
-      }
-      return respond(
-        res,
-        200,
-        page(
-          `<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${target ? `<p role="alert">The post_logout_redirect_uri is not on the portal's origin and was not followed.</p>` : ''}`, // NOSONAR: preserve template coercion and selected evaluation
-        ),
-        cleared,
-      );
-    }
+    if (req.method === 'GET' && route === 'oauth2/logout')
+      return endSession(req, res, url.searchParams.get('post_logout_redirect_uri'), {
+        state: url.searchParams.get('state'),
+      });
     return fail(res, 404, 'Unknown identity provider endpoint.');
   }
   const serve = (req, res) =>

@@ -1,20 +1,80 @@
 import { randomUUID } from 'node:crypto';
-import { withNativeFormContactAssociation } from './native-form-association.mjs';
+import {
+  withNativeFormContactAssociation,
+  currentContactParty,
+  currentContactPartyRow,
+  currentContactPartyDeepInsert,
+} from './native-form-association.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
 import { DataError } from './data.mjs';
+import { activityTables } from './portal-timeline.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
 import { portalField } from './importer.mjs';
 import { siteSetting } from './redirects.mjs';
 import {
   schemaFromFormXml,
   nativeControlKind,
+  formChoiceField,
+  acceptsFormChoice,
+  rejectedFormChoices,
   nativeRangeMessage,
+  nativeRangeBounds,
+  nativeNumberFormatMessage,
   nativeDateOnly,
   resolveFormRecord,
+  formRichTextField,
 } from './platform.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
-import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
+import {
+  nativeFormActions,
+  nativeFormActionApplies,
+  nativeFormWorkflowId,
+  NATIVE_STATE_ACTIONS,
+  nativeActionStateValues,
+  nativeCloseActivity,
+  assertActionSource,
+  stateValues as recordStateValues,
+  invariantNow,
+  pipelinePhaseWrites,
+} from './native-form-actions.mjs';
 import { isExactNumeric, decimalParts, compareNumeric, parseNumericLiteral } from './exact-numeric.mjs';
+import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
+import { writeWebFormSessionRow } from './web-form-session-row.mjs';
+import { recordExistsFetch } from './form-read-messages.mjs';
+import {
+  isPcfHiddenValue,
+  nativeFieldAdmission,
+  nativeFieldPostedValue,
+  PcfFieldValueError,
+} from './pcf-field-host.mjs';
+
+// A column the Power Pages form host hands to a field component: code component style on the form metadata, an
+// exported desktop binding and an admitted column type (lib/pcf-field-host.mjs).
+const pcfFieldOf = (field, metadata) =>
+  Boolean(
+    field.codeComponent &&
+    Number(portalField(metadata ?? {}, 'controlstyle')) === 756150001 &&
+    nativeFieldAdmission(nativeControlKind(field), field.dataverseType).admitted,
+  );
+// The posted hidden input of a mounted field component (both transports mark it, lib/pcf-field-host.mjs) as the value
+// the native control of its column would post. Only a mounted component field may post the marker, and a hidden
+// component field posts nothing (the host renders no input for it); any other posted value is returned as is.
+function pcfFieldValue(posted, fields, key) {
+  const field = fields.find((candidate) => canonical(candidate.name) === canonical(key));
+  if (field?.pcfField && field.hidden)
+    fail(`Field '${key}' is not bound to this native form`, 403, 'FormFieldNotBound');
+  if (!isPcfHiddenValue(posted)) return posted;
+  if (!field?.pcfField)
+    fail(`Field '${key}' is not a code component field of this native form`, 400, 'FormFieldInvalid');
+  const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
+  try {
+    return nativeFieldPostedValue(posted.pcfHiddenValue, { control: nativeControlKind(field), behavior });
+  } catch (error) {
+    if (!(error instanceof PcfFieldValueError)) throw error;
+    // The platform's save fails with HTTP 500 and saves nothing (captured, one load).
+    return fail(`Field '${key}' posted a code component value the column cannot take`, 500, 'FormFieldValueMalformed');
+  }
+}
 
 const canonical = (value) =>
   String(value ?? '')
@@ -125,13 +185,375 @@ export function formText(value, fallback = '', language = {}, onSelection = null
   return selected?.Value || fallback;
 }
 
+/**
+ * Enforce the selected form's CAPTCHA on either transport. Without a trusted local fixture, refuse the save. A refused
+ * answer spends its challenge: `reissue` gives the JSON transport the next one ({ id, prompt }), which the refusal
+ * carries in its captcha validation error, as a postback re-render draws a new challenge.
+ */
+export function validateFormCaptcha(action, component, identity, verify = null, reissue = null) {
+  if (action !== 'submit' || !truthy(portalField(component ?? {}, 'captcharequired', false))) return;
+  const signedIn = Boolean(identity?.contactId ?? identity?.id);
+  if (signedIn && !truthy(portalField(component, 'showcaptchaforauthenticatedusers', false))) return;
+  if (verify?.() === true) return;
+  const code = 'CaptchaInvalid';
+  const message = 'Captcha is incorrect, please re-enter captcha.';
+  const challenge = reissue?.() ?? null;
+  throw new DataError(message, 400, code, {
+    validationErrors: [{ field: 'captcha', code, message, ...(challenge ? { challenge } : {}) }],
+  });
+}
+
+// Basic/multistep form metadata control styles (mspp_entityformmetadata.mspp_controlstyle choices, Learn table reference).
+const GEOLOCATION_STYLE = 100000002,
+  CONSTANT_SUM_STYLE = 100000003,
+  RANK_NO_TIES_STYLE = 100000004,
+  MULTIPLE_CHOICE_STYLE = 100000007;
+
+/** The survey control facts of one attribute metadata row: style, group, group bounds and group messages. */
+function surveyFieldFacts(row, text) {
+  if (!row) return {};
+  const style = Number(portalField(row, 'controlstyle'));
+  const bound = (name) => {
+    const value = portalField(row, name);
+    return value === undefined || value === null || value === '' || !Number.isFinite(Number(value))
+      ? null
+      : Number(value);
+  };
+  return {
+    controlStyle: Number.isFinite(style) ? style : null,
+    groupName: String(portalField(row, 'groupname') ?? ''),
+    constantSum: { minimum: bound('constantsumminimumtotal'), maximum: bound('constantsummaximumtotal') },
+    multipleChoice: {
+      minimum: bound('minmultiplechoiceselectedcount'),
+      maximum: bound('maxmultiplechoiceselectedcount'),
+    },
+    constantSumMessage: text(portalField(row, 'constantsumvalidationerrormessage'), ''),
+    multipleChoiceMessage: text(portalField(row, 'multiplechoicevalidationerrormessage'), ''),
+    rankOrderMessage: text(portalField(row, 'rankordernotiesvalidationerrormessage'), ''),
+  };
+}
+
+const firstSet = (members, pick) => members.map(pick).find((value) => value !== null && value !== '') ?? null;
+const surveyNumber = (value) => {
+  const scalar = value?.value ?? value;
+  return scalar === undefined || scalar === null || scalar === '' ? null : Number(scalar);
+};
+const surveyChosen = (value) =>
+  value === true || value === 1 || /^(true|1)$/i.test(String(value?.value ?? value ?? ''));
+function surveyRange(minimum, maximum) {
+  if (minimum !== null && maximum !== null)
+    return minimum === maximum ? String(minimum) : `between ${minimum} and ${maximum}`;
+  return minimum === null ? `at most ${maximum}` : `at least ${minimum}`;
+}
+
+/** A constant sum group totals within its Constant Sum Minimum/Maximum Total. */
+function constantSumError(members, valueOf) {
+  const minimum = firstSet(members, (field) => field.constantSum.minimum),
+    maximum = firstSet(members, (field) => field.constantSum.maximum);
+  if (minimum === null && maximum === null) return null;
+  const total = members.reduce((sum, field) => sum + (surveyNumber(valueOf(field)) || 0), 0);
+  if ((minimum === null || total >= minimum) && (maximum === null || total <= maximum)) return null;
+  return {
+    field: members.at(-1).name,
+    code: 'FormConstantSumInvalid',
+    message:
+      firstSet(members, (field) => field.constantSumMessage) ||
+      `The total of ${members[0].groupName} must be ${surveyRange(minimum, maximum)}.`,
+  };
+}
+
+/** A multiple choice group chooses between its Minimum Required and Max Selected Count of options. */
+function multipleChoiceError(members, valueOf) {
+  const minimum = firstSet(members, (field) => field.multipleChoice.minimum),
+    maximum = firstSet(members, (field) => field.multipleChoice.maximum);
+  if (minimum === null && maximum === null) return null;
+  const chosen = members.filter((field) => surveyChosen(valueOf(field))).length;
+  if ((minimum === null || chosen >= minimum) && (maximum === null || chosen <= maximum)) return null;
+  return {
+    field: members.at(-1).name,
+    code: 'FormMultipleChoiceInvalid',
+    message:
+      firstSet(members, (field) => field.multipleChoiceMessage) ||
+      `Select ${surveyRange(minimum, maximum)} options for ${members[0].groupName}.`,
+  };
+}
+
+/** A rank order scale without ties repeats no rank. */
+function rankTieErrors(members, valueOf) {
+  const errors = [],
+    seen = new Map();
+  for (const field of members) {
+    const rank = surveyNumber(valueOf(field));
+    if (rank === null) continue;
+    const earlier = seen.get(rank);
+    if (!earlier) {
+      seen.set(rank, field);
+      continue;
+    }
+    errors.push({
+      field: field.name,
+      code: 'FormRankOrderTie',
+      message:
+        field.rankOrderMessage ||
+        firstSet(members, (member) => member.rankOrderMessage) ||
+        `${earlier.label} and ${field.label} have the same rank.`,
+    });
+  }
+  return errors;
+}
+
+/**
+ * Server-side counterparts of the survey group validators (Learn: configure basic form metadata, Control style and
+ * Validation). A group is the editable fields sharing a control style and Group Name; its bounds and message are the
+ * first member's that sets them, and a group error names the last member, which carries the rendered group validator.
+ */
+function surveyGroupErrors(fields, valueOf) {
+  const groups = new Map();
+  for (const field of fields) {
+    if (![CONSTANT_SUM_STYLE, RANK_NO_TIES_STYLE, MULTIPLE_CHOICE_STYLE].includes(field.controlStyle)) continue;
+    if (!field.groupName || field.hidden || field.readOnly) continue;
+    const key = `${field.controlStyle}:${field.groupName}`;
+    groups.set(key, [...(groups.get(key) ?? []), field]);
+  }
+  return [...groups.values()].flatMap((members) => {
+    if (members[0].controlStyle === CONSTANT_SUM_STYLE) return [constantSumError(members, valueOf) ?? []].flat();
+    if (members[0].controlStyle === MULTIPLE_CHOICE_STYLE) return [multipleChoiceError(members, valueOf) ?? []].flat();
+    return rankTieErrors(members, valueOf);
+  });
+}
+
+/** The form setting limits new annotations together with the record's existing files. */
+export function formAttachmentLimit(component) {
+  const multiple = portalField(component, 'attachfileallowmultiple') ?? portalField(component, 'allowmultiplefiles');
+  return truthy(multiple) ? Math.max(0, Number(portalField(component, 'maximumnooffiles')) || 5) : 1;
+}
+
+// The form counts the record's files as the system, not as the visitor: a visitor whose note permission allows create
+// but not read (or reads only their own notes) would otherwise count none, get the whole file count again on every save
+// and fail Attach File Required on a record that has one. Only the count leaves this function; the caller has read the
+// record, and the rendered control states the same number as its remaining file count.
+const SYSTEM_READ = Object.freeze({ admin: true });
+// The activityparty row of Associate Current Portal User (Is Activity Party) is written by the system with its record.
+const SYSTEM_PARTY_WRITE = Object.freeze({ admin: true });
+
+/**
+ * The record's notes that take an attach-file slot, counted by the system read; the visitor's identity does not narrow
+ * it. Hosted session F2 (attach runs b/e, f/g, i/j, k/l): the portal counts every note regarding the record whose file
+ * name does not end in `.azure.txt` (objectid, objecttypecode, filename NotLike '%.azure.txt'), so a note the visitor
+ * cannot read, a text-only note without a file and an orphan staged note each take a slot. `exclude` leaves out the
+ * staged notes a postback is saving, which are its new files rather than existing ones.
+ */
+export async function formAttachmentCount(readProvider, _identity, entity, recordId, { exclude = [] } = {}) {
+  if (!recordId || typeof readProvider?.fetchXml !== 'function') return 0;
+  const xml = `<fetch><entity name="annotation"><attribute name="annotationid"/><attribute name="filename"/><attribute name="objectid"/><attribute name="objecttypecode"/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscapeAttribute(canonical(recordId))}"/></filter></entity></fetch>`;
+  const result = await readProvider.fetchXml(xml, SYSTEM_READ);
+  const skipped = new Set(exclude.map(canonical));
+  return (result.entities ?? result.value ?? []).filter((note) => {
+    const regarding = canonical(note.objectid?.logical_name ?? note.objecttypecode?.value ?? note.objecttypecode);
+    return (
+      (!regarding || regarding === canonical(entity)) &&
+      !String(note.filename ?? '')
+        .toLowerCase()
+        .endsWith('.azure.txt') &&
+      !skipped.has(canonical(note.annotationid))
+    );
+  }).length;
+}
+
+/**
+ * The basic form or advanced form step an attach-file upload names (InitializeFileUpload's formType and formId: the
+ * basic form id, or the step id of a multistep form), with its table and the metadata that holds its attach-file
+ * settings; null when it does not resolve or does not attach files.
+ */
+export function formAttachmentScope({ portal, schemas = {}, metadata = null, formType, formId }) {
+  if (!formId) return null;
+  const matches = (value) => Boolean(value) && canonical(value) === canonical(formId);
+  if (String(formType ?? '').toLowerCase() === 'multistep') {
+    for (const definition of portal?.advancedForms ?? []) {
+      const schema = approximateAdvancedFormSchema({
+        definition,
+        portal,
+        metadata,
+        schema: schemas[definition.id] ?? schemas[definition.name],
+      });
+      const step = schema?.steps?.find((candidate) => matches(candidate.stepId));
+      const component = step?.metadata ?? null;
+      if (step?.entity && component && truthy(portalField(component, 'attachfile')))
+        return { entity: step.entity, component, dataverse: formAttachmentInDataverse(portal, component) };
+    }
+    return null;
+  }
+  const definition = portal?.forms?.find((row) => matches(row.id));
+  const component = definition?.metadata ?? null;
+  const entity = (schemas[definition?.id] ?? schemas[definition?.name])?.entity ?? definition?.entityName;
+  return entity && component && truthy(portalField(component, 'attachfile'))
+    ? { entity, component, dataverse: formAttachmentInDataverse(portal, component) }
+    : null;
+}
+
+/** True when the form stores its files in Dataverse notes: location 756150000, or no location and no cloud account. */
+function formAttachmentInDataverse(portal, component) {
+  const location = String(portalField(component, 'attachfilestoragelocation') ?? '').trim();
+  if (location) return location === '756150000';
+  return !String(siteSetting(portal, 'FileStorage/CloudStorageAccount') ?? '').trim();
+}
+
+/**
+ * Whether the visitor may add notes to the record, which the attach-file control needs: annotation Create on a note
+ * regarding it. Hosted session F2 state-0 re-run (attach runs s0g and s0h, annotation permission Read only): the form
+ * renders no attach-file control, Required is not applied and the form saves with no file; with Create and Append
+ * (runs b/e, f/g, i/j, k/l and their state-0 repeats) the control renders. The captures do not separate Create from
+ * Append. A form without a record (an insert form) keeps the control.
+ */
+export function formAttachmentAllowed(store, identity, entity, recordId) {
+  if (!recordId || typeof store?.allowed !== 'function') return true;
+  const logical = store.resolveMapping(entity).logicalName;
+  return store.allowed(
+    'annotation',
+    'create',
+    { objectid: { id: canonical(recordId), logical_name: logical }, objecttypecode: logical },
+    identity ?? {},
+  );
+}
+
+/** The subject the portal gives an attach-file note: "Note created on <M/D/YYYY h:mm:ss AM> UTC by <name> [contact:<id>]". */
+function attachmentNoteSubject(date, identity) {
+  const fullname = identity?.fullname ?? identity?.name ?? '';
+  const contactId = canonical(identity?.contactId ?? identity?.id);
+  const stamp = date
+    .toLocaleString('en-US', {
+      timeZone: 'UTC',
+      hour12: true,
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    .replace(',', '');
+  const contact = contactId ? ` [contact:${contactId}]` : '';
+  return `Note created on ${stamp} UTC by ${fullname}${contact}`;
+}
+
+// The activity party scope of a native form record create (withNativeFormContactAssociation): the current contact's party
+// the store writes inside the create, `taken` called when it does; null without an association or for a deep insert.
+function currentContactPartyScope(association, activityMapping, taken) {
+  if (!association || association.deepInsert) return null;
+  return {
+    entity: association.entity,
+    column: association.column,
+    contactId: association.contactId,
+    party: {
+      mask: association.participationtypemask,
+      mappings: {
+        activityMapping,
+        partyMapping: association.partyMapping,
+        contactMapping: association.contactMapping,
+      },
+      taken,
+    },
+  };
+}
+
+/**
+ * The note InitializeFileUpload creates on the regarding record before any byte arrives. Hosted session F2 (attach run
+ * e, max1-none:one-file; the Create trace of runs a and b): subject as the form's notes, notetext the notes filter
+ * alone, the regarding record, not private, not a document; the upload's file is written into it later.
+ */
+export function stagedAttachmentNote({ store, portal, entity, recordId, identity, now = new Date() }) {
+  const mapping = store.resolveMapping(entity);
+  const binding = Object.entries(store.resolveMapping('annotation').relationships ?? {}).find(
+    ([, relation]) =>
+      relation.many === false && relation.from === 'objectid' && relation.entity === canonical(mapping.logicalName),
+  );
+  return {
+    subject: attachmentNoteSubject(now, identity),
+    notetext: notesFilter(portal),
+    objecttypecode: mapping.logicalName,
+    isprivate: false,
+    isdocument: false,
+    ...(binding
+      ? { [`${binding[0]}@odata.bind`]: `/${mapping.entitySet}(${canonical(recordId)})` }
+      : { objectid: { id: canonical(recordId), logical_name: mapping.logicalName } }),
+  };
+}
+
+/**
+ * The form's limit a file breaks, as { code, message }, or null: Attach File Maximum Size (KB) and, with Restrict Files
+ * To Accept set, the accepted MIME types and extensions. The form save checks every file with it, and the attach-file
+ * upload checks the declared file before anything is staged or written (server.mjs InitializeFileUpload).
+ */
+export function formAttachmentFileProblem(
+  component,
+  { name, type, size },
+  text = (value, fallback) => formText(value, fallback),
+) {
+  const maxKb = Number(portalField(component, 'attachfilemaxsize')) || 0;
+  if (maxKb && size > maxKb * 1024)
+    return {
+      code: 'FormAttachmentTooLarge',
+      message: text(portalField(component, 'attachfilesizeerrormessage'), `${name} exceeds the maximum file size.`),
+    };
+  const accept = [
+    portalField(component, 'attachfileaccept') ?? portalField(component, 'accept'),
+    portalField(component, 'attachfileacceptextensions'),
+  ]
+    .filter(Boolean)
+    .join(',');
+  const restrict = truthy(portalField(component, 'attachfilerestrictaccept'));
+  const accepted = accept.split(',').some((entry) => {
+    const pattern = entry.trim().toLowerCase();
+    if (!pattern) return false;
+    if (pattern.startsWith('.')) return String(name).toLowerCase().endsWith(pattern);
+    if (pattern.endsWith('/*'))
+      return String(type ?? '')
+        .toLowerCase()
+        .startsWith(pattern.slice(0, -1));
+    return String(type ?? '').toLowerCase() === pattern;
+  });
+  if (restrict && accept && !accepted)
+    return {
+      code: 'FormAttachmentType',
+      message: text(
+        portalField(component, 'attachfiletypeerrormessage'),
+        `${name} is not of the file type(s) "${accept}".`,
+      ),
+    };
+  return null;
+}
+
+function validateFormAttachmentCount({ count, existing, limit, required, component, text }) {
+  const invalid = (code, message) => {
+    throw new DataError(message, 400, code, { validationErrors: [{ field: 'AttachFile', code, message }] });
+  };
+  // Hosted session F2 (attach runs b/e, f/g, i/j, k/l, zero-files and zero-files-server): the record's existing notes do
+  // not satisfy Required; a postback without a new file answers "<label> is a required field." with client validators
+  // on and off.
+  if (required && count === 0) {
+    const label = text(portalField(component, 'attachfilelabel'), 'Attach a File');
+    invalid(
+      'FormAttachmentRequired',
+      text(portalField(component, 'attachfilerequirederrormessage'), `${label} is a required field.`),
+    );
+  }
+  const remaining = Math.max(0, limit - existing);
+  if (count > remaining)
+    invalid(
+      'FormAttachmentTooMany',
+      `You can upload a maximum of ${remaining} more file${remaining === 1 ? '' : 's'}.`,
+    );
+}
+
 // ---- Advanced (multistep) form sessions
 // Native Power Pages persists the step history in adx_webformsession, per signed-in user or
 // anonymous visitor; unless Start New Session On Load, the user can leave and resume where they
-// left off. Each runtime keeps its own sessions in memory (a restart starts new ones).
+// left off. Mirage stores progress in the same state as its records when a DataStore is supplied,
+// and a signed-in contact's session is also its adx_webformsession row (web-form-session-row.mjs).
 // The owner is the signed-in contact ("contact:<id>", resumed from any browser session of
 // that contact) or the anonymous visitor of one browser session ("visitor:<id>", from a
-// runtime cookie); a request with neither resumes nothing.
+// runtime cookie); a request with neither resumes nothing. A persisted contact session backed by its row is never
+// removed, like the platform's rows; every other session (in memory, anonymous, or without a row) is bounded by `limit`.
 
 /** The session owner of a request: the signed-in contact, else the anonymous browser visitor. */
 export function webFormSessionOwner(identity, visitorId) {
@@ -142,17 +564,38 @@ export function webFormSessionOwner(identity, visitorId) {
 }
 
 /** The advanced form sessions of one runtime. */
-export function createWebFormSessions({ limit = 1000 } = {}) {
+export function createWebFormSessions({ limit = 1000, store = null } = {}) {
   const sessions = new Map();
+  const savedSessions = () => (Array.isArray(store?.state.portalFormSessions) ? store.state.portalFormSessions : []);
+  const get = (id) =>
+    store
+      ? structuredClone(savedSessions().find((session) => session.id === canonical(id)) ?? null)
+      : (sessions.get(canonical(id)) ?? null);
+  const list = (webformId, owner) => {
+    if (!owner) return [];
+    const values = store ? savedSessions() : [...sessions.values()];
+    const matches = values
+      .filter((session) => session.webformId === canonical(webformId) && session.owner === owner)
+      .reverse();
+    return store ? structuredClone(matches) : matches;
+  };
+  const checkCurrent = (session, singleRecord = false) => {
+    if (!store || !session.owner) return;
+    const saved = get(session.id);
+    if (
+      (saved?.revision ?? 0) !== session.revision ||
+      (!saved &&
+        list(session.webformId, session.owner).some(
+          (candidate) =>
+            (candidate.active && (!session.startNew || singleRecord)) || (candidate.completed && singleRecord),
+        ))
+    )
+      fail('This multistep form session changed. Reload the page before continuing.', 409, 'FormSessionChanged');
+  };
   return {
-    get: (id) => sessions.get(canonical(id)) ?? null,
+    get,
     /** The sessions of `owner` for one form, newest first. */
-    list: (webformId, owner) =>
-      owner
-        ? [...sessions.values()]
-            .reverse()
-            .filter((session) => session.webformId === canonical(webformId) && session.owner === owner)
-        : [],
+    list,
     create(webformId, owner, startNew = false) {
       const session = {
         id: randomUUID(),
@@ -163,10 +606,43 @@ export function createWebFormSessions({ limit = 1000 } = {}) {
         active: true,
         completed: false,
         startNew,
+        revision: 0,
       };
-      sessions.set(session.id, session);
-      if (sessions.size > limit) sessions.delete(sessions.keys().next().value);
+      if (!store) {
+        sessions.set(session.id, session);
+        if (sessions.size > limit) sessions.delete(sessions.keys().next().value);
+      }
       return session;
+    },
+    checkCurrent,
+    /** Persist a session change; with `row` facts a signed-in contact's adx_webformsession row follows it. */
+    async stage(previous, progress, singleRecord, row = null) {
+      if (!store || !previous.owner) return;
+      const save = async () => {
+        checkCurrent(previous, singleRecord);
+        // A signed-in contact's session backed by its adx_webformsession row is kept, as the hosted platform keeps the
+        // rows (hosted F2 runs e/f: no cleanup). Any other session (anonymous visitors, whose cookieless requests mint
+        // new owners, and sessions without a row) has no evidence and stays bounded by `limit`, oldest first.
+        const backed = row ? await writeWebFormSessionRow(store, previous, progress, row) : false;
+        const saved = (store.state.portalFormSessions ??= []);
+        const index = saved.findIndex((session) => session.id === progress.id);
+        if (index >= 0) saved.splice(index, 1);
+        // Only committed progress refreshes a session's place in the history.
+        saved.push({ ...progress, revision: previous.revision + 1, ...(backed ? { rowBacked: true } : {}) });
+        let bounded = 0;
+        for (const session of saved) if (!session.rowBacked) bounded++;
+        for (let at = 0; bounded > limit && at < saved.length;)
+          if (saved[at].rowBacked) at++;
+          else {
+            saved.splice(at, 1);
+            bounded--;
+          }
+      };
+      if (store.inTransaction()) await save();
+      else await store.transact(save, { incremental: true });
+    },
+    publish(previous, progress) {
+      if (!store) Object.assign(sessions.get(previous.id) ?? previous, progress);
     },
     /** Forget every session (a data reset removes the adx_webformsession equivalents with the records). */
     clear: () => sessions.clear(),
@@ -216,6 +692,9 @@ function sessionSteps(session, initialStepId) {
 // The platform documents this default for Edit Expired Message; Edit Not Permitted Message has
 // no documented default, so the same completion message stands in for an unset one.
 const COMPLETED_MESSAGE = 'You have already completed a submission. Thank you!';
+const signedInForForm = (identity) => Boolean(canonical(identity?.contactId ?? identity?.id));
+const singleRecordForm = (form, identity) =>
+  signedInForForm(identity) && falsy(portalField(form ?? {}, 'multiplerecordsperuserpermitted'));
 
 /**
  * Form-level access of an advanced form:
@@ -237,10 +716,10 @@ export async function advancedFormAccess({
   language = {},
 }) {
   const form = definition?.metadata ?? {};
-  const signedIn = Boolean(canonical(identity?.contactId ?? identity?.id));
+  const signedIn = signedInForForm(identity);
   if (truthy(portalField(form, 'authenticationrequired')) && !signedIn)
     return { signIn: true, code: 'FormAuthenticationRequired' };
-  if (!signedIn || !falsy(portalField(form, 'multiplerecordsperuserpermitted'))) return null;
+  if (!singleRecordForm(form, identity)) return null;
   owner ??= webFormSessionOwner(identity);
   const previous = sessions.list(definition.id, owner).find((session) => session.completed);
   if (!previous) return null;
@@ -256,10 +735,7 @@ export async function advancedFormAccess({
     if (record && code(record.statecode) === Number(stateCode) && code(record.statuscode) === Number(statusCode))
       return { message: message('editexpiredmessage'), code: 'FormEditExpired' };
   }
-  previous.active = true;
-  previous.completed = false;
-  previous.current = canonical(initialStepId);
-  return { session: previous };
+  return { session: { ...previous, active: true, completed: false, current: canonical(initialStepId) } };
 }
 export function sessionRecord(session, stepId) {
   return session?.history.find((entry) => canonical(entry.stepId) === canonical(stepId))?.recordId ?? null;
@@ -536,7 +1012,64 @@ function requiredAdvancedFormStep(portal, schema, id) {
   return step;
 }
 
-function nextAdvancedFormStep(portal, schema, id, record) {
+/** Previous starts a new forward path from the reopened step, omitting its former successors. */
+function checkForwardFormStep(session, current, next) {
+  if (!next || next.type === 'condition' || next.type === 'redirect') return;
+  const currentId = canonical(current.stepId);
+  const nextId = canonical(next.stepId);
+  const currentIndex = session.history.findIndex((entry) => canonical(entry.stepId) === currentId);
+  const visited = currentIndex < 0 ? session.history : session.history.slice(0, currentIndex);
+  if (nextId === currentId || visited.some((entry) => canonical(entry.stepId) === nextId))
+    fail(`Multistep form step '${next.stepId}' was already used in this path.`, 400, 'FormStepReused');
+}
+
+function previousConditionStep(component, previous, history) {
+  const sourceStep = canonical(portalField(component, 'entitysourcestep'));
+  const previousStep = canonical(previous.stepId);
+  if (!sourceStep || sourceStep === previousStep) return previous;
+  const index = history.findIndex((entry) => canonical(entry.stepId) === previousStep);
+  const pathToPrevious = index < 0 ? history : history.slice(0, index);
+  return pathToPrevious.find((entry) => canonical(entry.stepId) === sourceStep);
+}
+
+async function conditionRecord(step, previous, { definition, query, readProvider, store, identity, session }) {
+  const component = step.metadata ?? {};
+  const sourceType = Number(portalField(component, 'entitysourcetype') ?? 100000003);
+  let entity = canonical(step.entity ?? portalField(component, 'targetentitylogicalname'));
+  let id;
+  if (sourceType === 100000003) {
+    const source = previousConditionStep(component, previous, session.history);
+    const sourceEntity = canonical(source?.entity);
+    entity ||= sourceEntity;
+    if (source === previous && entity === sourceEntity) return previous.record;
+    id = entity === sourceEntity ? source?.recordId : undefined;
+  } else if ([100000001, 100000002, 100000004].includes(sourceType)) {
+    entity ||= canonical(previous.entity);
+    ({ id } = await resolveFormRecord({
+      kind: 'webform',
+      definition,
+      schema: { ...step, entity, mode: 100000002 },
+      context: { request: { params: query } },
+      readProvider,
+      store,
+      identity,
+    }));
+  } else {
+    fail('The multistep condition record source is unsupported.', 501, 'FormConditionSourceUnsupported');
+  }
+  if (id && entity) {
+    if (canonical(id) === canonical(previous.recordId) && entity === canonical(previous.entity)) return previous.record;
+    const record = await readProvider.get(entity, id, identity);
+    if (record) return record;
+  }
+  return fail(
+    'The record source for the multistep condition could not be resolved.',
+    404,
+    'FormConditionSourceMissing',
+  );
+}
+
+async function nextAdvancedFormStep(portal, schema, id, previous, context) {
   let next = requiredAdvancedFormStep(portal, schema, id);
   const visited = new Set();
   while (next?.type === 'condition') {
@@ -547,7 +1080,7 @@ function nextAdvancedFormStep(portal, schema, id, record) {
         'FormConditionCycle',
       );
     visited.add(canonical(next.stepId));
-    const passed = evaluateStepCondition(next.condition, record);
+    const passed = evaluateStepCondition(next.condition, await conditionRecord(next, previous, context));
     next = requiredAdvancedFormStep(portal, schema, passed ? next.nextStepId : next.conditionDefaultNextStepId);
   }
   return next;
@@ -589,6 +1122,37 @@ function advanceSession(session, schema, next, savedId, savedRecord, { portal, p
       };
 }
 
+async function stageFormProgress(sessions, session, schema, next, savedId, savedRecord, response) {
+  const progress = { ...session, history: [...session.history] };
+  const outcome = advanceSession(progress, schema, next, savedId, savedRecord, response);
+  await sessions.stage?.(session, progress, response.singleRecord, response.sessionRow ?? null);
+  return { progress, outcome };
+}
+
+async function withFormCloudUploads(storage, uploads, write, diagnostic) {
+  const attempted = [];
+  try {
+    for (const upload of uploads) {
+      // A provider can write the object and then fail to acknowledge it.
+      attempted.push(upload.key);
+      await storage.put(upload.key, Buffer.from(upload.content, 'base64'), { contentType: upload.type });
+    }
+    return await write();
+  } catch (error) {
+    for (const key of attempted)
+      try {
+        await storage.delete(key);
+      } catch {
+        diagnostic({
+          code: 'FORM_ATTACHMENT_CLEANUP_FAILED',
+          severity: 'warning',
+          message: 'A cloud attachment from an unsuccessful form save could not be removed.',
+        });
+      }
+    throw error;
+  }
+}
+
 function nextStepUrl(stepId, session, requestUrl, startNew) {
   const target = new URL(requestUrl ?? 'http://localhost/');
   target.searchParams.set('stepid', stepId);
@@ -609,7 +1173,7 @@ async function writeUnit(provider, work) {
       return await provider.transact(
         () =>
           work({
-            ...portalRecordWrites(provider),
+            ...portalRecordWrites(provider, { portalRequest: true }),
             associate: (entity, id, navigation, targetId, identity) =>
               provider.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
           }),
@@ -621,6 +1185,146 @@ async function writeUnit(provider, work) {
     if (cause && typeof cause === 'object') cause.nativeFormWriteFailure = true;
     throw cause;
   }
+}
+
+/**
+ * The record an update save reads, as the hosted form reads it (form-read-messages.mjs): a RetrieveMultiple naming only
+ * the record id, then, for a multistep step, the Retrieve of the record. A basic form's values travel with the page, so
+ * its current values are read without read steps. The record, its absence and its permission refusal are the Retrieve's
+ * (read steps can observe the hosted reads; the values Mirage validates against stay the record's own).
+ */
+async function formSaveRecord(kind, readProvider, entity, mapping, recordId, identity) {
+  // A provider that does not run the portal read pipeline (a library caller's own reader) reads the record once.
+  if (readProvider.sendsFormReadMessages !== true) return readProvider.get(entity, recordId, identity);
+  await readProvider.fetchXml(recordExistsFetch(entity, mapping.idColumn, recordId), identity);
+  return kind === 'webform'
+    ? readProvider.get(entity, recordId, identity)
+    : readProvider.get(entity, recordId, identity, { skipPluginRead: true });
+}
+
+const APPROPRIATE_PERMISSIONS = "You don't have the appropriate permissions.";
+/**
+ * A Dynamics 365 message action (Calculate Value, Create Order, Create Invoice, Generate Quote): the legacy service
+ * checks Update on the record and Create on the new record's table, then runs the messages in order, each as its own
+ * Dataverse operation of the site's application user.
+ */
+export async function runFormMessageAction({
+  action,
+  spec,
+  configured,
+  schema,
+  mapping,
+  recordId,
+  current,
+  store,
+  identity,
+  readProvider,
+  available,
+  website,
+  ensureActionSource,
+  runFormMessage,
+  writeProvider,
+  hostChange,
+  now,
+}) {
+  if (typeof runFormMessage !== 'function')
+    fail('This action needs the local Dataverse organization.', 501, 'FormActionMessageUnavailable');
+  if (store.allowed && !store.allowed(schema.entity, 'update', current, identity))
+    fail(APPROPRIATE_PERMISSIONS, 403, 'FormActionNotEnabled');
+  for (const table of [spec.creates ?? []].flat())
+    if (store.allowed && !store.allowed(table, 'create', {}, identity))
+      fail(APPROPRIATE_PERMISSIONS, 403, 'FormActionNotEnabled');
+  ensureActionSource?.();
+  const applies = await nativeFormActionApplies(configured, {
+    entity: schema.entity,
+    idColumn: mapping.idColumn,
+    recordId,
+    readProvider,
+    identity,
+    available,
+    context: { website },
+  });
+  if (!applies) fail('This action is unavailable for the selected record.', 403, 'FormActionNotEnabled');
+  assertActionSource(action, store.get?.(schema.entity, recordId, { admin: true }) ?? current);
+  const steps = spec.messages({
+    recordId: canonical(recordId),
+    state: Number(current.statecode?.value ?? current.statecode ?? 0),
+    subject: `${spec.subject ?? ''}${invariantNow(now)}`,
+    currencyId: spec.currency ? legacyPortalCurrency(store) : null,
+  });
+  // The source is checked once before the first message: the legacy service runs the messages as separate operations.
+  ensureActionSource?.();
+  for (const step of steps) {
+    if (step.update) {
+      await hostChange(() =>
+        writeUnit(writeProvider, (operations) =>
+          operations.update(schema.entity, recordId, step.update, { ...identity, admin: true }),
+        ),
+      );
+      continue;
+    }
+    const answer = await runFormMessage({ method: step.method, url: step.url, payload: step.payload, identity });
+    if (answer.status >= 400)
+      fail(answer.body?.error?.message ?? `${action} failed.`, answer.status, 'FormActionMessageFailed');
+  }
+}
+
+// The legacy CoreDataAdapter.QualifyLead currency: the one named "US Dollar", else the first transaction currency.
+function legacyPortalCurrency(store) {
+  let rows;
+  try {
+    rows = store.tableRows?.('transactioncurrency') ?? [];
+  } catch {
+    rows = []; // no transactioncurrency table
+  }
+  const currency = rows.find((row) => row.currencyname === 'US Dollar') ?? rows[0];
+  return currency?.transactioncurrencyid ? canonical(currency.transactioncurrencyid) : null;
+}
+
+// ActivityPointerState: Open 0 and Scheduled 3 are open; Canceled is 2.
+const OPEN_ACTIVITY_STATES = new Set([0, 3]);
+/** The open and scheduled activities regarding the record, each with its Canceled state and default status. */
+export function openRegardingActivities(store, entity, recordId, metadata) {
+  const id = canonical(recordId);
+  const activities = [];
+  for (const mapping of activityTables(store)) {
+    const table = mapping.logicalName;
+    for (const row of store.tableRows?.(table) ?? []) {
+      const regarding = row.regardingobjectid ?? row._regardingobjectid_value;
+      if (canonical(regarding?.id ?? regarding) !== id) continue;
+      if (!OPEN_ACTIVITY_STATES.has(Number(row.statecode?.value ?? row.statecode ?? 0))) continue;
+      const values = recordStateValues(table, 2, null, { metadata, store });
+      if (!values)
+        fail(`Canceling the case requires the ${table} Canceled state metadata`, 501, 'FormActionStateUnresolved');
+      activities.push({ table, id: canonical(row[mapping.idColumn ?? 'activityid']), values });
+    }
+  }
+  return activities;
+}
+
+function stateActionMessage(action, spec) {
+  if (spec.message) return spec.message;
+  return action === 'deactivate' ? 'The record has been deactivated.' : 'The record has been activated.';
+}
+
+/** A close activity's columns with its lookup to the closed record, bound through the activity table's relationship. */
+export function closeActivityValues(store, activity, entity, mapping, recordId) {
+  let relationships;
+  try {
+    relationships = store.resolveMapping(activity.table).relationships ?? {};
+  } catch {
+    relationships = {};
+  }
+  const binding = Object.entries(relationships).find(
+    ([, relation]) =>
+      relation.many === false && relation.from === activity.lookup && relation.entity === canonical(entity),
+  );
+  return {
+    ...activity.values,
+    ...(binding && mapping.entitySet
+      ? { [`${binding[0]}@odata.bind`]: `/${mapping.entitySet}(${canonical(recordId)})` }
+      : { [activity.lookup]: { id: canonical(recordId), logical_name: canonical(entity) } }),
+  };
 }
 
 /**
@@ -673,6 +1377,32 @@ const cloudKey = (name) =>
       .replace(/^[^a-z0-9]+/, '')
       .slice(0, 200) || 'file'
   }`;
+// A cloud placeholder note body as Mirage writes it, here and in the Azure file Web API (portal-file-api.mjs): exactly
+// { Name, Type, Size, Url } in that order, Url a provider key <container>/<guid>/<file name in key characters>.
+const PLACEHOLDER_KEYS = 'Name,Type,Size,Url';
+const PLACEHOLDER_URL = /^[a-z0-9][a-z0-9_.-]*\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/[a-z0-9][a-z0-9_.-]*$/;
+/** True when a note body's text is a cloud attachment placeholder (it names a storage key, not file content). */
+export function isCloudAttachmentPlaceholder(text) {
+  if (typeof text !== 'string' || text.length > 4096) return false;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).join(',') === PLACEHOLDER_KEYS &&
+    typeof value.Name === 'string' &&
+    typeof value.Type === 'string' &&
+    Number.isSafeInteger(value.Size) &&
+    value.Size >= 0 &&
+    typeof value.Url === 'string' &&
+    PLACEHOLDER_URL.test(value.Url)
+  );
+}
 /** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
 export const notesFilter = (portal) => siteSetting(portal ?? {}, 'KnowledgeManagement/NotesFilter') ?? '*WEB*';
 
@@ -698,6 +1428,118 @@ async function savedRecordId({ bodyRecordId, query, ...source }) {
   if (posted && (id || contactNamed) && posted !== id)
     fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
   return id ?? posted;
+}
+
+function assertFormWorkflowDataScope(store, entity, identity) {
+  const providers = store.recordPipeline?.virtualProviders;
+  if (!providers) return;
+  const assertLocal = (logical) => {
+    if (providers.status(logical).virtual)
+      fail('A Basic Form workflow requires a local target and local permission sources.', 501, 'WorkflowUnsupported');
+  };
+  assertLocal(entity);
+  store.addPortalPermissionSources(
+    identity,
+    [
+      [entity, 'read'],
+      [entity, 'update'],
+    ],
+    assertLocal,
+  );
+}
+
+async function submitBasicFormWorkflow({
+  body,
+  definition,
+  schema,
+  metadata,
+  store,
+  readProvider,
+  identity,
+  workflowIdentity,
+  runFormWorkflow,
+  ensureActionSource,
+  query,
+  portal,
+  pageUrl,
+  text,
+}) {
+  const entity = canonical(schema.entity);
+  if (!runFormWorkflow || schema.approximated || entity !== canonical(definition.entityName))
+    fail('This Basic Form workflow does not have a qualified local form and runner.', 501, 'WorkflowUnsupported');
+  if (
+    Object.keys(body.values).length ||
+    (body.attachments != null && (!Array.isArray(body.attachments) || body.attachments.length))
+  )
+    fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
+  const configured = Number.isSafeInteger(body.actionIndex)
+    ? nativeFormActions(definition.metadata)[body.actionIndex]
+    : null;
+  const workflowId = nativeFormWorkflowId(configured);
+  if (!workflowId || typeof body.workflowId !== 'string' || canonical(body.workflowId) !== workflowId)
+    fail('This workflow action is not configured for the Basic Form', 403, 'FormActionNotEnabled');
+
+  const mapping = store.resolveMapping(entity);
+  const recordId = canonical(body.recordId);
+  let current;
+  await runFormWorkflow({
+    verify: ensureActionSource,
+    authorize: async () => {
+      ensureActionSource?.();
+      const visitor = workflowIdentity?.() ?? identity;
+      assertFormWorkflowDataScope(store, entity, visitor);
+      const source = await resolveFormRecord({
+        kind: 'entityform',
+        definition,
+        schema,
+        metadata,
+        context: { request: { params: query } },
+        readProvider,
+        store,
+        identity: visitor,
+      });
+      if (![100000001, 100000002].includes(source.mode) || !recordId)
+        fail('Record actions require an existing record', 400, 'FormRecordRequired');
+      if (!source.id || canonical(source.id) !== recordId)
+        fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
+      current = await readProvider.get(entity, recordId, visitor);
+      const stored = current && store.get(entity, recordId, { admin: true });
+      if (!stored || !store.allowed(entity, 'update', stored, visitor))
+        fail('This action requires read and write access to the selected record.', 403, 'AccessDenied');
+      if (
+        !(await nativeFormActionApplies(configured, {
+          entity,
+          idColumn: mapping.idColumn,
+          recordId,
+          readProvider,
+          identity: visitor,
+          context: { website: portal.website },
+        }))
+      )
+        fail('This action is unavailable for the selected record.', 403, 'FormActionNotEnabled');
+      return { workflowId, entity, recordId, identity: visitor };
+    },
+  });
+  const redirect = [1, 2].includes(Number(configured.OnComplete))
+    ? redirectTarget(
+        { adx_redirectwebpage: configured.RedirectWebpageId, adx_redirecturl: configured.RedirectUrl },
+        { portal, recordId, record: current, requestUrl: pageUrl },
+      )
+    : null;
+  return {
+    recordId,
+    entity,
+    operation: 'workflow',
+    componentId: definition.id,
+    name: mapping.nameColumn ? (current[mapping.nameColumn] ?? null) : null,
+    outcome: redirect
+      ? { type: 'redirect', url: redirect }
+      : {
+          type: 'message',
+          message: text(configured.SuccessMessage, 'The workflow ran successfully.'),
+          hideForm: false,
+        },
+  };
 }
 
 /**
@@ -760,6 +1602,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     store,
     schemas = {},
     metadata = null,
+    globalChoices,
     identity = {},
     writeProvider = store,
     readProvider = store,
@@ -770,11 +1613,27 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     owner,
     // The request's selected website language: { lcid, defaultLcid }.
     language = {},
+    // A signed-in contact's multistep session is an adx_webformsession row when the form writes to the local store
+    // (web-form-session-row.mjs); userHostAddress is the visitor's address the row records.
+    webFormSessionRows = writeProvider === store,
+    userHostAddress = null,
+    // Whether an anonymous owner's visitor came from the browser's own cookie (an anonymous row needs it).
+    anonymousIdentified = false,
     // Internal same-page adapter only; public JSON submissions retain their validation contract.
     nativePostback = false,
+    nativeNumberLocales,
     // Cloud attachments (FileStorage/CloudStorageAccount): () => the guarded provider of storage route portalCloudAttachments
     // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
     cloudAttachments = null,
+    verifyCaptcha = null,
+    issueCaptcha = null,
+    actionFiltersAvailable = true,
+    ensureActionSource = null,
+    runFormWorkflow = null,
+    runFormMessage = null,
+    // Runs a write of a record action outside the request's own host change (server.mjs change).
+    hostChange = (fn) => fn(),
+    workflowIdentity = null,
     diagnostic = () => {},
     // Counts the characters the required rich-text check scans ({ scanned }) when given.
     validationWork = null,
@@ -796,10 +1655,12 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   )
     fail('Native form submission requires a values object');
   const action = body.action ?? 'submit';
-  if (!['submit', 'previous', ...Object.keys(NATIVE_STATE_ACTIONS)].includes(action))
+  if (!['submit', 'previous', 'workflow', ...Object.keys(NATIVE_STATE_ACTIONS)].includes(action))
     fail('Unsupported native form action', 400, 'InvalidFormAction');
   const stateAction = NATIVE_STATE_ACTIONS[action];
   if (stateAction && kind !== 'entityform') fail('Record state actions require a basic form', 400, 'InvalidFormAction');
+  if (action === 'workflow' && kind !== 'entityform')
+    fail('Workflow actions require a Basic Form', 400, 'InvalidFormAction');
   const pageUrl = (() => {
     try {
       const base = new URL(requestUrl ?? 'http://localhost/');
@@ -826,6 +1687,23 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   let schema = formSchema;
   let session = null;
   const startNew = truthy(portalField(definition.metadata ?? {}, 'startnewsessiononload'));
+  const formStep = (id) => formSchema.steps?.find((step) => canonical(step.stepId) === canonical(id));
+  const sessionRow =
+    webFormSessionRows && store && formSchema.steps
+      ? {
+          identity,
+          webform: { id: definition.id, name: definition.name ?? null },
+          enhanced: !(portal.dataModel === 'standard' || portal.format === 'standard'),
+          userHostAddress,
+          anonymousIdentified,
+          stepEntity: (id) => formStep(id)?.entity ?? formStep(id)?.entityName ?? definition.entityName ?? null,
+          stepName: (id) =>
+            (portal.records ?? []).find((record) => canonical(record.id) === canonical(id))?.name ??
+            formStep(id)?.title ??
+            null,
+        }
+      : null;
+  const singleRecord = kind === 'webform' && singleRecordForm(definition.metadata, identity);
   if (schema.steps) {
     owner = owner === undefined ? webFormSessionOwner(identity) : owner;
     const access = await advancedFormAccess({
@@ -863,7 +1741,10 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         fail('There is no previous step', 400, 'InvalidFormStep');
       if (portalField(schema.metadata ?? {}, 'movepreviouspermitted') === false)
         fail('Moving to the previous step is not permitted', 403, 'InvalidFormStep');
-      session.current = previous.stepId;
+      const progress = { ...session, current: previous.stepId };
+      await sessions.stage?.(session, progress, singleRecord, sessionRow);
+      if (sessions.publish) sessions.publish(session, progress);
+      else Object.assign(session, progress);
       return {
         operation: 'navigate',
         stepId: schema.stepId,
@@ -880,6 +1761,32 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     };
   if (!schema.entity) fail('Native form table is unresolved', 501, 'FormEntityRequired');
   const componentMetadata = schema.metadata ?? definition.metadata ?? {};
+  if (action === 'workflow')
+    return submitBasicFormWorkflow({
+      body,
+      definition,
+      schema,
+      metadata,
+      store,
+      readProvider,
+      identity,
+      workflowIdentity,
+      runFormWorkflow,
+      ensureActionSource,
+      query,
+      portal,
+      pageUrl,
+      text,
+    });
+  const captchaScope = { kind, formId: definition.id, stepId: schema.stepId };
+  validateFormCaptcha(
+    action,
+    componentMetadata,
+    identity,
+    () => verifyCaptcha?.(captchaScope, body.captchaProofToken),
+    // A postback refusal re-renders the form, which draws its own next challenge.
+    () => (nativePostback ? null : issueCaptcha?.(captchaScope)),
+  );
   let mode = Number(schema.mode ?? definition.mode);
   if (mode === 100000002 && !stateAction) {
     if (!session) fail('This native form is read-only', 403, 'FormReadOnly');
@@ -903,7 +1810,24 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     } catch {
       viewed = {};
     }
-    const next = nextAdvancedFormStep(portal, formSchema, schema.nextStepId, viewed);
+    const next = await nextAdvancedFormStep(
+      portal,
+      formSchema,
+      schema.nextStepId,
+      { ...schema, recordId: viewedId, record: viewed },
+      { definition, query, readProvider, store, identity, session },
+    );
+    checkForwardFormStep(session, schema, next);
+    const { progress, outcome } = await stageFormProgress(sessions, session, schema, next, viewedId, viewed, {
+      portal,
+      pageUrl,
+      startNew,
+      singleRecord,
+      text,
+      sessionRow,
+    });
+    if (sessions.publish) sessions.publish(session, progress);
+    else Object.assign(session, progress);
     return {
       record: null,
       recordId: viewedId,
@@ -911,7 +1835,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       operation: 'navigate',
       componentId: definition.id,
       stepId: schema.stepId,
-      outcome: advanceSession(session, schema, next, viewedId, viewed, { portal, pageUrl, startNew, text }),
+      outcome,
     };
   }
   // A multistep insert step becomes an edit once its record exists in the session.
@@ -955,11 +1879,17 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     if (matches.length !== 1)
       fail('This record action is not configured for the native form', 403, 'FormActionNotEnabled');
     const configured = matches[0].source;
+    // A table-specific action (Close Case, Win Opportunity, ...) applies to its own table only.
+    if (stateAction.table && canonical(schema.entity) !== stateAction.table)
+      fail('This record action is not available for the form table', 403, 'FormActionNotEnabled');
     if (create) fail('Record actions require an existing record', 400, 'FormRecordRequired');
     if (Object.keys(body.values).length || (body.attachments?.length ?? 0))
       fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
-    if (configured.FilterCriteria)
-      fail('Native record action filter criteria are unsupported', 501, 'FormActionFilterUnsupported');
+    const closeActivity = nativeCloseActivity(action, {
+      configured,
+      resolution: body.resolution && typeof body.resolution === 'object' ? body.resolution : null,
+      now: now(),
+    });
     const source = await resolveFormRecord({
       kind,
       definition,
@@ -975,12 +1905,109 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
     const current = await readProvider.get(schema.entity, recordId, identity);
     if (!current)
       fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, 'FormRecordNotFound');
-    const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema });
+    // The record must be in the state the action accepts, before any write.
+    assertActionSource(action, current);
+    if (stateAction.messages) {
+      await runFormMessageAction({
+        action,
+        spec: stateAction,
+        configured,
+        schema,
+        mapping,
+        recordId,
+        current,
+        store,
+        identity,
+        readProvider,
+        available: actionFiltersAvailable,
+        website: portal.website,
+        ensureActionSource,
+        runFormMessage,
+        writeProvider,
+        hostChange,
+        now: now(),
+      });
+      return {
+        record: null,
+        recordId: canonical(recordId),
+        entity: schema.entity,
+        operation: action,
+        componentId: definition.id,
+        outcome: { type: 'message', message: text(configured.SuccessMessage, stateAction.message), hideForm: false },
+      };
+    }
+    // Inside an action's write: the record's state and the exported criterion again, as a concurrent write may have
+    // changed either since the read.
+    const recheckAction = async () => {
+      assertActionSource(action, store.get?.(schema.entity, recordId, { admin: true }) ?? current);
+      if (
+        !(await nativeFormActionApplies(configured, {
+          entity: schema.entity,
+          idColumn: mapping.idColumn,
+          recordId,
+          readProvider,
+          identity,
+          available: actionFiltersAvailable,
+          context: { website: portal.website },
+        }))
+      )
+        fail('This action is unavailable for the selected record.', 403, 'FormActionNotEnabled');
+    };
+    if (stateAction.pipeline) {
+      // The opportunity's stepname and salesstage and the note recording the update, in one write; the note is the
+      // action's own write (no visitor permission on notes), as the legacy service creates it.
+      const writes = pipelinePhaseWrites(schema.entity, body.pipeline, { metadata, store, schema });
+      const { record } = await writeUnit(writeProvider, async (operations) => {
+        ensureActionSource?.();
+        await recheckAction();
+        const updated = await operations.update(schema.entity, recordId, writes.update, identity);
+        await operations.create(
+          'annotation',
+          {
+            ...writes.note,
+            objectid: { id: canonical(recordId), logical_name: canonical(schema.entity) },
+            objecttypecode: canonical(schema.entity),
+          },
+          { ...identity, admin: true },
+        );
+        ensureActionSource?.();
+        return { record: updated };
+      });
+      return {
+        record,
+        recordId: canonical(recordId),
+        entity: schema.entity,
+        operation: action,
+        componentId: definition.id,
+        outcome: { type: 'message', message: text(configured.SuccessMessage, stateAction.message), hideForm: false },
+      };
+    }
+    const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema, row: current });
     if (!stateValues)
       fail('Native record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
-    const { record } = await writeUnit(writeProvider, async (operations) => ({
-      record: await operations.update(schema.entity, recordId, stateValues, identity),
-    }));
+    const { record } = await writeUnit(writeProvider, async (operations) => {
+      ensureActionSource?.();
+      // Again inside the write: a concurrent action may have changed the state since the read.
+      await recheckAction();
+      ensureActionSource?.();
+      // The close activity (incidentresolution, opportunityclose) and the state change commit together, as the
+      // CloseIncident, WinOpportunity and LoseOpportunity messages do.
+      // The message creates the activity itself: the visitor needs no table permission on the activity table.
+      if (closeActivity)
+        await operations.create(
+          closeActivity.table,
+          closeActivityValues(store, closeActivity, schema.entity, mapping, recordId),
+          { ...identity, admin: true },
+        );
+      // Cancel Case first cancels the case's open and scheduled activities (the legacy CaseDataAdapter.Cancel).
+      if (stateAction.cancelActivities)
+        for (const activity of openRegardingActivities(store, schema.entity, recordId, metadata))
+          await operations.update(activity.table, activity.id, activity.values, { ...identity, admin: true });
+      const record = await operations.update(schema.entity, recordId, stateValues, identity);
+      // Source staging can overlap an asynchronous update. The local transaction can still roll it back here.
+      ensureActionSource?.();
+      return { record };
+    });
     const savedId = canonical(recordId),
       savedRecord = { ...current, ...record };
     const redirect = [1, 2].includes(Number(configured.OnComplete))
@@ -1000,10 +2027,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         ? { type: 'redirect', url: redirect }
         : {
             type: 'message',
-            message: text(
-              configured.SuccessMessage,
-              action === 'deactivate' ? 'The record has been deactivated.' : 'The record has been activated.',
-            ),
+            message: text(configured.SuccessMessage, stateActionMessage(action, stateAction)),
             hideForm: false,
           },
     };
@@ -1020,7 +2044,16 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       (canonical(portalField(row, 'entityform')) === canonical(definition.id) ||
         (schema.stepId && canonical(portalField(row, 'webformstep')) === canonical(schema.stepId))),
   );
+  const choiceColumns = metadata?.entities?.[canonical(schema.entity)]?.fields ?? {};
   const effectiveFields = (schema.fields ?? [])
+    .map((field) =>
+      formChoiceField(
+        field,
+        choiceColumns[canonical(field.name)],
+        globalChoices,
+        language.lcid ?? language.defaultLcid,
+      ),
+    )
     .filter(
       (field) =>
         !(field.name === 'ownerid' && portalField(definition.metadata ?? {}, 'showownerfields', false) === false),
@@ -1033,7 +2066,8 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       );
       const immutable = create ? field.validForCreate === false : field.validForUpdate === false;
       return {
-        ...field,
+        // A FormXml-only rich text editor binding is a plain textarea without code component metadata (platform.mjs).
+        ...formRichTextField(field, metadata),
         required: Boolean(
           portalField(
             metadata ?? {},
@@ -1047,14 +2081,21 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         patternMessage: text(portalField(metadata ?? {}, 'validationregularexpressionerrormessage'), ''),
         validationMessage: text(portalField(metadata ?? {}, 'validationerrormessage'), field.validationMessage ?? ''),
         rangeMessage: text(portalField(metadata ?? {}, 'rangevalidationerrormessage'), field.rangeMessage ?? ''),
+        requiredMessage: text(portalField(metadata ?? {}, 'requiredfieldvalidationerrormessage'), ''),
         label: text(portalField(metadata ?? {}, 'label'), field.label ?? field.name),
+        pcfField: pcfFieldOf(field, metadata),
+        ...surveyFieldFacts(metadata, text),
       };
     });
   const fields = new Set(effectiveFields.map((field) => canonical(field.name)));
   const values = {};
   const changed = {};
-  for (const [key, value] of Object.entries(body.values)) {
+  // Columns decoded from a field component's hidden input keep their exact numeric digits, as postback text does.
+  const pcfDecoded = new Set();
+  for (const [key, posted] of Object.entries(body.values)) {
     if (['__proto__', 'prototype', 'constructor'].includes(key)) fail('Invalid native form field');
+    const value = pcfFieldValue(posted, effectiveFields, key);
+    if (isPcfHiddenValue(posted)) pcfDecoded.add(canonical(key));
     const binding = key.endsWith('@odata.bind');
     const relation = binding ? mapping.relationships?.[key.slice(0, -11)] : null;
     const column = relation?.many === false ? canonical(relation.from) : canonical(key);
@@ -1071,7 +2112,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   }
   // The providers retain table, relationship, plugin and validation checks. Reads
   // prevent an update form from being used to manufacture a missing record.
-  const current = create ? {} : await readProvider.get(schema.entity, recordId, identity);
+  const current = create ? {} : await formSaveRecord(kind, readProvider, schema.entity, mapping, recordId, identity);
   if (!current)
     fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, 'FormRecordNotFound');
   const scalar = (value) => value?.id ?? value?.value ?? value;
@@ -1095,20 +2136,63 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   const assigned = new Set();
   let currentContactAssociation = null;
   let contactRecord;
-  if (create && portalField(componentMetadata, 'associatecurrentportaluser', false) === true) {
-    if (portalField(componentMetadata, 'portaluserlookupattributeisactivityparty', false) === true)
+  let currentContactPartyAssociation = null;
+  const associateCurrentUser = create && portalField(componentMetadata, 'associatecurrentportaluser', false) === true;
+  const associationColumn = canonical(
+    portalField(
+      componentMetadata,
+      'targetentityportaluserlookupattribute',
+      portalField(componentMetadata, 'portaluserlookupattribute'),
+    ),
+  );
+  // Is Activity Party: the contact becomes an activityparty row of the configured party list column, written with the
+  // record. A visitor value posted for that column is replaced, as Set Value On Save replaces a posted value.
+  if (
+    associateCurrentUser &&
+    portalField(componentMetadata, 'portaluserlookupattributeisactivityparty', false) === true
+  ) {
+    currentContactPartyAssociation = currentContactParty({
+      entity: mapping.logicalName,
+      column: associationColumn,
+      definition:
+        (canonical(schema.currentUserAssociationField?.name) === associationColumn
+          ? schema.currentUserAssociationField
+          : null) ??
+        choiceColumns[associationColumn] ??
+        store.fieldDefinition?.(mapping.logicalName, associationColumn),
+      participationTypes: store.fieldDefinition?.('activityparty', 'participationtypemask'),
+      identity,
+    });
+    try {
+      currentContactPartyAssociation.partyMapping = store.resolveMapping('activityparty');
+      currentContactPartyAssociation.contactMapping = store.resolveMapping('contact');
+    } catch {
       fail(
-        'Current-user activity-party association requires an activity-party component',
+        'Current-user activity party association requires the activityparty table',
         501,
-        'FormUserAssociationUnsupported',
+        'FormUserAssociationUnresolved',
       );
-    const name = canonical(
-      portalField(
-        componentMetadata,
-        'targetentityportaluserlookupattribute',
-        portalField(componentMetadata, 'portaluserlookupattribute'),
-      ),
-    );
+    }
+    // A provider that writes through the Web API (the live bridge) cannot create activityparty rows on their own: it
+    // sends the party inside the record create as a deep insert, one atomic request.
+    if (writeProvider.activityPartyDeepInsert === true)
+      currentContactPartyAssociation.deepInsert = currentContactPartyDeepInsert(currentContactPartyAssociation, {
+        activityMapping: mapping,
+        partyMapping: currentContactPartyAssociation.partyMapping,
+        contactMapping: currentContactPartyAssociation.contactMapping,
+      });
+    for (const key of Object.keys(values))
+      if (
+        canonical(key.endsWith('@odata.bind') ? mapping.relationships?.[key.slice(0, -11)]?.from : key) ===
+        associationColumn
+      )
+        delete values[key];
+    // The column holds the current contact once saved (the party row, local or deep insert), so it counts as assigned by
+    // the server for the required and read-only checks, as an on-save lookup does; it is not a record column value.
+    changed[associationColumn] = currentContactPartyAssociation.contactId;
+    assigned.add(associationColumn);
+  } else if (associateCurrentUser) {
+    const name = associationColumn;
     const attribute =
       effectiveFields.find((field) => canonical(field.name) === name) ?? schema.currentUserAssociationField;
     if (!name || !attribute || canonical(attribute.name) !== name || attribute.type !== 'lookup')
@@ -1206,6 +2290,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   }
   const validationErrors = [];
   const invalid = (field, code, message) => validationErrors.push({ field: field.name, code, message });
+  let choiceRefusal = null;
   for (const field of effectiveFields) {
     const key = canonical(field.name),
       hasChange = Object.hasOwn(changed, key),
@@ -1224,7 +2309,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         ? empty(richTextRequiredText(value, validationWork))
         : empty(scalar(value));
     if (field.required && !field.hidden && !field.readOnly && requiredEmpty)
-      invalid(field, 'FormFieldRequired', `${field.label} is a required field.`);
+      invalid(field, 'FormFieldRequired', field.requiredMessage || `${field.label} is a required field.`);
     // Native format CustomValidators are server-side, unlike the Web API's
     // JSON type checks. Validate before invoking either local or live providers.
     // Preserve a malformed numeric textbox as text so it cannot become JSON null.
@@ -1232,12 +2317,21 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       const control = nativeControlKind(field);
       // Native lists validate posted values against the exported options, before
       // invoking Dataverse. The Web API may accept unlisted integer values.
-      if (
-        control === 'picklist' &&
-        field.options?.length &&
-        !field.options.some((option) => Number(option.value) === Number(value))
-      )
+      if (control === 'picklist' && !acceptsFormChoice(field, value))
         fail('Invalid postback or callback argument. Event validation is enabled.', 500, 'FormEventValidationInvalid');
+      // A choices control posts its selection in a hidden input: Dataverse refuses a value outside the column's options
+      // once the form's validators pass, and sends no message to the pipeline (hosted F2: no Update reached stage 10).
+      const rejectedChoice = control === 'multiselect' ? rejectedFormChoices(field, value) : null;
+      if (rejectedChoice != null && !choiceRefusal) {
+        choiceRefusal = new DataError(
+          `A validation error occurred. The value ${rejectedChoice} of '${field.name}' on record of type '${schema.entity}' is outside the valid range. Accepted Values: ${field.options.map((option) => option.value).join(',')}`,
+          400,
+          'PicklistValueOutOfRange',
+          { innerCode: '0x8004431a', value: rejectedChoice },
+        );
+        // The refusal is Dataverse's answer to the write: a basic form shows it as a failed save.
+        choiceRefusal.nativeFormWriteFailure = true;
+      }
       if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);
       // A native text control posts a string; the server-assigned on-save values are exempt. Email is checked above.
@@ -1245,27 +2339,27 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be text.`);
       if (['integer', 'decimal', 'double', 'money'].includes(control)) {
         const number = typeof value === 'number' ? value : Number.NaN;
-        const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
+        const exact = (nativePostback || pcfDecoded.has(key)) && isExactNumeric(value) ? decimalParts(value) : null;
         const valid = exact
           ? control !== 'double' && (control !== 'integer' || exact.scale === 0)
           : Number.isFinite(number) && (control !== 'integer' || Number.isInteger(number));
-        if (!valid) {
-          const kind = control === 'integer' ? 'integer' : control === 'double' ? 'floating-point' : 'decimal'; // NOSONAR: preserve lazy branch evaluation and coercion
+        // The native validators' copy is in the page language of the rendered field (nativeNumberLocales).
+        const copyLocale = nativeNumberLocales?.get(field.name);
+        if (!valid)
           invalid(
             field,
             'FormFieldInvalid',
-            field.validationMessage || `${field.label} must be a valid ${kind} value.`,
+            field.validationMessage || nativeNumberFormatMessage(field, copyLocale, control),
           );
-        }
-        const minimum = field.minimum ?? field.minValue,
-          maximum = field.maximum ?? field.maxValue;
+        // A bound the exported metadata omits beside a configured one is the column type's supported limit.
+        const [minimum, maximum] = nativeRangeBounds(field);
         if (
           (minimum != null || maximum != null) &&
           (!valid ||
             (minimum != null && (exact ? compareNumeric(value, minimum) < 0 : number < Number(minimum))) ||
             (maximum != null && (exact ? compareNumeric(value, maximum) > 0 : number > Number(maximum))))
         )
-          invalid(field, 'FormFieldOutOfRange', field.rangeMessage || nativeRangeMessage(field));
+          invalid(field, 'FormFieldOutOfRange', field.rangeMessage || nativeRangeMessage(field, copyLocale));
       }
       if (control === 'boolean' && typeof value !== 'boolean')
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid Boolean value.`);
@@ -1314,8 +2408,24 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         );
     }
   }
+  validationErrors.push(
+    ...surveyGroupErrors(effectiveFields, (field) => {
+      const key = canonical(field.name);
+      return Object.hasOwn(changed, key) ? changed[key] : (current[field.name] ?? field.default);
+    }),
+  );
+  if (effectiveFields.some((field) => field.controlStyle === GEOLOCATION_STYLE))
+    diagnostic({
+      code: 'FORM_GEOLOCATION_VALIDATOR_HOSTED',
+      severity: 'warning',
+      component: kind,
+      form: definition.name ?? definition.id,
+      message:
+        'Single Line of Text as Geolocation Lookup Validator checks the text with the Bing Maps service of the hosted site; the local form saves it unvalidated.',
+    });
   if (validationErrors.length)
     throw new DataError(validationErrors[0].message, 400, validationErrors[0].code, { validationErrors });
+  if (choiceRefusal) throw choiceRefusal;
   // Native reference parameters (refentity/refid/refrel) relate a created child
   // to its subgrid parent; Set Entity Reference metadata does the same from a query parameter.
   const relateAfterCreate = [];
@@ -1384,36 +2494,66 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   }
   // Attach file: one annotation per uploaded file, as native forms store notes. Every file
   // is checked before anything is written.
-  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+  // A staged note id comes only from the runtime's own upload staging through the native postback adapter; a JSON
+  // submission names files by their content alone.
+  const attachments = (Array.isArray(body.attachments) ? body.attachments : []).map((file) =>
+    nativePostback || !file || typeof file !== 'object'
+      ? file
+      : { name: file.name, type: file.type, content: file.content },
+  );
+  const attachmentsEnabled = truthy(portalField(componentMetadata, 'attachfile'));
+  // Without annotation Create the control is not rendered and Required does not apply (formAttachmentAllowed).
+  const attachmentAllowed = !attachmentsEnabled || formAttachmentAllowed(store, identity, schema.entity, recordId);
+  const attachmentLimit = formAttachmentLimit(componentMetadata);
+  const attachmentRequired = attachmentAllowed && truthy(portalField(componentMetadata, 'attachfilerequired'));
+  const attachmentValidation = {
+    count: attachments.length,
+    limit: attachmentLimit,
+    required: attachmentRequired,
+    component: componentMetadata,
+    text,
+  };
   const notes = [],
     cloudUploads = [];
+  let cloudStore = null;
   if (attachments.length) {
-    if (!truthy(portalField(componentMetadata, 'attachfile')))
-      fail('This native form does not accept attachments', 403, 'FormAttachmentNotEnabled');
+    if (!attachmentsEnabled) fail('This native form does not accept attachments', 403, 'FormAttachmentNotEnabled');
     // Advanced form steps name multiple files with their own column (adx_allowmultiplefiles), as the markup reads it.
     const multiple =
       portalField(componentMetadata, 'attachfileallowmultiple') ?? portalField(componentMetadata, 'allowmultiplefiles');
     if (!truthy(multiple) && attachments.length > 1)
       fail('This native form accepts one attachment', 400, 'FormAttachmentInvalid');
-    const maxKb = Number(portalField(componentMetadata, 'attachfilemaxsize')) || 0;
-    const accept = [
-      portalField(componentMetadata, 'attachfileaccept'),
-      portalField(componentMetadata, 'attachfileacceptextensions'),
-    ]
-      .filter(Boolean)
-      .join(',');
-    const restrict = truthy(portalField(componentMetadata, 'attachfilerestrictaccept'));
-    const fullname = identity?.fullname ?? identity?.name ?? '';
-    const contactId = canonical(identity?.contactId ?? identity?.id);
+    // A staged note (InitializeFileUpload with a regarding record) belongs to the record its upload named.
+    if (
+      attachments.some(
+        (file) =>
+          file?.noteId &&
+          (create ||
+            !recordId ||
+            canonical(file.regarding?.id) !== canonical(recordId) ||
+            canonical(file.regarding?.entity) !== canonical(schema.entity)),
+      )
+    )
+      fail('A staged attachment belongs to another record.', 400, 'FormAttachmentInvalid');
+  }
+  // The staged notes this postback saves are its new files, not existing ones.
+  const stagedNoteIds = attachments.filter((file) => file?.noteId).map((file) => file.noteId);
+  if (attachmentsEnabled && (create || attachments.length > attachmentLimit))
+    validateFormAttachmentCount({ ...attachmentValidation, existing: 0 });
+  if (attachments.length) {
     const annotationMapping = store.resolveMapping('annotation');
-    // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is the documented
-    // placeholder <name>.txt holding { Name, Type, Size, Url }. No route: PROVIDER_ROUTE_MISSING fails the save; the bytes
-    // never fall back to the note. Url is the provider key here; native carries the blob's URL.
-    let cloud = null;
-    if (String(siteSetting(portal, 'FileStorage/CloudStorageAccount') ?? '').trim()) {
+    // The form location selects Dataverse or the configured storage route. Older exports with no location
+    // keep the site-level behavior. The cloud note carries { Name, Type, Size, Url } as before.
+    const location = String(portalField(componentMetadata, 'attachfilestoragelocation') ?? '').trim();
+    if (location && !['756150000', '756150001'].includes(location))
+      fail('The form attachment storage location is unsupported.', 501, 'FormAttachmentLocationUnsupported');
+    const usesCloud = location
+      ? location === '756150001'
+      : Boolean(String(siteSetting(portal, 'FileStorage/CloudStorageAccount') ?? '').trim());
+    if (usesCloud) {
       try {
-        cloud = cloudAttachments?.() ?? null;
-        if (!cloud)
+        cloudStore = cloudAttachments?.() ?? null;
+        if (!cloudStore)
           throw Object.assign(
             new Error(
               'Storage route portalCloudAttachments is not configured; set providers.routes.portalCloudAttachments.',
@@ -1426,7 +2566,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
           code,
           severity: 'error',
           form: componentId,
-          message: `FileStorage/CloudStorageAccount is set, but the attachment cannot be stored: ${error.message}`,
+          message: `Cloud storage is selected, but the attachment cannot be stored: ${error.message}`,
         });
         fail(`The attachment cannot be stored in cloud storage: ${error.message}`, 500, code);
       }
@@ -1439,65 +2579,43 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       if (!file || typeof file.name !== 'string' || typeof file.content !== 'string')
         fail('Attachment requires a name and base64 content', 400, 'FormAttachmentInvalid');
       const size = Buffer.from(file.content, 'base64').length;
-      if (maxKb && size > maxKb * 1024)
-        fail(
-          text(
-            portalField(componentMetadata, 'attachfilesizeerrormessage'),
-            `${file.name} exceeds the maximum file size.`,
-          ),
-          400,
-          'FormAttachmentTooLarge',
-        );
-      if (
-        restrict &&
-        accept &&
-        !accept.split(',').some((entry) => {
-          const pattern = entry.trim().toLowerCase();
-          if (!pattern) return false;
-          if (pattern.startsWith('.')) return file.name.toLowerCase().endsWith(pattern);
-          if (pattern.endsWith('/*'))
-            return String(file.type ?? '')
-              .toLowerCase()
-              .startsWith(pattern.slice(0, -1));
-          return String(file.type ?? '').toLowerCase() === pattern;
-        })
-      )
-        fail(
-          text(
-            portalField(componentMetadata, 'attachfiletypeerrormessage'),
-            `${file.name} is not of the file type(s) "${accept}".`,
-          ),
-          400,
-          'FormAttachmentType',
-        );
-      const placeholder = cloud
+      const problem = formAttachmentFileProblem(componentMetadata, { name: file.name, type: file.type, size }, text);
+      if (problem) fail(problem.message, 400, problem.code);
+      const placeholder = cloudStore
         ? { key: cloudKey(file.name), type: String(file.type || 'application/octet-stream') }
         : null;
       if (placeholder) cloudUploads.push({ ...placeholder, content: file.content });
       const stored = placeholder
         ? Buffer.from(JSON.stringify({ Name: file.name, Type: placeholder.type, Size: size, Url: placeholder.key }))
         : null;
-      notes.push((savedId) => ({
-        subject: `Note created on ${now().toLocaleString('en-US', { timeZone: 'UTC', hour12: true, month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).replace(',', '')} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ''}`, // NOSONAR: preserve template coercion and selected evaluation
-        notetext: notesFilter(portal),
-        objecttypecode: schema.entity,
-        ...(stored
-          ? {
-              filename: `${file.name}.txt`.slice(0, 255),
-              mimetype: 'text/plain',
-              documentbody: stored.toString('base64'),
-              filesize: stored.length,
-            }
-          : {
-              filename: file.name.slice(0, 255),
-              mimetype: String(file.type || 'application/octet-stream').slice(0, 255),
-              documentbody: file.content,
-              filesize: size,
-            }),
-        ...(objectBinding
-          ? { [`${objectBinding[0]}@odata.bind`]: `/${mapping.entitySet}(${savedId})` }
-          : { objectid: { id: savedId, logical_name: schema.entity } }),
-      }));
+      const content = stored
+        ? {
+            filename: `${file.name}.txt`.slice(0, 255),
+            mimetype: 'text/plain',
+            documentbody: stored.toString('base64'),
+            filesize: stored.length,
+          }
+        : {
+            filename: file.name.slice(0, 255),
+            mimetype: String(file.type || 'application/octet-stream').slice(0, 255),
+            documentbody: file.content,
+            filesize: size,
+          };
+      // A staged note already carries its subject, text and regarding record (InitializeFileUpload); the save writes
+      // the file into it (hosted session F2: Update annotation during the upload and the postback, runs k and l).
+      if (file.noteId) notes.push({ id: canonical(file.noteId), values: () => ({ ...content, isdocument: true }) });
+      else
+        notes.push({
+          values: (savedId) => ({
+            subject: attachmentNoteSubject(now(), identity),
+            notetext: notesFilter(portal),
+            objecttypecode: schema.entity,
+            ...content,
+            ...(objectBinding
+              ? { [`${objectBinding[0]}@odata.bind`]: `/${mapping.entitySet}(${savedId})` }
+              : { objectid: { id: savedId, logical_name: schema.entity } }),
+          }),
+        });
     }
   }
   // The record, its reference associations and its notes are written as one unit: a failure
@@ -1505,37 +2623,88 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   // A directly unresolved source edge can be rejected before any write. Branches
   // depend on the saved row, including plugin changes, so resolve those inside
   // the provider's existing write unit before changing the session history.
-  if (session) requiredAdvancedFormStep(portal, formSchema, schema.nextStepId);
-  // Cloud attachment bytes are put before the write unit; a failed unit deletes them again.
-  const cloudStore = cloudUploads.length ? cloudAttachments() : null;
-  for (const upload of cloudUploads)
-    await cloudStore.put(upload.key, Buffer.from(upload.content, 'base64'), { contentType: upload.type });
-  const { record, savedId, next } = await writeUnit(writeProvider, async (operations) => {
+  if (session) checkForwardFormStep(session, schema, requiredAdvancedFormStep(portal, formSchema, schema.nextStepId));
+  // Store cloud bytes first and remove attempted blobs if either storage or the record write fails.
+  const save = async (operations) => {
+    if (session) sessions.checkCurrent?.(session, singleRecord);
+    if (attachmentsEnabled && !create && (attachmentRequired || attachments.length)) {
+      const existing = await formAttachmentCount(readProvider, identity, schema.entity, recordId, {
+        exclude: stagedNoteIds,
+      });
+      validateFormAttachmentCount({ ...attachmentValidation, existing });
+    }
+    // A local store writes the current contact's activity party inside the record create (data.mjs), with the owner's
+    // party, and the create's Target names it; a provider that does not take the association gets the party row after.
+    let partyTaken = false;
+    const partyScope = currentContactPartyScope(currentContactPartyAssociation, mapping, () => {
+      partyTaken = true;
+    });
     const record = create
-      ? await withNativeFormContactAssociation(currentContactAssociation, () =>
-          operations.create(schema.entity, values, identity),
+      ? await withNativeFormContactAssociation(currentContactAssociation ?? partyScope, () =>
+          operations.create(
+            schema.entity,
+            currentContactPartyAssociation?.deepInsert
+              ? { ...values, ...currentContactPartyAssociation.deepInsert }
+              : values,
+            identity,
+          ),
         )
       : await operations.update(schema.entity, recordId, values, identity);
     const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
+    // The party row is the platform's part of the record create, not a visitor write: the record create carried the
+    // visitor's permission check, and the current-contact stamp skips Append/Append To as the lookup association does.
+    if (partyScope && !partyTaken)
+      await operations.create(
+        'activityparty',
+        currentContactPartyRow(currentContactPartyAssociation, savedId, {
+          activityMapping: mapping,
+          partyMapping: currentContactPartyAssociation.partyMapping,
+          contactMapping: currentContactPartyAssociation.contactMapping,
+        }),
+        SYSTEM_PARTY_WRITE,
+      );
     for (const relation of relateAfterCreate) {
       if (!operations.associate)
         fail('Native form reference association requires an association provider', 501, 'FormReferenceUnsupported');
       await operations.associate(relation.entity, relation.id, relation.navigation, savedId, identity);
     }
-    for (const note of notes) await operations.create('annotation', note(savedId), identity);
-    const next = session
-      ? nextAdvancedFormStep(portal, formSchema, schema.nextStepId, { ...current, ...record })
-      : null;
-    return { record, savedId, next };
-  }).catch(async (error) => {
-    for (const upload of cloudUploads) await cloudStore.delete(upload.key).catch(() => {});
-    throw error;
-  });
+    for (const note of notes)
+      if (note.id) await operations.update('annotation', note.id, note.values(), identity);
+      else await operations.create('annotation', note.values(savedId), identity);
+    const savedRecord = { ...current, ...record };
+    let advanced = null;
+    if (session) {
+      const next = await nextAdvancedFormStep(
+        portal,
+        formSchema,
+        schema.nextStepId,
+        { ...schema, recordId: savedId, record: savedRecord },
+        { definition, query, readProvider, store, identity, session },
+      );
+      checkForwardFormStep(session, schema, next);
+      advanced = await stageFormProgress(sessions, session, schema, next, savedId, savedRecord, {
+        portal,
+        pageUrl,
+        startNew,
+        singleRecord,
+        text,
+        sessionRow,
+      });
+    }
+    return { record, savedRecord, savedId, advanced };
+  };
+  const { record, savedRecord, savedId, advanced } = await withFormCloudUploads(
+    cloudStore,
+    cloudUploads,
+    () => writeUnit(writeProvider, save),
+    diagnostic,
+  );
   // Outcome: success message, redirect, or the next multistep step.
-  const savedRecord = { ...current, ...record };
   let outcome;
-  if (session) {
-    outcome = advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text });
+  if (advanced) {
+    if (sessions.publish) sessions.publish(session, advanced.progress);
+    else Object.assign(session, advanced.progress);
+    outcome = advanced.outcome;
     if (nativePostback && outcome.type === 'message') {
       const target = new URL(requestUrl ?? pageUrl, 'http://localhost/');
       target.searchParams.set('msg', 'success');

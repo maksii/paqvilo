@@ -29,6 +29,7 @@ import { internalStepReference, setInternalStageSource } from './plugin-internal
 import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant, messageFilters, sdkRecordKey, sdkValueToRecord } from './local-organization-service.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { requestMessage } from './dataverse-sdk-message-catalogue.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
@@ -1225,7 +1226,13 @@ function mergeChildren(store, relationships, mapping, subRow, idColumn) {
     // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
     // A system job regarding the subordinate is not a child record the merge moves (native mergeAccount: the Merge
     // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
-    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
+    if (
+      !rel.many ||
+      rel.intersect ||
+      cascadeAction(rel.cascade, 'merge') === 'NoCascade' ||
+      rel.entity === 'asyncoperation'
+    )
+      continue;
     const childMapping = store.resolveMapping(rel.entity);
     for (const row of store.tableRows(childMapping.logicalName)) {
       const left = refOf(row[rel.to]),

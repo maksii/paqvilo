@@ -1,8 +1,10 @@
 // @test-kind security: the administration token is a separate secret from the page token; page markup never carries it, and page tokens never authorize administration writes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { personaFixture } from './fixtures/persona-catalog.mjs';
 import { makeFixtureDirectory, startLocalSimulator, writeFixtureFiles } from './support/origin-requests.mjs';
+import { client } from './support/external-sign-in.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -57,10 +59,10 @@ const initialState = () => ({
   },
 });
 
-async function simulator(t) {
+async function simulator(t, options = {}) {
   const dir = await makeFixtureDirectory(t, 'admin-token-');
   await writeFixtureFiles(dir, portalFiles);
-  return startLocalSimulator(t, dir, initialState());
+  return startLocalSimulator(t, dir, initialState(), options);
 }
 
 // The page token as the portal serves it: the value of the hidden input of /_layout/tokenhtml.
@@ -77,13 +79,19 @@ const browser = (app, target, { cookie, headers = {}, ...init } = {}) =>
     headers: { 'sec-fetch-site': 'same-origin', ...(cookie ? { cookie } : {}), ...headers },
   });
 
+// A browser signed in through the sign-in form with its own request token: its session and binding cookies.
 async function signedInCookie(app) {
+  const layout = await browser(app, '/_layout/tokenhtml');
+  const binding = layout.headers.getSetCookie().find((cookie) => cookie.includes('-request-binding-'));
+  const token = /value="([0-9a-f]{64})"/.exec(await layout.text())?.[1];
   const response = await browser(app, '/SignIn', {
+    cookie: binding.split(';')[0],
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ contactId: 'alex', ReturnUrl: '/' }),
+    body: new URLSearchParams({ contactId: 'alex', ReturnUrl: '/', __RequestVerificationToken: token }),
   });
-  return response.headers.get('set-cookie')?.split(';')[0] ?? null;
+  const session = response.headers.get('set-cookie')?.split(';')[0];
+  return session ? session + '; ' + binding.split(';')[0] : null;
 }
 
 test('the page token from the portal markup is refused by administration writes', async (t) => {
@@ -111,6 +119,82 @@ test('the portal exposes its page token as portalToken, separate from the admini
   const app = await simulator(t);
   assert.equal(app.portalToken, await servedPageToken(app));
   assert.notEqual(app.portalToken, app.csrf);
+  // A browser's pages carry a token paired with that browser, neither the tool token nor the administration token.
+  const html = await (await browser(app, '/_layout/tokenhtml')).text();
+  const browserToken = /value="([0-9a-f]{64})"/.exec(html)?.[1];
+  assert.ok(browserToken);
+  assert.ok(!html.includes(app.portalToken) && !html.includes(app.csrf));
+});
+
+// @test-kind security+observation: browser tokens pair with one browser and its sign-in; the refusals answer 401 90040107 with the reason hosted session F4 gave (paqvilo-developer hosted-f4 swap runs a and b).
+test('portal verification binds browser writes while preserving its trusted tool token', async (t) => {
+  const clock = fixedClock();
+  const app = await simulator(t, { identityProvider: { pairedBrowserTokens: true }, clock });
+  assert.equal(app.portalToken, await servedPageToken(app));
+  const alice = client(app);
+  const other = client(app);
+  const issue = async (visitor, path = '/_layout/tokenhtml') => {
+    const response = await visitor.request(path);
+    assert.equal(response.status, 200);
+    return /value="([0-9a-f]{64})"/.exec(await response.text())[1];
+  };
+  const signIn = (visitor, token) =>
+    visitor.request('/SignIn', {
+      method: 'POST',
+      body: new URLSearchParams({ contactId: 'alex', ReturnUrl: '/', __RequestVerificationToken: token }),
+    });
+  const anonymous = await issue(alice);
+  assert.equal((await signIn(alice, app.portalToken)).status, 403);
+  assert.equal((await signIn(alice, anonymous)).status, 302);
+  assert.equal((await signIn(other, await issue(other))).status, 302);
+  const token = await issue(alice, '/_portal/site/Layout/GetAntiForgeryToken');
+  assert.equal(token, await issue(alice));
+  assert.ok(token !== anonymous && token !== app.portalToken);
+  const otherToken = await issue(other);
+  assert.ok(token !== otherToken);
+  const payload = (name, tokenValue) => ({
+    method: 'POST',
+    headers: { 'content-type': 'application/json', __requestverificationtoken: tokenValue },
+    body: JSON.stringify({ sample_name: name }),
+  });
+  const write = (visitor, value, name) => visitor.request('/_api/sample_items', payload(name, value));
+  const undecryptable =
+    'The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.';
+  for (const [refused, reason] of [
+    // Issued to this browser before it signed in, to another browser, to tools, and not a token at all.
+    [anonymous, 'The provided anti-forgery token was meant for a different claims-based user than the current user.'],
+    [otherToken, 'The anti-forgery cookie token and form field token do not match.'],
+    [app.portalToken, undecryptable],
+    ['invented-garbage-token', undecryptable],
+    [token.slice(0, 40), undecryptable],
+    ['', 'The required anti-forgery form field "__RequestVerificationToken" is not present.'],
+  ]) {
+    const response = await write(alice, refused, 'Refused');
+    assert.equal(response.status, 401, reason);
+    assert.deepEqual(await response.json(), {
+      error: { code: '90040107', message: 'Request validation failed : ' + reason },
+    });
+  }
+  const blockedOrigin = payload('Cross origin', token);
+  blockedOrigin.headers.origin = 'https://foreign.example.test';
+  assert.equal((await alice.request('/_api/sample_items', blockedOrigin)).status, 403);
+  assert.equal(app.store.tableRows('sample_item').length, 1);
+  assert.equal((await write(alice, token, 'Browser')).status, 204);
+  assert.equal((await write(other, otherToken, 'Second browser')).status, 204);
+  assert.equal((await write(alice, app.csrf, 'Administration')).status, 204);
+  const tool = payload('Tool', app.portalToken);
+  tool.headers.cookie = app.signIn('alex').cookieHeader;
+  assert.equal((await fetch(app.url + '/_api/sample_items', tool)).status, 204);
+  assert.equal(app.store.tableRows('sample_item').length, 5);
+
+  clock.advance(24 * 60 * 60 * 1000 - 1);
+  assert.equal((await write(alice, token, 'Before expiry')).status, 204);
+  clock.advance(1);
+  assert.equal((await write(alice, token, 'Expired binding')).status, 401);
+  assert.equal(app.store.tableRows('sample_item').length, 6);
+  const refreshed = await issue(alice);
+  assert.ok(refreshed !== token);
+  assert.equal((await write(alice, refreshed, 'After refresh')).status, 204);
 });
 
 test('a status request without a token reports the administration token', async (t) => {

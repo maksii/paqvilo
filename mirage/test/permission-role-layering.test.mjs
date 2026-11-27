@@ -1,3 +1,4 @@
+// @test-kind security: privilege checks: web role grants combine per operation and hierarchy without granting a second branch, a Read the role lacks or another table's rights
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -164,7 +165,8 @@ test('inactive roles, inactive ancestors and an actual source cycle do not activ
   }
 });
 
-test('split source Append and target Append To roles bind an ordinary owned lookup without granting target Read', async () => {
+// @test-kind observation: native captures 2026-11-23 through a site's /_api (paqvilo-developer feedback-251-252-parity q5/q6, q8 without Read on the related table): a lookup bind needs Append To on the bound table and Append on the related table; grants from two roles combine
+test('split source Append To and target Append roles bind an ordinary owned lookup without granting target Read', async () => {
   const original = {
     mappings: {
       item: {
@@ -180,8 +182,8 @@ test('split source Append and target Append To roles bind an ordinary owned look
     },
     settings: { permissionMode: 'enforce', associationPermissions: 'enforce' },
     permissions: [
-      { id: 'source', entity: 'item', scope: 'global', roles: ['Writer'], operations: ['update', 'append'] },
-      { id: 'target', entity: 'folder', scope: 'global', roles: ['Binder'], operations: ['appendTo'] },
+      { id: 'source', entity: 'item', scope: 'global', roles: ['Writer'], operations: ['update', 'appendTo'] },
+      { id: 'target', entity: 'folder', scope: 'global', roles: ['Binder'], operations: ['append'] },
     ],
   };
   const identity = { contactId: 'person', roles: ['Writer', 'Binder'] };

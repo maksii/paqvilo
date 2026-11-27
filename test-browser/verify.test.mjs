@@ -36,6 +36,8 @@ const IMAGE =
   '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="blue"/></svg>';
 const CSS_URL = '/theme space.css';
 const IMAGE_URL = '/Badge mark.svg';
+const FONT_URL = '/fixture.woff2';
+const FONT_BYTES = 'fixture font-response bytes';
 const CONFIGURATION_SNIPPET = 'a11b2222-c333-4444-5555-666666666666';
 const JS_URL = '/scripts/app.js';
 const HELD_JS_URL = '/scripts/held.js';
@@ -88,6 +90,11 @@ async function fixture(
       ['web-files/app.js', WEB_JS],
       ['web-files/theme space.css', WEB_CSS],
       ['web-files/Badge.svg', IMAGE],
+      ['web-files/fixture.woff2', FONT_BYTES],
+      [
+        'web-files/fixture.woff2.webfile.yml',
+        `adx_name: Fixture Font\nadx_partialurl: fixture.woff2\nadx_parentpageid: ${HOME_ID}\nfilename: fixture.woff2\n`,
+      ],
       [
         'web-files/theme space.css.webfile.yml',
         `adx_name: theme space.css\nadx_partialurl: theme space.css\nadx_parentpageid: ${HOME_ID}\nfilename: theme space.css\n`,
@@ -192,6 +199,7 @@ async function fixture(
   const html = `<!doctype html><html><head><title>Verification fixture</title>${startHeadMarkup}
 <link rel="stylesheet" href="${encodeURI(CSS_URL)}">${uncommittedInline ? '' : `<style>${PAGE_CSS}</style>`}
 <script>${PAGE_JS}</script><script src="${JS_URL}"></script>
+${classic ? `<script>fetch(${JSON.stringify(FONT_URL)}).then((response) => response.arrayBuffer());</script>` : ''}
 <script>window.instrumentationKey = "${CONFIGURATION_SNIPPET}"; document.addEventListener('DOMContentLoaded', () => { const display = document.createElement('p'); display.textContent = window.instrumentationKey; document.body.append(display); });</script>
 </head><body>
 <div class="fixture-shared-container">
@@ -213,6 +221,7 @@ ${heldScript ? `<script src="${HELD_JS_URL}"></script>` : ''}<script>throw new E
       [JS_URL]: ['application/javascript', WEB_JS],
       [CSS_URL]: ['text/css', WEB_CSS],
       [IMAGE_URL]: ['image/svg+xml', IMAGE],
+      [FONT_URL]: ['font/woff2', FONT_BYTES],
     };
     if (heldScript && pathname === HELD_JS_URL) {
       void Promise.resolve(heldScript()).then(() =>
@@ -398,7 +407,7 @@ for (const layout of ['classic', 'enhanced'])
         'content snippet',
       ];
       required.push('basic-form-js');
-      if (layout === 'classic') required.push('advanced-form-step-js', 'list-js');
+      if (layout === 'classic') required.push('advanced-form-step-js', 'list-js', 'web file (font)');
       for (const prefix of required) {
         const check = report.checks.find((entry) => entry.name.startsWith(prefix));
         assert.ok(check, `missing coverage: ${prefix}`);

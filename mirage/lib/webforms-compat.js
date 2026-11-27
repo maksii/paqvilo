@@ -514,11 +514,15 @@
       case 'multiselect':
         return element?.value ? element.value : null;
       case 'number':
-        return numberControlValue(element);
+        return numberControlValue(element, field.decimalSeparator);
       case 'datetime':
         return element?.value ? element.value : null;
       case 'richtext':
         return richTextControlValue(field, element);
+      case 'pcf':
+        // A mounted field component's hidden input holds its value as JSON; the form service decodes it
+        // (lib/pcf-field-host.mjs nativeFieldPostedValue), as for the postback transport.
+        return { pcfHiddenValue: element?.value ?? '' };
       default:
         // An empty text box saves as null (Dataverse stores no empty strings).
         return element?.value === '' || element == null ? null : element.value;
@@ -553,11 +557,16 @@
     const checked = element?.querySelector('input:checked');
     return checked ? Number(checked.value) : null;
   }
-  function numberControlValue(element) {
+  function numberControlValue(element, decimalSeparator) {
     if (element?.value === '' || element == null) return null;
     const text = String(element.value);
-    const decimal = element.dataset.numberdecimalseparator === ',' ? ',' : '.';
-    const normalized = numberText(text, decimal);
+    // Decimal and Money have no locale expando on their native markup. When a visitor enters a comma in a
+    // comma-decimal locale, parse that edit in the selected locale. Keep previously accepted invariant dot input.
+    const unmarkedSeparator = text.includes(',') ? decimalSeparator : '.';
+    const decimal = (element.dataset.numberdecimalseparator ?? unmarkedSeparator) === ',' ? ',' : '.';
+    // The server emits an invariant value even for a comma-decimal field. Use that value as
+    // written when the browser still holds it, and parse edited text using the field's locale.
+    const normalized = text === element.defaultValue && PLAIN_DECIMAL.test(text) ? text : numberText(text, decimal);
     // Only plain decimal text is a number. Anything else keeps the textbox text, so the native server
     // format validator rejects it without a write (JSON.stringify(NaN) would become null).
     const number = normalized !== null && PLAIN_DECIMAL.test(normalized) ? Number(normalized) : Number.NaN;
@@ -832,9 +841,21 @@
     for (const field of config.fields ?? []) appendSubmittedField(config, field, values);
     return values;
   }
+  // A refused answer spends its challenge: the refusal carries the next one, which replaces the rendered challenge.
+  function renewFixtureCaptcha(form, errors) {
+    const challenge = errors.find((error) => error?.field === 'captcha' && error.challenge)?.challenge;
+    const input = form.querySelector('[data-pp-captcha-challenge]');
+    const answer = form.querySelector('[data-pp-captcha-answer]');
+    if (!challenge || !input || !answer) return;
+    input.value = String(challenge.id ?? '');
+    const label = answer.id ? form.querySelector('label[for="' + CSS.escape(answer.id) + '"]') : null;
+    if (label) label.textContent = String(challenge.prompt ?? '');
+    answer.value = '';
+  }
   function handleNativeResponse(form, config, response, result) {
     if (!response.ok) {
       if (Array.isArray(result.error?.validationErrors) && result.error.validationErrors.length) {
+        renewFixtureCaptcha(form, result.error.validationErrors);
         restoreButtons();
         showValidationErrors(form, result.error.validationErrors);
         return;
@@ -892,6 +913,11 @@
     if (target.href === location.href) location.reload();
     else location.assign(target.href);
   }
+  function fixtureCaptchaProof(form) {
+    const challengeId = form.querySelector('[data-pp-captcha-challenge]')?.value;
+    const answer = form.querySelector('[data-pp-captcha-answer]')?.value;
+    return challengeId ? { challengeId, answer } : undefined;
+  }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
@@ -920,6 +946,7 @@
           ...(button?.dataset?.ppActionIndex != null ? { actionIndex: Number(button.dataset.ppActionIndex) } : {}),
           values,
           attachments,
+          captchaProofToken: fixtureCaptchaProof(form),
           query: Object.fromEntries(new URLSearchParams(location.search)),
           pageUrl: location.pathname + location.search,
         }),

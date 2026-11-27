@@ -24,6 +24,28 @@ sign-out issues, still wins. It creates no session. Use it only for offline tool
 Administration requests always use the configured identity. These are local simulation settings, not Power Pages
 authentication settings.
 
+A local browser sign-in has a server-side deadline from `Authentication/ApplicationCookie/ExpireTimeSpan`, a positive
+whole-second TimeSpan (`hh:mm:ss` or `d.hh:mm:ss`). Without the setting, or with a value in another format, the
+deadline is 24 hours. The deadline uses the runtime clock and survives a web-role override. With `SlidingExpiration`
+`false` it is fixed and also applies to programmatic sign-in (`simulator.signIn`); otherwise a programmatic
+Cookie-header session has none. The cookie itself stays a browser-session cookie unless a local account signs in with
+**Remember me?**. Hosted session F4 observed the same default: without the settings, a remembered sign-in's cookie
+expired 24 hours after it was issued.
+
+`Authentication/ApplicationCookie/SlidingExpiration` is `true` unless the site sets it to `false`. A sliding session
+is renewed after strictly more than half of its original window by a successful local portal document request,
+`GET /_layout/tokenhtml`, or any local portal Web API (`/_api`) response, whatever its caching. In hosted session F4, a
+background `/_api` read alone renewed the cookie, as a page load did. Renewal preserves the signed session identity,
+including the owner of the browser's request token. HEAD, live forwarding and other requests do not renew a session.
+Cookie-header tooling sessions and cookies issued without a sliding deadline are never renewed.
+
+An application cookie whose `name=value` reaches 4,050 characters, for example a session with a long role override, is
+sent the way the platform sends `.AspNet.ApplicationCookie`: `<name>=chunks:<n>`, then `<name>C1` to `<name>C<n>`
+with the same attributes, each holding at most 4,050 characters minus the name, `=` and 3. A session is read only when
+every chunk is present and the joined value verifies. Signed in, `/Account/Login/LogOff` returns to `/` (or the
+validated `returnUrl`). Anonymous, it redirects to the sign-in path with the log-off path unencoded, as in
+`/SignIn?ReturnUrl=/Account/Login/LogOff`.
+
 Programmatic sign-in: `simulator.signIn(contactId)` returns a cookie header; Playwright tests use `signInContext`, and
 HTTP tools `createPortalSession`, `connectRuntime().createSession` and `runSessionMatrix` from `paqvilo/mirage/testing`.
 `connectRuntime().signIn(null, { configuredPersona: true })` needs a configured contact (`identity.contactId`, or legacy
@@ -38,6 +60,302 @@ handling. It never copies live credentials or mints environment tokens; live-ref
 signed-in browser. Permission enforcement can be set to enforced or permissive for local experiments, and evidence
 records the choice. Live create, update and delete need both `--allow-live-writes` and the `/_sim/` live writes switch;
 neither authorizes a business operation.
+
+For an OpenID Connect provider with explicit `Authentication/OpenIdConnect/<provider>/UseTokenLifetime=true`, the
+local portal cookie uses the validated ID token's deadline in place of the site's application-cookie window. That
+session ends at the token deadline even when site-wide sliding renewal is enabled. A pending external sign-in
+must finish before the same deadline. The token itself stays outside the application cookie and user claims.
+This covers the local provider flow. Hosted providers and the separate private-site admission cookie have their
+own lifetimes.
+
+A browser session carries a digest of its contact's security stamp (`adx_identity_securitystamp`) and the time it
+was last validated: a persona chosen on the sign-in page, a persona launch (`POST /_sim/api/personas/launch`, the
+sign-in page's persona picker or `/_sim/sign-in`) and an external sign-in. These sessions also follow the site's
+application-cookie lifetime. Once `Authentication/ApplicationCookie/SecurityStampValidator/ValidateInterval`
+(default 30 minutes; `0` validates every request) has passed, the session is anonymous when the contact's stamp has changed or the contact is gone. A contact
+that is inactive or missing is already anonymous at once. A passed validation issues no cookie: a sliding renewal
+carries the new validation time, and until then the session is validated on each request. Local account sessions keep
+their own credential stamp, checked on every request. A programmatic session from `signIn()` and the testing session
+helpers (`testing/session.mjs`) is a tool identity: it carries no stamp and no lifetime. With the option
+`browserSession: true`, `signIn()` issues a browser session instead and returns its `Set-Cookie` header as `setCookie`.
+
+### OAuth 2.0, SAML 2.0 and WS-Federation providers
+
+Each exported provider signs in through the runtime's local identity provider with its own protocol. The local
+identity provider answers under its local authority (`GET /_sim/api/session` lists it as
+`identityProvider.providers[].localAuthority`), never at the exported `MetadataAddress` or online endpoints, and uses
+invented local keys only.
+
+- **OAuth 2.0** (`Authentication/OpenAuth/<Name>/ClientId`, `ConsumerKey` or `AppId`): the portal redirects to the
+  authorize page with `response_type=code` and `Scope` (comma-separated in the setting, space-separated in the
+  request). The code comes back on the query string of `CallbackPath` (default `/signin-<name>`, such as
+  `/signin-google`). The portal redeems it with `ClientSecret` (`ConsumerSecret`, `AppSecret`) and reads the user
+  profile with the access token. A missing secret reports `EXTERNAL_LOGIN_SETTING_INVALID` at start, and sign-in then
+  fails with `EXTERNAL_LOGIN_TOKEN_REQUEST_FAILED`.
+- **Twitter** (`Authentication/OpenAuth/Twitter/ConsumerKey` and `ConsumerSecret`, the client ID and secret of
+  Learn's setup page) signs in with OAuth 1.0a, as the OWIN Twitter middleware does. The portal posts a signed
+  request for a request token (`oauth/request_token` with `oauth_callback`), redirects to `oauth/authenticate` and,
+  at `/signin-twitter`, exchanges `oauth_token` and `oauth_verifier` for the user ID and screen name with a request
+  signed with the request token's secret. Every request is signed with HMAC-SHA1 in an `Authorization: OAuth`
+  header. The local identity provider checks the consumer key and signature, a timestamp within five minutes, a
+  nonce used once and the registered callback. Request tokens and verifiers are single-use. The claims are the name
+  identifier and name (the screen name), `urn:twitter:userid` and `urn:twitter:screenname`, with no email.
+- **SAML 2.0** (`Authentication/SAML2/<Name>/AuthenticationType`): `AuthenticationType` is the identity provider's
+  entity ID, `ServiceProviderRealm` the portal's entity ID (the audience) and `AssertionConsumerServiceUrl` the reply
+  URL. The portal sends an unsigned `AuthnRequest` with the HTTP-Redirect binding, asking for a persistent name ID and
+  `PasswordProtectedTransport`. The identity provider posts a signed `Response` with a signed assertion. An
+  identity-provider-initiated sign-in starts at `<localAuthority>saml2/idpinitiated?RelayState=ReturnUrl%3D<path>`.
+  The local identity provider answers an `AuthnRequest` with `IsPassive="true"` without a page: this browser's
+  provider session signs in, and without one (or with `ForceAuthn="true"` as well) the response has the status
+  `Responder`/`NoPassive`, which the portal reports as `FEDERATION_STATUS`. `ForceAuthn="true"` alone shows the
+  chooser with the request detail, and the earlier session never answers it.
+- **WS-Federation** (`Authentication/WsFederation/<Name>/AuthenticationType`): the portal redirects with
+  `wa=wsignin1.0`, `wtrealm` (`Wtrealm`), `wreply` (`Wreply`), `wctx` and `whr` (`Whr`). The answer is a posted
+  `wresult` with a signed SAML 2.0 assertion.
+
+The portal checks a SAML response or WS-Federation token before it signs anyone in. The XML signature (exclusive
+canonicalization, RSA-SHA256) must verify with a signing key of the provider's metadata, on the response or on the
+assertion. The issuer must be `AuthenticationType` and, for SAML, the destination and bearer recipient must be the
+reply URL. The audience must be the realm or one of `ValidAudiences`, unless `ValidateAudience` is explicitly `false`.
+The assertion must be within its lifetime, with five minutes of clock skew. SAML also needs a persistent name ID, an
+authentication statement and exactly one unencrypted assertion. An answer completes only in the browser that started
+the sign-in, at most 15 minutes later, and only once: a refused answer ends that pending sign-in, and an assertion ID
+is never accepted twice. The reader refuses document type declarations, entities, comments and processing
+instructions. Refusals render the sign-in page with a diagnostic such as `FEDERATION_SIGNATURE_INVALID`,
+`FEDERATION_AUDIENCE_INVALID`, `FEDERATION_ISSUER_INVALID`, `FEDERATION_ASSERTION_EXPIRED`, `FEDERATION_REPLAY`,
+`FEDERATION_REQUEST_MISMATCH` or `EXTERNAL_LOGIN_STATE_INVALID`. Return URLs, including a `RelayState` `ReturnUrl`,
+stay on the site.
+
+These providers issue claims with the `System.Security.Claims.ClaimTypes` names (for example
+`http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`). Without `RegistrationClaimsMapping`,
+registration fills the contact's first name, last name and email from the given name, surname and email claims.
+`RegistrationClaimsMapping` and `LoginClaimsMapping` name these claim types, for example
+`telephone1=http://schemas.xmlsoap.org/ws/2005/05/identity/claims/mobilephone`. External identities record the
+`AuthenticationType` and the name identifier.
+
+Sign-out with a SAML 2.0 provider that has `ExternalLogoutCertThumbprint` sends a `LogoutRequest` with a query-string
+signature. The local stand-in for the custom certificate signs it, and the identity provider accepts only that key.
+The portal then accepts the signed `LogoutResponse` at the reply URL and returns to the return URL. Without the
+thumbprint, sign-out is local and an exported `ExternalLogoutEnabled` reports `SAML_LOGOUT_NOT_SENT`. A
+WS-Federation provider with `ExternalLogoutEnabled` signs out with `wa=wsignout1.0` and `wreply`, which is
+`SignOutWreply` moved onto the portal's origin or the return URL.
+
+These flows follow the Microsoft Learn setup pages and the SAML 2.0 FAQ. The platform's exact requests, claim types,
+default for `ValidateAudience`, refusal pages and logout routing are not verified against a hosted site.
+
+For a private-site fixture, set `observed.siteVisibility` to `private` with evidence and set
+`identityProvider.privateSiteContactIds` to the approved local contact IDs. Browser navigation redirects through the
+local Microsoft Entra provider. The admission session grants access to portal routes, where portal contact sign-in and
+web roles still apply independently. An empty list refuses all fixture identities. A private visibility observation
+without the fixture list renders the private banner and reports `PRIVATE_SITE_ADMISSION_UNCONFIGURED`. Admission is
+a browser-session cookie of its own (`<auth cookie>-site-access`, `HttpOnly`, `SameSite=Lax`). It does not sign the
+browser in to the portal, and LogOff keeps it. It ends at a fixed deadline, the
+`Authentication/ApplicationCookie/ExpireTimeSpan` after admission (24 hours without the setting), and is never renewed.
+After it, portal routes answer 401 `PRIVATE_SITE_ACCESS_REQUIRED` and a navigation starts admission again. Hosted
+session F4 observed only a lower bound: an admission stayed valid through LogOff and for at least 59 minutes with a
+6-minute application cookie lifetime, without being issued again. A deadline shorter than 24 hours reports the warning
+`PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME`; `observed.privateSiteAdmissionLifetime: fixed-day`, with evidence, keeps
+admission 24 hours whatever the cookie lifetime. Those 24 hours are inferred, not observed.
+
+A stored contact web-role intersection supplies effective memberships in its corresponding standard or enhanced data
+model, including an explicitly empty table. Other portal fixtures use the configured simulator memberships.
+
+Set `identityProvider.localAccounts` to `true` to exercise local accounts as Power Pages serves them (hosted session
+F4): registration, sign-in, email confirmation, lockout, address throttling, password recovery and change, email
+two-factor sign-in and invitation codes. Persona sign-in remains available. The account forms use synthetic
+credentials.
+
+A deliberate difference: a hosted site renders the local sign-in form on `/SignIn` itself. Mirage keeps password fields
+off the shared sign-in page, which runs the site's scripts; it links to the local form on `/Account/Login/Login`, a page
+with a strict content security policy that allows no scripts, and accepts the hosted post of that form to `/SignIn`.
+
+| Page                                    | Fields and answer                                                                                                                                                                                   |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/Account/Login/Login`                  | The local sign-in form. It posts `Username`, `PasswordValue` and `RememberMe` to the site's sign-in path (`/SignIn`), `ReturnUrl` in the query.                                                     |
+| `/Account/Login/Register`               | The WebForms controls `ctl00$ctl00$ContentContainer$MainContent$MainContent$EmailTextBox`, `…UserNameTextBox`, `…PasswordTextBox` and `…ConfirmPasswordTextBox`.                                    |
+| `/Account/Login/ForgotPassword`         | `Email`. Known and unknown addresses get the same answer.                                                                                                                                           |
+| `/Account/Login/ResetPassword`          | `UserId`, `Code`, `Password`, `ConfirmPassword`; success redirects to `/Account/Login/ResetPasswordConfirmation`.                                                                                   |
+| `/Account/Login/SendCode`, `VerifyCode` | The second factor: `Code` and `RememberBrowser`. Without a pending sign-in both answer 500, as hosted.                                                                                              |
+| `/Account/Manage/ChangePassword`        | `Username` (read only), `OldPassword`, `NewPassword`, `ConfirmPassword`; success redirects to the profile page with `?Message=ChangePasswordSuccess`.                                               |
+| `/Account/Manage/ChangeTwoFactor`       | Posts the form token to `/Account/Manage/EnableTFA` (or `DisableTFA`); needs `TwoFactorEnabled` and a confirmed address.                                                                            |
+| `/Account/Manage/ConfirmEmailRequest`   | Shows "Check your email for confirmation instructions." and sends nothing. `POST /Account/Manage/PostConfirmEmailRequest` with the token in the `__RequestVerificationToken` header sends the link. |
+
+An anonymous request to an `/Account/Manage/` page redirects to the sign-in path with `ReturnUrl`. The platform's
+messages come back on the page with 200: "Invalid sign-in attempt.", "The user account is currently locked. Please try
+again later.", "The password and confirmation password do not match.", the password policy messages, "The Email field
+doesn’t contain a valid email address.", "Please check your email to reset your password.", "Invalid token.", "Invalid
+code." and "Invalid invitation code.". "Too many sign-in attempts. Please wait awhile and then try again." answers 409
+(the status is in the raw lockout captures of hosted session F4, `accounts-a-cookies+lockout-*` and
+`accounts-b-lockout-*`).
+A hosted site answers a registration with a taken user name or address with `The username "<name>" is already taken.`
+or `The email "<address>" is already taken.`, which reveals which accounts exist. Mirage answers 409 "These details
+cannot be used for local registration." for both, naming neither, and reports the warning
+`LOCAL_ACCOUNT_DUPLICATE_HOSTED_MESSAGES`; `observed.registrationDuplicateMessages: named`, with evidence, answers the
+hosted messages with 200.
+
+These answers are local choices that hosted session F4 did not capture:
+
+- A wrong current password on **Change password** answers ASP.NET Identity's "Incorrect password." on the page.
+- `DisableTFA`, the counterpart of the captured `EnableTFA`, turns two-factor sign-in off with the form token alone.
+- A group invitation code is refused on the "I have an existing account" sign-in as at local registration.
+- With `RequiresConfirmation`, registration sends the confirmation link and sign-in answers "Confirm your email before
+  signing in." until the address is confirmed.
+- A password reset or change keeps the account's lockout and failure count; the new password signs in once the lockout
+  has passed.
+- When the invited contact of an invitation already has a local account, local registration with the code answers
+  "Invalid invitation code." and keeps that account; its owner redeems the code through "I have an existing account".
+- A pending email code ends after five wrong codes, also when the lockout is off.
+- Throttling expiry: failures older than `MaxAttemptsTimeLimitTimeSpan` stop counting and an address is admitted again
+  after `IpAddressTimeoutTimeSpan`. Every attempt is counted before its password is checked, so attempts sent at once
+  cannot pass the limit together; a valid attempt is taken back.
+
+Registration signs in at once and sends no email. It and a sign-in without a return URL open the site's **Profile**
+page (`Authentication/Registration/ProfileRedirectEnabled`, on by default), with `?ReturnUrl=` when one was given.
+When `CaptchaEnabled` is absent, registration needs a CAPTCHA, as on a new hosted site: set
+`CaptchaEnabled=false` or supply the local CAPTCHA fixture. `RememberMeEnabled` and `RememberBrowserEnabled` are on
+when absent.
+
+A local account is its contact row. The credentials are its ASP.NET Identity columns: `adx_identity_username`, the
+password hash in `adx_identity_passwordhash`, a GUID
+`adx_identity_securitystamp`, `adx_identity_emailaddress1confirmed`, `adx_identity_twofactorenabled`,
+`adx_identity_lockoutenabled`, `adx_identity_lockoutenddate`, `adx_identity_accessfailedcount` and
+`adx_identity_logonenabled`, which Mirage writes and, as hosted, never reads. The plain password is never stored or
+logged. Mirage writes the ASP.NET Identity version 3 format (PBKDF2-HMAC-SHA256, 100,000 rounds); a hosted site
+writes the version 2 format (PBKDF2-HMAC-SHA1, 1,000 rounds, 68 characters), and both verify, so imported contacts sign
+in with their passwords. A version 2 hash is replaced by a version 3 one at its next successful sign-in, without
+changing the security stamp. Every password check costs one version 3 and one version 2 derivation, whether the
+account stores either format or the name is unknown. A hosted site may not read the version 3 hashes Mirage writes. These columns follow the
+runtime's data persistence settings, so an account survives a restart when the data
+does; one-time challenges, the mailbox and the address throttle stay in memory and clear on data reset or restart.
+
+The fixture mailbox is `GET /_sim/api/local-accounts/messages` on the administration origin with the `x-sim-csrf`
+token. Each item has `to`, `kind` (`confirm`, `reset` or `mfa`), the platform's `subject` ("Confirm your account",
+"Password Reset", "Security Code"), an HTML `body`, and `url` or `code`. The links are
+`/Account/Manage/ConfirmEmail?userId=<contactid>&code=<code>` and `/Account/Login/ResetPassword?userId=<contactid>&code=<code>`.
+A confirmation link redirects to the profile page with `?Message=ConfirmEmailSuccess` and is used once: a second use
+answers 403 "Invalid token." and reports the warning `LOCAL_ACCOUNT_CONFIRMATION_HOSTED_REUSE`. A hosted site lets the
+link be used again until the account's stamp or address changes (hosted session F4);
+`observed.confirmationLinkReuse: reusable`, with evidence, reproduces that. A reset link is used once.
+
+Five wrong passwords (`MaxFailedAccessAttemptsBeforeLockout`) lock the account for a day
+(`DefaultAccountLockoutTimeSpan`), and wrong two-factor codes count toward the same lockout. With
+`Authentication/LoginThrottling/MaxInvaildAttemptsFromIPAddress` (the setting name as a new site ships it), an address
+that made that many invalid sign-in attempts within `MaxAttemptsTimeLimitTimeSpan` (default 00:05:00) gets 409 for
+`IpAddressTimeoutTimeSpan` (default 00:15:00), for any account and even with a correct password; clearing an account's
+lockout does not lift it. A new hosted site ships 5, 00:05:00 and 00:15:00. Without the attempt setting no address is
+throttled.
+
+Two-factor sign-in redirects to `/Account/Login/SendCode?RememberMe=False`, which sends the six-digit code and
+redirects to `/Account/Login/VerifyCode?Provider=EmailCode&RememberMe=False`.
+
+An invitation's `/register/?returnurl=/&invitation=<code>` link opens the redemption form with the code. Codes match
+without regard to case. A valid code redirects to `/Account/Login/Register?returnUrl=/&invitationCode=<code>`, which
+shows "Redeeming code: <code>" with the invited contact's address; registering there makes the invited contact the
+account (no contact is created), redeems the invitation and records an `adx_inviteredemption` activity regarding the
+invitation with the user name as its subject. With **I have an existing account** (`RedeemByLogin`), the local sign-in
+form posts to `/SignIn?InvitationCode=<code>` and redeems the invitation for the contact who signs in. A used, expired,
+deactivated or unknown code answers "Invalid invitation code."; a group invitation passes the code step and is refused
+with the same message at local registration without changing the invitation. An invitation's redemption workflow starts after
+the redemption has committed, as the local portal application user; see
+[project extensions](../../docs/project-extensions.md#classic-workflow-handlers).
+
+With the Dataverse API on and an `adx_invitation` table, Mirage provides the Power Pages invitation processes the
+Solution does not export, under the ids the platform's solution gives them (hosted session F4):
+
+- **UpdateInvitationCode** runs in real time when an invitation is created and gives it a 172-character code when it has
+  none.
+- **Send Invitation** is an on-demand background process: `ExecuteWorkflow` on it starts a system job owned by the
+  caller and created by SYSTEM. The job writes one email activity regarding the invitation, from the caller to the
+  invited contact, Pending Send, its subject empty apart from the tracking token (` CRM:0000001`), its body the hosted
+  text with the link `<origin>/register/?returnurl=/&invitation=<code>`, and sets the invitation to Sent (756150000),
+  which stays redeemable. The hosted email links to `http://localhost:7500` whatever the site's address; Mirage links to
+  its own origin (and to the hosted address only when it has none), and encodes the code in the link.
+
+A trusted pack handler registered for one of these ids replaces the built-in process.
+
+A sign-in session ends at its next request when the account's password, two-factor setting or security stamp changes,
+when its contact is deactivated or deleted, and when its `emailaddress1` changes. A hosted site lets such a session run
+for up to about 8 minutes and refuses a deactivated contact's sign-in for a while after it is reactivated (hosted session
+F4); Mirage checks on every request. An edit of the contact's `emailaddress1` keeps the account and its password but
+marks the address unconfirmed at the account's next request, and pending messages for the old address end. With
+`RequiresConfirmation`, sign-in then waits for a confirmation of the new address. Email sign-in (`LocalLoginByEmail`)
+and password recovery use the current address, and an address that several accounts share matches none of them. A
+sign-in that completes, including one from a remembered browser, clears the failure count.
+
+With `Authentication/Registration/RememberMeEnabled` on, the local password form offers an unchecked **Remember me?**
+choice. Select it during sign-in to set the browser cookie's expiry to
+the signed application deadline. The browser-bound MFA challenge carries the original choice, and sliding renewal
+advances the signed deadline and the browser expiry together. Sign-out replaces the cookie with the usual anonymous
+session marker. Other sign-in methods and unchecked local sign-ins keep session-only cookies. In hosted session F4,
+without lifetime settings, a remembered sign-in set one persistent cookie expiring 24 hours later.
+
+With `Authentication/Registration/RememberBrowserEnabled` on, the verification form also offers an unchecked
+**Remember this browser?** choice. Selecting it after a correct code issues a separate marker for that account and its
+credentials, and the next sign-in in that browser skips the code (hosted session F4). A later sign-in still requires the
+correct password. The marker lasts 24 hours on the local runtime clock, and ordinary logoff leaves it in the browser.
+Password or two-factor changes, data reset and restart invalidate it. The marker never grants portal access by itself
+or extends the application session.
+
+### Publishing preview toggle
+
+`GET /_sim/api/session/preview` reports this browser's classic `adxPreviewUnpublishedEntities` cookie, whether the
+signed-in contact holds the **Preview Unpublished Entities** website access permission through a web role, and whether
+preview applies. `POST /_sim/api/session/preview` with `x-sim-csrf` and `{ "enabled": true }`, `false` or `null` sets
+the cookie to `true` or `false` (`Path=/`, readable by scripts, as classic `PreviewPermission` sets it), or clears it.
+Without the cookie, preview is on for an eligible contact. An anonymous browser answers 409 `SESSION_NOT_SIGNED_IN`, and
+a contact without the permission answers 403 `PREVIEW_NOT_PERMITTED`; neither gets a cookie. A cookie set by hand gives
+such a contact no preview. The cookie is the platform's name, so every runtime on the same host name reads it.
+In `/_sim/`, **Identity & permissions** shows a **Publishing preview** panel to an eligible signed-in contact, with
+**Turn preview off** or **Turn preview on** and, once the cookie is set, **Use the default**. In Lense, **Tweaks** shows a
+**Publishing preview** On/Off switch below the browser session for the same contact; switching reloads the page.
+Neither appears for an anonymous browser or a contact without the permission.
+[Website access permissions](https://learn.microsoft.com/power-pages/security/website-access-permission) ·
+[classic preview permission](https://github.com/Adoxio/xRM-Portals-Community-Edition/blob/868decd55a6f/Framework/Adxstudio.Xrm/Web/Security/PreviewPermission.cs#L35-L94).
+
+### Implicit grant tokens
+
+`POST /_services/auth/token` and `GET /_services/auth/publickey` follow the
+[implicit grant flow](https://learn.microsoft.com/power-pages/security/oauth-implicit-grant-flow). A refusal is 400
+with `{ ErrorId, ErrorMessage, Timestamp, CorrelationId }` and the hosted texts of session F4, checked in this order:
+
+| Check                                                               | `ErrorId`       |
+| ------------------------------------------------------------------- | --------------- |
+| `state` longer than 20 characters                                   | `PortalSTS0005` |
+| `nonce` longer than 20 characters                                   | `PortalSTS0006` |
+| `client_id` longer than 36 characters                               | `PortalSTS0010` |
+| `client_id` not registered, or not only letters, digits and hyphens | `PortalSTS0001` |
+| `response_type` other than `token`                                  | `PortalSTS0007` |
+| `state` with a control character                                    | `PortalSTS0018` |
+
+A missing `client_id` or `response_type` passes. The hosted site, which had no implicit grant certificate, answered
+every request that passed these checks with `PortalSTS0018` ("The Implicit Grant certificate was not found. …"). That
+includes a `state` with control characters or spaces. Mirage signs with its key instead, except for a `state` with a
+control character, which cannot be returned as the `state` header and is refused with `PortalSTS0018`. A `state` with
+spaces is returned. A body over 64 KiB is refused with 413 `PortalSTS0003`. Every answer is `Cache-Control: no-cache,
+no-store, must-revalidate`, and `Timestamp` is written as `11/27/2026 5:59:29 AM` (UTC). `GET /_services/auth/token`
+answers 404 without a body, and `/_services/auth/authorize` is the site's 404 page. Anonymous, a POST is redirected to
+sign-in. An `X-Requested-With: XMLHttpRequest` call gets 200 without a body and `X-Responded-JSON:
+{"status":401,"headers":{"location":"…"}}` with `/` written as `\/`.
+
+Without a configured key, each runtime process signs with a key pair it generates. On the platform, an uploaded custom
+certificate signs when `CustomCertificates/ImplicitGrantflow` names its thumbprint. To get stable tokens locally, list
+PEM RSA private key files (unencrypted, at least 2048 bits) in the project file:
+
+```yaml
+implicitGrant:
+  signingKeys:
+    - privateKeyFile: ../keys/invented-default.pem
+    - privateKeyFile: ../keys/invented-custom.pem
+      thumbprint: 0123456789ABCDEF0123456789ABCDEF01234567
+```
+
+Paths resolve against the project file's folder. An entry with a thumbprint signs when the site setting names that
+thumbprint; otherwise the entry without a thumbprint signs, and otherwise the per-process key. The public key endpoint
+serves the public key of the signing key. Project load refuses a key file that is missing, unreadable, encrypted, not
+RSA, shorter than 2048 bits or inside a portal export or Solution folder, with `IMPLICIT_GRANT_SIGNING_KEY_INVALID`
+naming the file and the reason. A key file that becomes unusable while the runtime runs answers 400 `PortalSTS0018` and is
+reported in `/_sim/api/diagnostics`. The key content never appears in settings, state, responses or logs. A replaced
+file is read again on the next request.
 
 ### Verification witness
 
@@ -97,6 +415,13 @@ form posts, pack endpoints and any request whose `Accept` names JSON but not HTM
 | `/reference`, `/assets`, `/live`                                                | Power Pages | Reference enrichment, asset capture, live connection (`/live/connect`, `/live/disconnect`)                           |
 | `/reset`, `/reload`                                                             | Power Pages | `POST`: reset state, reload sources                                                                                  |
 | `/shutdown`                                                                     | both        | `POST`: stop the runtime (202)                                                                                       |
+
+Configuration changes and background writes: `PATCH /config` and `PATCH`/`DELETE /operations/<key>` apply their
+change to the state as it is when they commit, in the queue that asynchronous plug-in jobs and SDK writes commit
+through. A job that commits while the change prepares keeps its rows, and the change answers 200. A replacement of the
+whole state from a snapshot answers 409 `StateConflict` (`Local state changed before replacement; no imported state
+was applied`) when another write committed after that snapshot, and applies nothing; wait for pending jobs
+(`backend.settle()`, see [asynchronous steps](dataverse-plugins.md)) and send it again.
 
 Outside `/_sim/api`: `/_sim/events` (server-sent `logs` and `trace` channels), `/__sim/sign-in`,
 `/__sim/session-token/<ticket>` and the other portal paths in the [allow-list](#portal-address-allow-list).
@@ -219,18 +544,36 @@ and it sets the binding cookie `paqvilo-mirage-ticket-<portal port>` (`HttpOnly`
 
 ### Tokens
 
-Each token is 32 random bytes, fixed for the life of the runtime.
+The three tooling tokens are 32 random bytes each, fixed for the life of the runtime.
 
 - `csrf`, the administration token: on the handle, and in `csrf` of status and state. It is accepted in `x-sim-csrf` on
-  the administration writes under `/_sim/api`, and in the body-token fields of the sign-in and persona forms. On any
-  other path the gate replaces it with the page token or the apps token before a route sees it, so it is accepted
-  wherever those tokens are, and no page carries it.
-- `portalToken`, the portal's anti-forgery token: the value the portal's markup and `/_layout/tokenhtml` carry as
-  `__RequestVerificationToken`. The portal's form posts, pack endpoint writes and native view state check it.
+  the administration writes under `/_sim/api`, and in the body-token fields of the sign-in and persona forms.
+  Portal and apps handlers also accept it on supported writes; portal requests check it separately from the browser's
+  request token, and apps requests use the apps token after normalization. No page carries it.
+- `portalToken`, the programmatic portal anti-forgery token, for requests without Fetch Metadata (tools and tests).
+  A browser's portal markup and `/_layout/tokenhtml` carry that browser's own request token instead (below). Local
+  form posts, pack endpoint writes and native view state check the request's current verification token.
 - `appsToken`, the apps token: on the handle (on the standalone host it is the page token). The app pages send it: the
   model-driven shell in `meta[name="mirage-csrf"]`, the Canvas player in `data-csrf` and the `_csrf` field of its form
   posts, and the Code Apps `GET context` response in `x-sim-csrf`. It is accepted in `x-sim-csrf` by the apps Web API,
   the Canvas actions, the Code Apps routes and `/__sim/api/dataverse/session`.
+
+Browser request tokens belong to one browser and its current portal sign-in, as on the hosted site (session F4). The
+browser receives a signed, runtime-scoped binding cookie (`<auth cookie>-request-binding-<slot>`, a browser-session
+cookie, `HttpOnly`, `SameSite=Lax`) when it first reads a portal document, account form or token fragment, and every
+token its pages carry names that binding and that sign-in. A token is reusable while both stay the same. Another
+browser's token, a token from before sign-in or LogOff, and `simulator.portalToken` sent from a browser are refused;
+reload open forms or refresh the token after changing sign-in. A portal Web API write answers each refusal with 401
+`90040107` and the hosted text after `Request validation failed : `
+([token failures](dataverse-parity.md#token-failures)). Reads ignore the token. The `__RequestVerificationToken`
+cookie that the token fragment sets is a `SameSite=Lax` session cookie. Existing form, WebForms and Web API transport
+shapes apply. Programmatic callers still use `simulator.portalToken`, and the administration token keeps its
+supported uses. Set `identityProvider.pairedBrowserTokens` to `false` to give every browser the shared runtime token
+instead.
+
+A runtime has four cookie slots for overlapping first loads. Each signed binding expires after 24 hours, and requests
+with a valid binding reuse it. More than four overlapping first issuances can reuse a slot. If a tab's binding expires
+or its slot is replaced, open the form with a fresh GET before submitting again.
 
 ### Residual
 

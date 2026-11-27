@@ -71,6 +71,50 @@ async function start(t, state, users = []) {
   return { store, server, call };
 }
 
+test('binds a published standard global choice by name or its returned MetadataId', async (t) => {
+  const state = emptyState();
+  state.mappings.x_widget = {
+    logicalName: 'x_widget',
+    entitySet: 'x_widgets',
+    idColumn: 'x_widgetid',
+    nameColumn: 'x_name',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  };
+  state.tables.x_widget = [];
+  const { call } = await start(t, state);
+  const standard = await call('GET', "/GlobalOptionSetDefinitions(Name='field_security_permission_type')");
+  assert.equal(standard.status, 200, standard.text);
+  assert.equal(standard.json.OptionSetType, 'Picklist');
+  assert.ok(standard.json.Options.length > 1);
+  const byName = `/GlobalOptionSetDefinitions(Name='${standard.json.Name.toUpperCase()}')`;
+  const byId = `/GlobalOptionSetDefinitions(${standard.json.MetadataId})`;
+
+  const attributes = "/EntityDefinitions(LogicalName='x_widget')/Attributes";
+  for (const [suffix, reference] of [
+    ['name', byName],
+    ['id', byId],
+  ]) {
+    const column = `new_shared_choice_${suffix}`;
+    const created = await call('POST', attributes, {
+      '@odata.type': 'Microsoft.Dynamics.CRM.PicklistAttributeMetadata',
+      SchemaName: column,
+      'GlobalOptionSet@odata.bind': reference,
+    });
+    assert.equal(created.status, 204, created.text);
+    const bound = await call(
+      'GET',
+      `${attributes}(LogicalName='${column}')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/GlobalOptionSet`,
+    );
+    assert.equal(bound.status, 200, bound.text);
+    assert.equal(bound.json.MetadataId, standard.json.MetadataId);
+    assert.deepEqual(bound.json.Options, standard.json.Options);
+  }
+
+  const byMetadataId = await call('GET', byId);
+  assert.equal(byMetadataId.status, 200, byMetadataId.text);
+  assert.deepEqual(byMetadataId.json, standard.json);
+});
+
 test('a mixed-case key and a global choice resolve by their MetadataId and join the solution as rows', async (t) => {
   const state = emptyState();
   state.mappings.x_widget = {

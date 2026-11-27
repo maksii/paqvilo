@@ -1,8 +1,20 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { systemLink } from '../mirage/lib/system-link.mjs';
 
-/** Check every existing path component; never traverse a symbolic link/junction. */
-export async function assertScaffoldPath(file, { directory = false } = {}) {
+/** Throw unless an existing path component may be used: a folder (or system link) above the target, or the target. */
+function assertScaffoldComponent(current, info, { target, directory, platform }) {
+  const isTarget = current === target;
+  // An operating-system link above the target, such as macOS's /tmp and /var (links into /private), is followed.
+  if (!isTarget && systemLink(current, info, platform)) return;
+  if (info.isSymbolicLink() || ((!isTarget || directory) && !info.isDirectory())) {
+    throw new Error(`Scaffold path must be a regular directory without symbolic links: ${current}`);
+  }
+  if (isTarget && !directory && !info.isFile()) throw new Error(`Scaffold output must be a regular file: ${current}`);
+}
+
+/** Check every existing path component; never traverse a symbolic link/junction other than a system link. */
+export async function assertScaffoldPath(file, { directory = false, platform = process.platform } = {}) {
   const target = path.resolve(file);
   const parts = [];
   for (let current = target; ; current = path.dirname(current)) {
@@ -17,11 +29,7 @@ export async function assertScaffoldPath(file, { directory = false } = {}) {
       if (error.code === 'ENOENT') continue;
       throw error;
     }
-    if (info.isSymbolicLink() || ((current !== target || directory) && !info.isDirectory())) {
-      throw new Error(`Scaffold path must be a regular directory without symbolic links: ${current}`);
-    }
-    if (current === target && !directory && !info.isFile())
-      throw new Error(`Scaffold output must be a regular file: ${current}`);
+    assertScaffoldComponent(current, info, { target, directory, platform });
   }
   return target;
 }

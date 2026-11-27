@@ -1261,6 +1261,49 @@ test('case relationships come from Learn and document management creates <table>
   assert.equal(schema.annotationRelationships, 1);
 });
 
+// @test-kind observation: hosted session F7 (2026-11-27) relationships-1795734331127.json: enabling document management on a custom table created the system relationships <table>_SharePointDocumentLocations and <table>_SharePointDocuments, both navigating as regardingobjectid_<table>, IsCustomRelationship false, Cascade Assign/Delete/Merge/Reparent/Share/Unshare and NoCascade Archive/RollupView
+test('document management infers both SharePoint relationships with the recorded cascade', async (t) => {
+  const root = await tree(t, {
+    'Entities/sample_docs/Entity.xml': entityXml('sample_docs', {
+      set: 'sample_docses',
+      full: true,
+      extra: '<IsDocumentManagementEnabled>1</IsDocumentManagementEnabled>',
+    }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const cascade = {
+    assign: 'Cascade',
+    delete: 'Cascade',
+    archive: 'NoCascade',
+    merge: 'Cascade',
+    reparent: 'Cascade',
+    share: 'Cascade',
+    unshare: 'Cascade',
+    rollupView: 'NoCascade',
+  };
+  for (const [key, schemaName, referencingEntity] of [
+    [
+      'sample_docs_sharepointdocumentlocations',
+      'sample_docs_SharePointDocumentLocations',
+      'sharepointdocumentlocation',
+    ],
+    ['sample_docs_sharepointdocuments', 'sample_docs_SharePointDocuments', 'sharepointdocument'],
+  ]) {
+    const relationship = schema.relationships[key];
+    assert.ok(relationship, key);
+    assert.equal(relationship.schemaName, schemaName);
+    assert.equal(relationship.referencingEntity, referencingEntity);
+    assert.equal(relationship.referencingAttribute, 'regardingobjectid');
+    assert.equal(relationship.referencingNavigation, 'regardingobjectid_sample_docs');
+    assert.equal(relationship.referencedNavigation, schemaName);
+    assert.equal(relationship.referencedAttribute, 'sample_docsid');
+    assert.equal(relationship.isCustomRelationship, false);
+    assert.deepEqual(relationship.cascade, cascade);
+  }
+  assert.equal(schema.documentLocationRelationships, 1);
+  assert.equal(schema.documentRelationships, 1);
+});
+
 test('while a share is open several caches of one process parse a Solution root once', async (t) => {
   // The reuse assertions below concern files written moments ago.
   settleFileTimes(t);

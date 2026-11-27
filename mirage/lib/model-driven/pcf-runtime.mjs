@@ -202,9 +202,10 @@ function typedText(value, property, field) {
 
 /** The one PCF admission rule of the Power Pages and model-driven hosts (code-components.mjs re-exports it).
  * standard: the field/dataset lifecycle. virtual (React): hosted only with every declared platform library, plus
- * ReactDOM of the declared React version, supplied as project files (modelDriven.clientSources <Library>@<version>.js);
+ * ReactDOM of the declared React version, supplied as project files (<Library>@<version>.js in modelDriven.clientSources,
+ * or pcf.platformLibraries for host 'power-pages', which mounts standard and virtual controls with them as live does);
  * else PCF_VIRTUAL_UNSUPPORTED names the control and what is missing. Other control types: PCF_CONTROL_TYPE_UNSUPPORTED. */
-export function pcfAdmission(control, { platformLibraries = [] } = {}) {
+export function pcfAdmission(control, { platformLibraries = [], host = 'model-driven' } = {}) {
   const name = control?.name ?? control?.schemaName ?? '';
   const type = control?.controlType ?? control?.type ?? 'standard',
     declared = control?.libraries ?? [];
@@ -223,36 +224,50 @@ export function pcfAdmission(control, { platformLibraries = [] } = {}) {
     };
   const react = declared.find((library) => /^react$/i.test(library.name));
   const needed = [...declared, ...(type === 'virtual' && react ? [{ name: 'ReactDOM', version: react.version }] : [])];
+  // The Power Pages host ships one React (16.14.0) to every control whatever version it declares: a
+  // supplied library of the declared name serves there; the model-driven host keeps the exact version.
   const supplied = (library) =>
     platformLibraries.find(
-      (entry) => entry.name.toLowerCase() === String(library.name).toLowerCase() && entry.version === library.version,
+      (entry) =>
+        entry.name.toLowerCase() === String(library.name).toLowerCase() &&
+        (host === 'power-pages' || entry.version === library.version),
     );
   const missing = needed.filter((library) => !supplied(library));
-  if ((type === 'virtual' && !react) || missing.length) {
-    const list = declared.map((library) => `${library.name} ${library.version}`).join(', ') || 'none declared';
-    let requirement;
-    if (type === 'virtual' && !react) requirement = 'A virtual component must declare its React platform library.';
-    else {
-      const missingLibraries = missing.map((library) => `${library.name}@${library.version}.js`).join(', ');
-      requirement = `Supply ${missingLibraries} as project files in modelDriven.clientSources.`;
-    }
-    return {
-      admitted: false,
-      kind: type,
-      code: 'PCF_VIRTUAL_UNSUPPORTED',
-      missing: missing.map((library) => `${library.name}@${library.version}`),
-      reason: `Code component ${name} requires platform libraries (${list}). ${requirement}`,
-    };
-  }
-  let admittedKind;
-  if (type === 'virtual') admittedKind = 'virtual';
-  else if (dataset) admittedKind = 'dataset';
-  else admittedKind = 'standard';
+  const reactUndeclared = type === 'virtual' && !react;
+  if (reactUndeclared || missing.length)
+    return libraryRefusal({ name, type, host, declared, missing, reactUndeclared });
   return {
     admitted: true,
-    kind: admittedKind,
+    kind: admittedKindOf(type, dataset),
     dataset,
     libraries: needed.map(supplied),
+  };
+}
+
+function admittedKindOf(type, dataset) {
+  if (type === 'virtual') return 'virtual';
+  return dataset ? 'dataset' : 'standard';
+}
+
+// The refusal of a control without the platform libraries it needs (or a virtual one without React declared).
+function libraryRefusal({ name, type, host, declared, missing, reactUndeclared }) {
+  const list = declared.map((library) => `${library.name} ${library.version}`).join(', ') || 'none declared';
+  let requirement;
+  if (reactUndeclared) requirement = 'A virtual component must declare its React platform library.';
+  else {
+    const missingLibraries = missing.map((library) => `${library.name}@${library.version}.js`).join(', ');
+    // Each host reads its own project files: the Power Pages host pcf.platformLibraries, model-driven clientSources.
+    const setting = host === 'power-pages' ? 'pcf.platformLibraries' : 'modelDriven.clientSources';
+    requirement = `Supply ${missingLibraries} as project files in ${setting}.`;
+  }
+  return {
+    admitted: false,
+    kind: type,
+    // A standard control that declares a library it cannot get is named for that declaration on the Power Pages host.
+    code:
+      host === 'power-pages' && type === 'standard' ? 'PCF_PLATFORM_LIBRARY_UNSUPPORTED' : 'PCF_VIRTUAL_UNSUPPORTED',
+    missing: missing.map((library) => `${library.name}@${library.version}`),
+    reason: `Code component ${name} requires platform libraries (${list}). ${requirement}`,
   };
 }
 

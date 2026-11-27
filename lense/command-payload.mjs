@@ -5,15 +5,21 @@ import { createHash, randomUUID } from 'node:crypto';
 export const MAX_COMMAND_PAYLOAD_BYTES = 1024 * 1024;
 const PAYLOAD_NAME = /^stop-([a-f0-9]{64})\.json$/;
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const samePath = (a, b) =>
-  process.platform === 'win32'
-    ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
-    : path.resolve(a) === path.resolve(b);
+/** Whether two paths name one location: Windows paths compare without letter case. */
+export const samePath = (a, b, { platform = process.platform } = {}) => {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  return platform === 'win32'
+    ? paths.resolve(a).toLowerCase() === paths.resolve(b).toLowerCase()
+    : paths.resolve(a) === paths.resolve(b);
+};
 const failure = (message, code) => Object.assign(new Error(message), { code });
+// File identities are read as BigInt: a device or file number does not fit a JavaScript number (every NTFS file
+// number is above 2^53), and two files whose numbers differ only beyond that precision would compare as one file.
+const EXACT = { bigint: true };
 const sameFileVersion = (a, b) =>
   b.isFile() &&
   !b.isSymbolicLink() &&
-  b.nlink === 1 &&
+  b.nlink === 1n &&
   a.dev === b.dev &&
   a.ino === b.ino &&
   a.size === b.size &&
@@ -41,14 +47,14 @@ function commandDirectory(directory, create) {
 }
 
 function commandSubdirectoryInfo(absolute, create) {
-  let info = fs.lstatSync(absolute, { throwIfNoEntry: false });
+  let info = fs.lstatSync(absolute, { ...EXACT, throwIfNoEntry: false });
   if (!info && create) {
     try {
       fs.mkdirSync(absolute, { mode: 0o700 });
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
-    info = fs.lstatSync(absolute);
+    info = fs.lstatSync(absolute, EXACT);
   }
   if (!info) return null;
   if (!info.isDirectory() || info.isSymbolicLink())
@@ -89,13 +95,13 @@ function readOwned(file, { reportPublication = false } = {}) {
 }
 
 function readOwnedDescriptor(file, handle, reportPublication) {
-  const opened = fs.fstatSync(handle);
+  const opened = fs.fstatSync(handle, EXACT);
   if (!opened.isFile() || opened.size > MAX_COMMAND_PAYLOAD_BYTES) return null;
-  if (opened.nlink !== 1) return reportPublication && opened.nlink === 2 ? { publishing: true } : null;
+  if (opened.nlink !== 1n) return reportPublication && opened.nlink === 2n ? { publishing: true } : null;
   // On platforms without NOFOLLOW, reject a linked name before reading any
   // bytes. The descriptor remains the sole target of the bounded reads.
-  if (!sameFileVersion(opened, fs.lstatSync(file))) return reportPublication ? { publishing: true } : null;
-  const buffer = Buffer.alloc(opened.size + 1);
+  if (!sameFileVersion(opened, fs.lstatSync(file, EXACT))) return reportPublication ? { publishing: true } : null;
+  const buffer = Buffer.alloc(Number(opened.size) + 1);
   let length = 0;
   while (length < buffer.length) {
     const count = fs.readSync(handle, buffer, length, buffer.length - length, length);
@@ -103,12 +109,12 @@ function readOwnedDescriptor(file, handle, reportPublication) {
     length += count;
   }
   const bytes = buffer.subarray(0, length);
-  const after = fs.fstatSync(handle);
+  const after = fs.fstatSync(handle, EXACT);
   if (
     bytes.length > MAX_COMMAND_PAYLOAD_BYTES ||
     !sameFileVersion(opened, after) ||
-    after.size !== bytes.length ||
-    !sameFileVersion(after, fs.lstatSync(file))
+    Number(after.size) !== bytes.length ||
+    !sameFileVersion(after, fs.lstatSync(file, EXACT))
   )
     return reportPublication ? { publishing: true } : null;
   return { bytes, info: after };
@@ -145,7 +151,7 @@ function retireCommandTemporary(storage, temporary, temporaryIdentity, completed
   let cleanupFailed = false;
   try {
     checkDirectory(storage);
-    const info = fs.lstatSync(temporary, { throwIfNoEntry: false });
+    const info = fs.lstatSync(temporary, { ...EXACT, throwIfNoEntry: false });
     if (
       temporaryIdentity &&
       info?.isFile() &&
@@ -193,7 +199,7 @@ export function persistCommandPayload(directory, bytes) {
       fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0),
       0o600,
     );
-    temporaryIdentity = fs.fstatSync(handle);
+    temporaryIdentity = fs.fstatSync(handle, EXACT);
     fs.writeFileSync(handle, bytes);
     fs.fsyncSync(handle);
     fs.closeSync(handle);
@@ -250,7 +256,7 @@ export function pruneCommandPayloads(directory, releasedFiles = [], retainedFile
     const saved = readOwned(file);
     if (!saved || digest(saved.bytes) !== name[1]) continue;
     checkDirectory(storage);
-    const current = fs.lstatSync(file, { throwIfNoEntry: false });
+    const current = fs.lstatSync(file, { ...EXACT, throwIfNoEntry: false });
     if (!current || !sameFileVersion(saved.info, current)) continue;
     fs.unlinkSync(file);
     removed.push(file);

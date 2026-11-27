@@ -1,9 +1,9 @@
 // Contributor bootstrap prepares the exact metadata needed by the offline tarball smoke test.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { CHILD_HANG_GUARD_MS } from './smoke-process.mjs';
 import { answerHelp } from './script-help.mjs';
 
@@ -102,7 +102,7 @@ function prepareConsumerCache(preparation, npmCli) {
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'prime-package-cache',
     usage: `Usage: npm run cache:package   (node scripts/prime-package-cache.mjs under npm)

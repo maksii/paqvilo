@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { MODEL_DRIVEN_INSPECT_OPTIONS } from '../cli-options.mjs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -152,20 +153,8 @@ export function publishModelDrivenReload(overlay, next, mappings) {
 }
 
 function validateInspectOptions(args) {
-  const allowed = new Set([
-    'config',
-    'project',
-    'env',
-    'url',
-    'path',
-    'resource-map',
-    'local-simulation',
-    'json',
-    'event-cursor',
-    'include-event-parameters',
-  ]);
   for (const option of Object.keys(args))
-    if (!allowed.has(option))
+    if (!MODEL_DRIVEN_INSPECT_OPTIONS.has(option))
       throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
         code: 'unsupported_option',
       });
@@ -416,10 +405,14 @@ export async function closeModelDrivenResources(steps, onError) {
     throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
   progress?.phase('browser setup');
-  const { context, close, attached, debugPort, profile } = await startupWait(
-    open(cfg, { debugPort: cfg.browser.debugPort }),
-    (opened) => opened.close(),
-  );
+  const {
+    context,
+    close,
+    attached,
+    debugPort,
+    profile,
+    page: profilePage,
+  } = await startupWait(open(cfg, { debugPort: cfg.browser.debugPort }), (opened) => opened.close());
   logBrowserProfile(attached, cfg, profile);
   const provenance = createInspectionProvenanceTransport(
     context,
@@ -477,9 +470,9 @@ export async function closeModelDrivenResources(steps, onError) {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    page = attached
-      ? await startupWait(context.newPage(), (late) => late.close())
-      : (context.pages()[0] ?? (await startupWait(context.newPage(), (late) => late.close())));
+    const openPage = () => startupWait(context.newPage(), (late) => late.close());
+    // An attached session with a selected profile already holds its tab in that profile.
+    page = profilePage ?? (attached ? await openPage() : (context.pages()[0] ?? (await openPage())));
     page.once('close', stop);
     // An agent API serves one target origin. The target session opens one per target it activates; a sign-in
     // redirect keeps the same agent suspended, and a switch to another target retires it for a new one.

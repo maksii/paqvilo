@@ -2,6 +2,13 @@ import { requiredArgument } from './required-argument.mjs';
 import { portalField } from './importer.mjs';
 import { accountWebRoleIds } from './platform-changes.mjs';
 import { guidKey } from './dataverse-values.mjs';
+import { contactRoleAssignments } from './site-tables.mjs';
+import {
+  compileCustomTablePermission,
+  customTablePermissionDefinition,
+  customTablePermissionFilter,
+  CUSTOM_ACCESS_ENABLED_STATE,
+} from './custom-table-permission.mjs';
 
 const id = (value) =>
   guidKey(value?.id ?? value) ??
@@ -24,6 +31,7 @@ const scopes = {
   756150002: 'account',
   756150003: 'parent',
   756150004: 'self',
+  756150005: 'custom',
 };
 const clone = (value) => structuredClone(value);
 
@@ -69,7 +77,7 @@ function membershipModel(portal, state) {
   const memberships = [],
     diagnostics = [],
     seen = new Set();
-  for (const assignment of state.simulator?.contactRoles ?? []) {
+  for (const assignment of contactRoleAssignments(portal, state)) {
     const contactId = id(assignment.contactId),
       roleId = id(assignment.roleId),
       key = contactId + ':' + roleId;
@@ -170,7 +178,7 @@ function membershipPortalIdentity(portal, state, model, contactId, contact) {
               roleIds: accountRoles,
               roles: accountRoles.map((roleId) => model.roles.get(roleId)?.name).filter(Boolean),
               message:
-                "Web roles associated with the persona's parent account are not applied locally. The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages behaviour is not documented (mirage/docs/dataverse-parity.md, Platform changes).",
+                "Web roles associated with the persona's parent account are not applied, as on a hosted site: an account-linked web role was absent from Liquid user.roles and its Global read granted nothing, 13 and 48 minutes after the association and after a fresh sign-in (hosted session F1). The 2017 Adxstudio portal source gave contacts their parent account's web roles; current Power Pages does not (mirage/docs/dataverse-parity.md, Platform changes).",
             },
           ]
         : []),
@@ -199,6 +207,7 @@ function exportedPermissions(portal, { includeInactive = false } = {}) {
         entity: portalField(record, 'entitylogicalname'),
         scope,
         sourceScope: scopeValue,
+        ...(scope === 'custom' && { permissionFetchXml: portalField(record, 'permissionfetchxml') }),
         operations: operations.filter(([field]) => truth(portalField(record, field))).map(([, operation]) => operation),
         roles: roleIds.map((roleId) => byRole.get(roleId) ?? roleId),
         roleIds,
@@ -385,6 +394,12 @@ export function buildPermissionModel(
         compile(parent);
         if (parent.enabled === false)
           disable(rule, 'PERMISSION_PARENT_DISABLED', 'The parent permission is disabled or unresolved.');
+        else if (parent.scope === 'custom')
+          disable(
+            rule,
+            'PERMISSION_CUSTOM_ACCESS_CHILD_UNSUPPORTED',
+            'A child permission rooted in Custom Access requires separate qualification.',
+          );
         if (!rule.roles?.length) {
           rule.roles = clone(parent.roles ?? []);
           rule.inheritedRoles = true;
@@ -411,6 +426,43 @@ export function buildPermissionModel(
             ? `The exported scope '${rule.sourceScope ?? 'missing'}' is not supported by the local permission evaluator. Version-specific Custom Access and other unknown scopes require qualification.`
             : 'The source permission has no supported table.',
         );
+      if (rule.scope === 'custom') {
+        const original = sourceDefinitions.get(id(rule.id));
+        if (Number(scalar(portalField(portal.website ?? {}, 'enhancedauthorization'))) !== CUSTOM_ACCESS_ENABLED_STATE)
+          disable(
+            rule,
+            'PERMISSION_CUSTOM_ACCESS_REQUIRES_ENABLED_AUTHORIZATION',
+            'Custom Access requires enabled enhanced authorization.',
+          );
+        else if (original?.scope !== 'custom')
+          disable(rule, 'PERMISSION_CUSTOM_ACCESS_SOURCE_UNRESOLVED', 'Custom Access requires an exported permission.');
+        else {
+          rule.permissionFetchXml = original.permissionFetchXml;
+          try {
+            const filter = customTablePermissionFilter(rule.permissionFetchXml, rule.entity);
+            compileCustomTablePermission(filter, {
+              table: rule.entity,
+              definition: (attribute) => customTablePermissionDefinition(state.mappings?.[rule.entity], attribute),
+            });
+          } catch (error) {
+            disable(rule, 'PERMISSION_CUSTOM_ACCESS_FILTER_UNSUPPORTED', error.message);
+            const dropped = error.details?.hostedJoinDropped;
+            // Security decision: Mirage keeps the refusal; the live site would widen access (session F1, AUTH-02e).
+            if (dropped)
+              diagnostics.push({
+                code: 'PERMISSION_CUSTOM_ACCESS_HOSTED_JOIN_DROPPED',
+                severity: 'warning',
+                id: rule.id,
+                entity: rule.entity,
+                hostedGrants: dropped.grants,
+                message:
+                  dropped.grants === 'every-row'
+                    ? `Custom Access permission '${rule.name ?? rule.id}' filters ${rule.entity} only through link-entity joins. A hosted Power Pages site drops the joins and generates an empty record filter, so the live site grants this permission's privileges on every ${rule.entity} row; Mirage refuses the permission instead. Move the predicate onto ${rule.entity} columns.`
+                    : `Custom Access permission '${rule.name ?? rule.id}' combines a root filter with link-entity joins on ${rule.entity}. A hosted Power Pages site drops the joins and keeps only the root filter, so the live site grants this permission on every row the root filter matches; Mirage refuses the permission instead. Move the linked predicate onto ${rule.entity} columns.`,
+              });
+          }
+        }
+      }
       // Web-role associations are alternative grants. An unavailable role
       // cannot authorize anyone, but must not revoke another exact source ID.
       const assignedRoles = rule.roles ?? [],
@@ -474,6 +526,12 @@ export function buildPermissionModel(
           compile(parent);
           if (parent.enabled === false)
             disable(rule, 'PERMISSION_PARENT_DISABLED', 'The source parent permission is disabled or unresolved.');
+          else if (parent.scope === 'custom')
+            disable(
+              rule,
+              'PERMISSION_CUSTOM_ACCESS_CHILD_UNSUPPORTED',
+              'A child permission rooted in Custom Access requires separate qualification.',
+            );
           else {
             // Configured states keep the source links in ownRoleIds across recompiles.
             const own = [...new Set((rule.ownRoleIds ?? rule.roleIds ?? []).map(id))].filter((role) =>
@@ -626,11 +684,19 @@ export function buildPermissionModel(
     memberships: identityModel.memberships,
     personas,
     diagnostics,
-    settings: {
-      associationPermissions:
-        source === 'configured' ? (state.settings?.associationPermissions ?? 'compatibility') : 'enforce',
-    },
+    settings: { associationPermissions: associationMode(source, state, permissions) },
   };
+}
+
+/**
+ * The portal always checks Append/Append To: grants from a portal export enforce them unless a configured model
+ * explicitly asks for compatibility; only locally authored grants default to compatibility.
+ */
+function associationMode(source, state, permissions) {
+  if (source !== 'configured') return 'enforce';
+  const configured = state.settings?.associationPermissions;
+  if (configured !== undefined) return configured;
+  return permissions.some((rule) => rule.imported === true) ? 'enforce' : 'compatibility';
 }
 
 /**

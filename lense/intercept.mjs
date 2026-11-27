@@ -1,5 +1,6 @@
 // Request interception on the DevTools protocol. Each paused request is answered by this module,
 // including handler failures, without relying on another network event to complete the route.
+import { watchFrameTargets } from './frame-targets.mjs';
 import { refreshUrl } from './navigation.mjs';
 import { randomUUID } from 'node:crypto';
 import { setMaxListeners } from 'node:events';
@@ -270,10 +271,15 @@ export async function interceptOrigins(
     record.closed = true;
     record.ending.abort();
     sessions.delete(record.cdp);
-    record.page.off('close', record.onClose);
-    record.page.off('crash', record.onCrash);
+    if (record.onClose) record.page.off('close', record.onClose);
+    if (record.onCrash) record.page.off('crash', record.onCrash);
+    // The frame targets below this one go with it.
+    for (const child of record.children ?? []) release(child).catch(() => {});
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
+    // A request whose response was asked for and has not arrived stops being waited for.
+    for (const waiting of record.staged?.values() ?? []) waiting.reject(new Error('Browser page closed'));
+    record.staged?.clear();
     if (record.onDraftSignal) record.cdp.off('Runtime.bindingCalled', record.onDraftSignal);
     for (const [name, listener] of record.repairListeners ?? []) record.cdp.off(name, listener);
     record.closing = (async () => {
@@ -305,6 +311,7 @@ export async function interceptOrigins(
         ),
       );
       record.routes.clear();
+      if (record.stopFrames) await step('frame targets', () => record.stopFrames());
       if (record.draftInstall) {
         // The answer names the registration, and the browser installs the tracker whether or not setup still waits
         // for that answer. A release that overtakes it waits for it, then removes the registration and the tracker.
@@ -338,6 +345,130 @@ export async function interceptOrigins(
     record.closing.finally(() => pendingClosures.delete(record.closing)).catch(() => {});
     return record.closing;
   };
+  const pausedListener = (record, mainDocument) => (event) => {
+    const { cdp, page } = record;
+    // The second pause of one request: its response, which route.response() asked to see. A response nobody waits
+    // for any more (the wait ended) goes on to the browser as it is.
+    if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
+      const waiting = record.staged.get(event.requestId);
+      record.staged.delete(event.requestId);
+      if (waiting) waiting.resolve(event);
+      else cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+      return;
+    }
+    const isMainDocument = mainDocument(event);
+    const route = makeRoute({
+      cdp,
+      context,
+      page,
+      event,
+      isMainDocument,
+      stageResponse: () =>
+        new Promise((resolve, reject) => {
+          record.staged.set(event.requestId, { resolve, reject });
+        }),
+      unstageResponse: () => record.staged.delete(event.requestId),
+      onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
+      // A refusal while this tab is released is part of releasing it, not a tab failure.
+      onAnswerRejected: (method, error) =>
+        !stopped &&
+        !record.closed &&
+        diagnose(
+          Object.assign(
+            new Error(
+              `The browser refused ${method} for a paused ${RESOURCE_TYPES[event.resourceType] ?? 'other'} request: ${error.message}. The request was failed so the tab does not wait for it.`,
+              { cause: error },
+            ),
+            { scope: 'target', phase: method },
+          ),
+        ),
+    });
+    activeRoutes.add(route);
+    record.routes.add(route);
+    // whatever the handler does or fails to do, the request is not left paused
+    Promise.resolve()
+      .then(() => {
+        if (stopped || record.closed) return route.abort();
+        if (matches(event.request.url)) return handler(route);
+        return route.fallback();
+      })
+      .catch(() => {})
+      .then(() => route.answered || route.fallback())
+      .finally(async () => {
+        activeRoutes.delete(route);
+        record.routes.delete(route);
+        await route.disposeResponses();
+      })
+      .catch(() => {});
+  };
+  // Instruments an out-of-process frame target of `owner`'s tab while it waits to run: the portal origins' requests
+  // it makes are intercepted (a portal page nested in it is served by Lense, local changes applied), and the provenance
+  // attachment installs its registry bootstrap, which runs only in documents of a portal origin. Nothing else of a
+  // frame of another origin is read or changed. Its own out-of-process frames are instrumented the same way. A frame
+  // that navigates within its target keeps this setup; one that moves to another process is a new target.
+  const instrumentFrame = async (owner, child, info) => {
+    if (stopped || owner.closed) return;
+    const record = {
+      page: owner.page,
+      cdp: child,
+      frame: info,
+      routes: new Set(),
+      staged: new Map(),
+      closed: false,
+      ending: new AbortController(),
+    };
+    owner.children.add(record);
+    sessions.set(child, record);
+    child.on('paqvilo.closed', () => {
+      owner.children.delete(record);
+      // A detached target answers nothing: its release only drops what this process holds.
+      record.crashed = true;
+      release(record).catch(() => {});
+    });
+    record.onPaused = pausedListener(record, () => false);
+    child.on('Fetch.requestPaused', record.onPaused);
+    const step = async (phase, work) => {
+      let timer;
+      try {
+        return await Promise.race([
+          work(),
+          new Promise((_, reject) => {
+            timer = clock.setTimeout(
+              () =>
+                reject(Object.assign(new Error(`${phase} did not answer within ${CDP_SETUP_HANG_MS} ms`), { phase })),
+              CDP_SETUP_HANG_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clock.clearTimeout(timer);
+      }
+    };
+    const configure = (method, params) => step(method, () => child.send(method, params));
+    await configure('Page.enable');
+    await configure('Runtime.enable');
+    await configure('Network.enable');
+    await configure('Network.setCacheDisabled', { cacheDisabled: true });
+    await configure('Network.setBypassServiceWorker', { bypass: true });
+    if (onAttach) {
+      const report = (error) => {
+        if (!stopped && !record.closed) provenanceIncomplete(error);
+      };
+      const attachment = await step('interception attachment', () =>
+        onAttach({ page: owner.page, cdp: child, configure, report, clock, frame: info }),
+      );
+      if (record.closed) await Promise.resolve(attachment?.dispose?.()).catch(() => {});
+      else record.attachment = attachment;
+    }
+    await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
+    record.children = new Set();
+    record.stopFrames = await step('Target.setAutoAttach', () =>
+      watchFrameTargets(child, (grandchild, grandInfo) => instrumentFrame(record, grandchild, grandInfo), {
+        clock,
+        onError: diagnose,
+      }),
+    );
+  };
   const attach = async (page) => {
     if (stopped || attached.has(page) || !ownsPage(page)) return;
     attached.add(page);
@@ -369,53 +500,24 @@ export async function interceptOrigins(
       return;
     }
     // `ending` aborts when the page closes or interception stops, which ends every wait of this setup at once.
-    const record = { page, cdp, routes: new Set(), closed: false, ending: new AbortController() };
+    const record = {
+      page,
+      cdp,
+      routes: new Set(),
+      // requests the browser sent itself whose response is to be paused (route.response()), by request id
+      staged: new Map(),
+      closed: false,
+      ending: new AbortController(),
+    };
     sessions.set(cdp, record);
     let mainFrameId = null;
     let sawDocument = false;
-    record.onPaused = (event) => {
+    record.onPaused = pausedListener(record, (event) => {
       const isMainDocument =
         event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
-      const route = makeRoute({
-        cdp,
-        context,
-        page,
-        event,
-        isMainDocument,
-        onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
-        // A refusal while this tab is released is part of releasing it, not a tab failure.
-        onAnswerRejected: (method, error) =>
-          !stopped &&
-          !record.closed &&
-          diagnose(
-            Object.assign(
-              new Error(
-                `The browser refused ${method} for a paused ${RESOURCE_TYPES[event.resourceType] ?? 'other'} request: ${error.message}. The request was failed so the tab does not wait for it.`,
-                { cause: error },
-              ),
-              { scope: 'target', phase: method },
-            ),
-          ),
-      });
-      activeRoutes.add(route);
-      record.routes.add(route);
-      // whatever the handler does or fails to do, the request is not left paused
-      Promise.resolve()
-        .then(() => {
-          if (stopped || record.closed) return route.abort();
-          if (matches(event.request.url)) return handler(route);
-          return route.fallback();
-        })
-        .catch(() => {})
-        .then(() => route.answered || route.fallback())
-        .finally(async () => {
-          activeRoutes.delete(route);
-          record.routes.delete(route);
-          await route.disposeResponses();
-        })
-        .catch(() => {});
-    };
+      return isMainDocument;
+    });
     cdp.on('Fetch.requestPaused', record.onPaused);
     record.onClose = () => {
       release(record).catch(() => {});
@@ -551,6 +653,11 @@ export async function interceptOrigins(
         await setupStep('interception attachment', () => opening);
       }
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
+      // Out-of-process frames (lense/frame-targets.mjs): each is held while it is instrumented as this tab is.
+      record.children = new Set();
+      record.stopFrames = await setupStep('Target.setAutoAttach', () =>
+        watchFrameTargets(cdp, (child, info) => instrumentFrame(record, child, info), { clock, onError: diagnose }),
+      );
     } catch (error) {
       const pageClosed = stopped || record.closed || page.isClosed();
       await release(record);
@@ -697,9 +804,20 @@ export async function interceptOrigins(
   }
 }
 
-function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onAnswerRejected }) {
+function makeRoute({
+  cdp,
+  context,
+  page,
+  event,
+  isMainDocument,
+  stageResponse,
+  unstageResponse,
+  onFulfilled,
+  onAnswerRejected,
+}) {
   const { requestId, request } = event;
   let fetched = false,
+    staged = false,
     headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
@@ -802,6 +920,64 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
         },
       });
     },
+    /**
+     * Lets the browser send the request itself, once, and pauses its response. Nothing is sent a second time, so a
+     * request that must not be repeated (a file upload, any POST) can still have its response read and replaced.
+     * The result answers like what fetch() returns: status(), headers(), headersArray(), body(), text().
+     */
+    async response({ timeout = 120_000 } = {}) {
+      if (route.answered || fetched || staged) throw new Error('Request already answered');
+      if (!stageResponse) throw new Error('This request cannot be paused at its response');
+      staged = true;
+      const arrival = stageResponse();
+      // Observed here so an arrival that loses the race below is not an unhandled rejection.
+      arrival.catch(() => {});
+      try {
+        await cdp.send('Fetch.continueRequest', {
+          requestId,
+          interceptResponse: true,
+          ...(headersChanged
+            ? { headers: Object.entries(headers).map(([name, value]) => ({ name, value: String(value) })) }
+            : {}),
+        });
+      } catch (error) {
+        unstageResponse?.();
+        throw error;
+      }
+      let timer;
+      let stage;
+      try {
+        stage = await Promise.race([
+          arrival,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('The response did not arrive in time')), timeout);
+            timer.unref?.();
+          }),
+        ]);
+      } catch (error) {
+        // The request is with the portal; when its response arrives it goes on to the browser untouched.
+        unstageResponse?.();
+        route.answered = true;
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      const names = Object.fromEntries((stage.responseHeaders ?? []).map((h) => [h.name.toLowerCase(), h.value]));
+      let bytes;
+      const readBody = () =>
+        (bytes ??= cdp
+          .send('Fetch.getResponseBody', { requestId })
+          .then((answer) => Buffer.from(answer.body ?? '', answer.base64Encoded ? 'base64' : 'utf8')));
+      return {
+        staged: true,
+        error: stage.responseErrorReason ?? null,
+        status: () => stage.responseStatusCode ?? 0,
+        headers: () => names,
+        headersArray: () => stage.responseHeaders ?? [],
+        body: readBody,
+        text: () => readBody().then((body) => body.toString('utf8')),
+      };
+    },
     /** Answers from `response` (what fetch() returned), optionally with another body, or from status/headers/body. */
     /* NOSONAR */ async fulfill({ response, status, headers: given, body, provenance } = {}) {
       if (route.answered) return false;
@@ -831,6 +1007,9 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
       else if (Buffer.isBuffer(payload)) bytes = payload;
       else bytes = Buffer.from(payload ?? '', 'utf8');
       if (!noBody) responseHeaders.push({ name: 'content-length', value: String(bytes.length) });
+      // A local HEAD answer announces the length its GET would send.
+      else if (request.method === 'HEAD' && !response && /^\d+$/.test(String(given?.['content-length'] ?? '')))
+        responseHeaders.push({ name: 'content-length', value: String(given['content-length']) });
       const acknowledged = await send('Fetch.fulfillRequest', {
         responseCode: code,
         responseHeaders,
@@ -845,6 +1024,8 @@ function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled, onA
     /** Lets the request go to the online portal untouched. */
     fallback: () => {
       if (fetched && !SAFE_METHODS.has(request.method)) return route.abort();
+      // A request paused at its response: the response goes on as the portal sent it.
+      if (staged) return send('Fetch.continueRequest', {});
       return send(
         'Fetch.continueRequest',
         headersChanged

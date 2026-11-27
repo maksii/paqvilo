@@ -13,8 +13,9 @@ import { createHash } from 'node:crypto';
 import { racyStat } from './file-cache.mjs';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
-import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass } from './portal-model.mjs';
+import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass, isPageSource } from './portal-model.mjs';
 import { applyRenderEdits, finalizePortalProvenance } from '../mirage/lib/render-provenance.mjs';
+import { alignDocument, scanLiquidTokens as liquidTokens } from './response-alignment.mjs';
 
 /** URL prefix of everything the overlay answers itself; nothing under it exists on the portal. */
 export const LOCAL_PREFIX = '/__paqvilo/';
@@ -62,12 +63,20 @@ function addSourcePairs(block, candidates, weight, docKey, minSim, lineWeight, p
   }
 }
 
-function collectBlockPairs(html, candidates, docKey, minSim, lineWeight) {
+// How much of a difference between the served page and the baseline one response reports.
+const DRIFT_PLACES = 60;
+const DRIFT_SEEN = 400;
+const DRIFT_TEXT = 200;
+
+function collectBlockPairs(html, candidates, docKey, minSim, lineWeight, markupBlocks = null) {
   const found = [];
   const pairs = [];
   for (const m of codeBlocks(html)) {
     const tag = m[1].toLowerCase();
     if (!isInlineCodeBlock(tag, m[2])) continue;
+    // A script or style element a web template, snippet or page copy writes itself is that source's markup: it is
+    // never the block of a page's, form's or list's custom code, however many lines the two share.
+    if (markupBlocks?.has(m.index)) continue;
     const lines = lineSet(m[3]);
     if (!lines.size) continue;
     let weight = 0;
@@ -442,6 +451,76 @@ function isInlineCodeBlock(tag, attrs) {
 }
 
 const isLanguageCopy = (src) => src.rel.includes('/content-pages/');
+
+// The language the portal served this document in: the language segment of the address, else what the document
+// declares on its root element (lang, and the portal's own crm-lcid).
+function documentLanguage(html, urlPath, model) {
+  const root = /<html\b[^>]*>/i.exec(html.slice(0, 8192))?.[0] ?? '';
+  const attribute = (name) => {
+    const match = new RegExp(String.raw`\s${name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`, 'i').exec(root);
+    return match ? (match[1] ?? match[2] ?? match[3]) : null;
+  };
+  const key = urlKey(urlPath);
+  const prefix = key.split('/')[1];
+  const fromAddress = !model?.pagePaths?.has(key) && model?.languageCodes?.has(prefix) ? prefix : null;
+  const code = (fromAddress ?? attribute('lang'))?.toLowerCase() ?? null;
+  const lcid = Number(attribute('crm-lcid'));
+  if (!code && (Number.isNaN(lcid) || lcid <= 0)) return null;
+  return { code, lcid: Number.isInteger(lcid) && lcid > 0 ? lcid : null };
+}
+
+// The language a source is the copy of: an LCID entry of a localized field, the language in a classic file name, the
+// language layer of an enhanced-model page; null for a root record. An LCID entry is told by its number (`lcid`), the
+// others by their language code (`code`).
+function variantLanguage(src) {
+  if (src.lcid != null) return { lcid: Number(src.lcid) };
+  const named = /\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1];
+  if (named) return { code: named.toLowerCase() };
+  if (src.pageLayer && src.pageLayer !== 'root' && !src.pageLayer.startsWith('localized '))
+    return { code: String(src.pageLayer).toLowerCase() };
+  return null;
+}
+
+// The candidates that are copies of one page field, grouped by the field (or page) they are a copy of.
+function groupLanguageVariants(candidates) {
+  const groups = new Map();
+  for (const src of candidates) {
+    let key = null;
+    if (src.lcid != null)
+      key = 'field|' + src.file + '|' + (src.field ?? '') + '|' + JSON.stringify(src.fieldPath ?? null);
+    else if (src.pageKey || src.pageUrl) key = 'page|' + src.kind + '|' + (src.pageKey ?? urlKey(src.pageUrl));
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(src);
+  }
+  return groups;
+}
+
+/**
+ * Of the copies of one page field (its root record and one per language), the portal prints the copy of the
+ * language it serves. When the document says its language and that copy exists, the other copies are not candidates:
+ * an edit of the French copy is never laid over the English page, and identical copies are not "ambiguous".
+ */
+function servedLanguageVariants(candidates, language) {
+  if (!language) return candidates;
+  const groups = groupLanguageVariants(candidates);
+  const dropped = new Set();
+  const served = (src) => {
+    const value = variantLanguage(src);
+    if (!value) return false;
+    return value.lcid === undefined ? value.code === language.code : value.lcid === language.lcid;
+  };
+  for (const group of groups.values()) {
+    if (group.length < 2 || !group.some(served)) continue;
+    for (const src of group) if (!served(src)) dropped.add(src);
+  }
+  return dropped.size ? candidates.filter((src) => !dropped.has(src)) : candidates;
+}
+
+export function sourcesForDocumentLanguage(candidates, html, urlPath, model) {
+  return servedLanguageVariants(candidates, documentLanguage(html, urlPath, model));
+}
+
 const sourceLocale = (src) =>
   src.lcid ?? /\.([a-z]{2}(?:-[a-z]{2,4})?)\.(?:webpage|contentsnippet)\./i.exec(src.rel)?.[1]?.toLowerCase() ?? null;
 function differentLocalizedVariants(a, b) {
@@ -450,8 +529,7 @@ function differentLocalizedVariants(a, b) {
   if (aLocale == null || bLocale == null || aLocale === bLocale || a.kind !== b.kind) return false;
   if (a.lcid != null || b.lcid != null)
     return a.file === b.file && a.field === b.field && JSON.stringify(a.fieldPath) === JSON.stringify(b.fieldPath);
-  if (a.kind.startsWith('page-'))
-    return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
+  if (isPageSource(a)) return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
   return (
     a.kind === 'content-snippet' &&
     a.snippetName &&
@@ -772,19 +850,261 @@ function noAnchorReason(baseText, baseLines, hunk) {
     : 'no unique literal text next to the change to locate it in the page';
 }
 
+// A script of a source that is shown as a reference to the local file instead of inline text.
+function staysExternal(block, src, identical) {
+  return (
+    !src.extract &&
+    block.tag === 'script' &&
+    canExternalize(src, scriptType(attributes(block.m[2]))) &&
+    (identical || src.active) &&
+    src.text.trim() !== ''
+  );
+}
+
+// The marker interval that binds the element the portal wrote to the field it carries.
+function wrapperIntervals(source, tag, src, openingLength) {
+  if (!source) return [];
+  return [
+    {
+      start: 0,
+      end: openingLength,
+      mapping: 'wrapper',
+      tag,
+      sourceRefId: source.id,
+      sourceSpan: { start: 0, end: src.text.length },
+    },
+  ];
+}
+
+// The inline script element as a reference to the local file.
+function externalScriptTag(m, src) {
+  // Retaining async/defer/integrity after adding src changes execution or blocks the local script.
+  const attrs = m[2].replace(
+    /* NOSONAR */ /(?<!\s)\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+    (whole, name) =>
+      // NOSONAR: preserve the exact grammar and captured values
+      /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
+  );
+  return `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
+}
+
+// The tags an edit replaces; for a change of text only, the tag it stands in.
+function editBindings(edit, starts, aligned) {
+  const bindings = starts
+    .filter((start) => start >= edit.start && start < edit.end)
+    .map((start) => aligned.byStart.get(start));
+  if (bindings.length) return bindings;
+  let before = -1;
+  for (const start of starts) {
+    if (start >= edit.start) break;
+    before = start;
+  }
+  return before >= 0 ? [aligned.byStart.get(before)] : bindings;
+}
+
+const driftRel = (source) => (source.ref ?? source.file ?? source.id).replaceAll('\\', '/');
+
+function clipDrift(value) {
+  const one = value.replace(/\s+/g, ' ').trim();
+  return one.length > DRIFT_TEXT ? one.slice(0, DRIFT_TEXT) + '…' : one;
+}
+
+// The line a text offset is on, counting from the line `first` the text starts at.
+function lineNumberAt(text, offset, first) {
+  let line = first;
+  for (let at = text.indexOf('\n'); at >= 0 && at < offset; at = text.indexOf('\n', at + 1)) line++;
+  return line;
+}
+
+// Adds the counted changes to the `patched N change(s)` entry of each file (made when the file has none yet).
+function notePatchedCounts(counts, applied) {
+  for (const [changed, count] of counts) {
+    const known = applied.find((entry) => entry.rel === changed.rel && /^patched \d+ change/.test(entry.action));
+    const total = count + (known ? Number(/\d+/.exec(known.action)[0]) : 0);
+    const action = `patched ${total} change${total > 1 ? 's' : ''}`;
+    if (known) known.action = action;
+    else applied.push({ kind: changed.kind, rel: changed.rel, action });
+  }
+}
+
+const hasLiquid = (text) => text.includes('{{') || text.includes('{%');
+
+// Whether the page differs from the baseline at the place of a difference as well.
+const servedElsewhere = (against, difference) =>
+  against.some(
+    (other) =>
+      other.sourceRefId === 'baseline:' + difference.sourceRefId &&
+      other.served.start <= difference.served.end &&
+      difference.served.start <= other.served.end,
+  );
+
+// The edit that puts the text of a changed file where the page differs from it.
+function literalEdit(difference, own, changed, text) {
+  const line = lineNumberAt(own.text, difference.region.start, 1);
+  return {
+    start: difference.served.start,
+    end: difference.served.end,
+    text,
+    where: `line ${line}`,
+    changed,
+    intervals: text
+      ? [
+          {
+            start: 0,
+            end: text.length,
+            sourceRefId: own.id,
+            sourceSpan: { start: difference.region.start, end: difference.region.end },
+            mapping: 'literal',
+          },
+        ]
+      : [],
+  };
+}
+
+// The edits (last first) that do not overlap one that comes after them in the page, and how many each file has.
+function acceptLiteralEdits(edits, length, notes) {
+  const accepted = [];
+  const counts = new Map();
+  let limit = length;
+  for (const change of edits) {
+    if (change.end > limit) {
+      notes.push({
+        rel: change.changed.rel,
+        reason: `${change.where}: overlaps another change in the page, not applied`,
+      });
+      continue;
+    }
+    accepted.push(change);
+    limit = change.start;
+    counts.set(change.changed, (counts.get(change.changed) ?? 0) + 1);
+  }
+  return { accepted, counts };
+}
+
+// The entry of one file in the drift, made when the first place of the file is found.
+function driftEntry(files, rel, source, { base, deployed }) {
+  let entry = files.get(rel);
+  if (!entry) {
+    entry = { rel, kind: source.kind, name: source.name ?? '', sourceRefId: source.id, places: 0 };
+    if (deployed) entry.deployed = true;
+    else if (base) entry.changed = true;
+    files.set(rel, entry);
+  }
+  return entry;
+}
+
+// The files and places where the page differs from the version the portal is taken to have (cut short to the limits).
+function collectDrift(body, scope, aligned, stand, { settled, unrooted }) {
+  const files = new Map();
+  const places = [];
+  let truncated = false;
+  for (const difference of aligned.differences) {
+    if (unrooted.has(difference.sourceRefId)) continue;
+    const base = stand.get(difference.sourceRefId);
+    const source = base?.own ?? scope.index.sources.get(difference.sourceRefId);
+    if (!source) continue;
+    const rel = driftRel(source);
+    const entry = driftEntry(files, rel, source, { base, deployed: settled.has(difference.sourceRefId) });
+    entry.places++;
+    if (entry.deployed) continue;
+    if (places.length >= DRIFT_PLACES) {
+      truncated = true;
+      continue;
+    }
+    const version = base ? base.text : source.text;
+    places.push({
+      rel,
+      change: difference.kind,
+      line: lineNumberAt(version, difference.region.start, source.region?.line ?? 1),
+      local: clipDrift(version.slice(difference.region.start, difference.region.end)),
+      served: clipDrift(body.slice(difference.served.start, difference.served.end)),
+      ...(difference.open ? { open: true } : {}),
+    });
+  }
+  return { files, places, truncated };
+}
+
+// Whether the outer tags of a file (as the ids name it) are found in the page: true, false, or undefined when no
+// coverage row says.
+function rootedState(aligned, ids) {
+  const rows = aligned.coverage.filter((row) => ids.includes(row.sourceRefId));
+  if (rows.some((row) => row.rooted)) return true;
+  if (rows.some((row) => row.rooted === false)) return false;
+  return undefined;
+}
+
+function alignmentSummary(alignment) {
+  if (alignment.failed) return { failed: alignment.failed };
+  return {
+    counts: alignment.counts,
+    coverage: alignment.coverage,
+    truncated: alignment.truncated,
+    // places where the page as laid over still is not what the local sources say
+    differences: alignment.differences?.length ?? 0,
+  };
+}
+
+// A hunk that changes lines holding Liquid code: laid over where only literal text or markup around the code changed.
+function prepareLogicHunk(oldCore, added, { where, place, baseText, otherLanguages }) {
+  const literal = prepareLiteralSegment(oldCore, added, baseText, otherLanguages);
+  if (literal) return { where, ...place, ...literal };
+  // The same Liquid code before and after: only markup around it changed. That is laid over by position wherever
+  // a page shows it between two tags of the file (html-rewriter #layLiteral); text the Liquid code prints into is
+  // the portal's to write.
+  const code = (lines) =>
+    liquidTokens(lines.map((line) => line.text).join('\n'))
+      .map((token) =>
+        lines
+          .map((line) => line.text)
+          .join('\n')
+          .slice(token.start, token.end),
+      )
+      .join('\u0000');
+  // A comment or capture body is not written where it stands: its lines keep the general answer.
+  // (Only the Liquid tokens of such a line are protected; a body is protected as a whole.)
+  const inPlace = (lines) =>
+    lines.every((line) => {
+      const covered = new Uint8Array(line.text.length);
+      for (const span of line.protected) covered.fill(1, Math.max(0, span.start), Math.min(line.text.length, span.end));
+      const tokens = new Uint8Array(line.text.length);
+      for (const token of liquidTokens(line.text)) tokens.fill(1, token.start, token.end);
+      return covered.every((flag, at) => !flag || tokens[at]);
+    });
+  if (inPlace(oldCore) && inPlace(added) && code(oldCore) === code(added))
+    return {
+      where,
+      error:
+        'the line holds Liquid code: its changed markup is laid over where a page shows it between two of its tags; text right beside what the Liquid code prints needs a deployment',
+    };
+  return {
+    where,
+    error:
+      'the change touches Liquid tags, a comment/capture body, or multiline/whitespace-controlled output; the portal has to render it',
+  };
+}
+
+// A text field (encoding 'html-text', a page title) stands in the page HTML-encoded, as Mirage's document shell writes
+// it into <title> (inferred: no hosted capture of a title holding markup). Its changes are matched and laid over in
+// that form.
+const TEXT_ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function renderedText(src, text) {
+  return src.encoding === 'html-text' && typeof text === 'string'
+    ? text.replace(/[&<>"']/g, (c) => TEXT_ENTITIES[c])
+    : text;
+}
+
 function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   const oldCore = baseLines.slice(hunk.aStart, hunk.aEnd);
   const added = newLines.slice(hunk.bStart, hunk.bEnd);
   const where = `line ${hunk.bStart + 1}`;
-  if (oldCore.some((l) => l.logic) || added.some((l) => l.logic)) {
-    const literal = prepareLiteralSegment(oldCore, added, baseText, otherLanguages);
-    if (literal) return { where, ...literal };
-    return {
-      where,
-      error:
-        'the change touches Liquid tags, a comment/capture body, or multiline/whitespace-controlled output; the portal has to render it',
-    };
-  }
+  // The changed lines' place in the baseline text (offsets of the text as committed), for telling the copies of a
+  // repeated line apart in a served page.
+  const place = {
+    baseStart: hunk.aStart < baseLines.length ? baseLines[hunk.aStart].sourceStart : Number.MAX_SAFE_INTEGER,
+    baseEnd: hunk.aEnd < baseLines.length ? baseLines[hunk.aEnd].sourceStart : Number.MAX_SAFE_INTEGER,
+  };
+  if (oldCore.some((l) => l.logic) || added.some((l) => l.logic))
+    return prepareLogicHunk(oldCore, added, { where, place, baseText, otherLanguages });
 
   let before = 0;
   let after = 0;
@@ -817,7 +1137,7 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
       error:
         'the literal anchor also occurs in another localized Value or language source; the portal language cannot be determined safely from this response',
     };
-  return { where, pattern, added, unique };
+  return { where, ...place, pattern, added, unique };
 }
 
 /** A single changed literal gap may share a line with unchanged server-rendered logic. */
@@ -916,7 +1236,7 @@ export class HtmlRewriter {
         model.inlineSources
           .filter(
             (src) =>
-              !(src.kind.startsWith('page-') && src.pageUrl == null) &&
+              !(isPageSource(src) && src.pageUrl == null) &&
               (src.mode === 'block' ? inline.has(src.kind) : markup.has(src.kind) && changed.has(src.file)),
           )
           .map((src) => src.file),
@@ -990,6 +1310,8 @@ export class HtmlRewriter {
     this.sourceStamps = prepared?.stamps ?? new Map();
     this.blockCache = new Map();
     this.prepared = prepared;
+    /** code component rows the page cannot preview (lense/pcf-resources.mjs needsDeploy), kept across refreshes */
+    this.deployments = () => [];
     this.refresh(prepared ? [] : undefined);
   }
 
@@ -1034,9 +1356,12 @@ export class HtmlRewriter {
     this.blocks = [];
     /** markup files with a prepared patch */
     this.patches = [];
+    /** every markup source that differs from the baseline, with the baseline's text: [{...src, baseText}] */
+    this.changedMarkup = [];
     /** changes that cannot be previewed locally: [{rel, reason}] */
     this.unsupported = model.deploymentChanges?.(this.baseline, changed) ?? [];
     this.#reportInactiveSources(model.inactiveSources, changed);
+    this.unsupported.push(...this.deployments());
     this.snippets = null;
 
     // in how many local scripts each line occurs: the more, the less it identifies one of them
@@ -1046,9 +1371,9 @@ export class HtmlRewriter {
     this.lineWeight = (line) => sourceLineWeight(frequency, weights, line);
 
     // the deployed version of a source; several sources can live in one file (enhanced format)
-    const baseOf = (src) => this.baselineReader(src);
+    const baseOf = (src) => renderedText(src, this.baselineReader(src));
     const unreadable = new Set();
-    const read = (src) => this.#readSourceForRefresh(src, unreadable);
+    const read = (src) => renderedText(src, this.#readSourceForRefresh(src, unreadable));
 
     const refreshState = {
       changed,
@@ -1120,7 +1445,7 @@ export class HtmlRewriter {
 
   /* NOSONAR: single-pass routine, splitting it would change shared state */ #refreshSource(src, state) {
     const { changed, inlineKinds, markupKinds, read, baseOf } = state;
-    if (src.kind.startsWith('page-') && src.pageUrl == null) {
+    if (isPageSource(src) && src.pageUrl == null) {
       // Only a local edit of such a source is a limitation worth reporting; an untouched one is
       // what the portal already serves. The model warns about the broken page hierarchy itself.
       if (changed.has(src.file) && !this.disabled.has(src.rel))
@@ -1145,6 +1470,15 @@ export class HtmlRewriter {
       this.#refreshBlockSource(src, isChanged, state);
       return;
     }
+    // What the baseline holds of a changed markup file, whether or not its change is laid over the page: the served
+    // page is compared with it to tell whether the baseline is what the portal has.
+    if (isChanged)
+      this.changedMarkup.push({
+        ...src,
+        baseText: baseOf(src),
+        // whether this file's change is laid over pages (its kind is enabled and the override is not paused)
+        overlay: markupKinds.has(src.kind) && !this.disabled.has(src.rel),
+      });
     if (markupKinds.has(src.kind) && isChanged && !this.disabled.has(src.rel)) {
       const text = read(src);
       if (text != null) this.#preparePatch(src, text, baseOf(src));
@@ -1258,7 +1592,7 @@ export class HtmlRewriter {
         ? []
         : this.model.inlineSources
             .filter((other) => other !== src && differentLocalizedVariants(src, other))
-            .map((other) => this.baselineReader(other))
+            .map((other) => renderedText(other, this.baselineReader(other)))
             .filter((value) => value != null)
             .map(normEol);
     const prepared = [];
@@ -1268,7 +1602,13 @@ export class HtmlRewriter {
       else prepared.push(p);
     }
     if (prepared.length)
-      this.patches.push({ ...src, hunks: prepared, contentRevision: createHash('sha256').update(text).digest('hex') });
+      this.patches.push({
+        ...src,
+        hunks: prepared,
+        contentRevision: createHash('sha256').update(text).digest('hex'),
+        // What the portal has of this file: where a change may be laid is decided against it.
+        baseText: base,
+      });
   }
 
   /** Local snippet value plus whether choosing a value would guess its language. */
@@ -1313,22 +1653,107 @@ export class HtmlRewriter {
    *   web template: only template changes are applied to those
    * @returns {{html: string, applied: Array<{kind:string, rel:string, action:string}>, notes: Array<{rel:string, reason:string}>, matched: Array<object>}}
    */
-  rewrite(body, urlPath, { html = true, isDocument = false, sourceIndex = null } = {}) {
+  rewrite(body, urlPath, { html = true, isDocument = false, sourceIndex = null, provenance: named = true } = {}) {
     const applied = [];
     const notes = [];
     /** every local block source recognised in the page, changed or not: [{kind, rel, score, identical, online}] */
     const matched = [];
-    const provenance = sourceIndex && isDocument && html ? { index: sourceIndex, intervals: [] } : null;
-    let out = html ? this.#rewriteBlocks(body, urlPath, applied, matched, notes, provenance) : body;
-    out = this.#applyPatches(out, applied, notes, html, urlPath, provenance);
+    // `named` false: the export is asked only where a local change may be laid; no element is marked.
+    const provenance = named && sourceIndex && isDocument && html ? { index: sourceIndex, intervals: [] } : null;
+    /** page fields with local text that the served document does not carry: [{kind, rel, file}] */
+    const absent = [];
+    // The export's own view of the document, when the session has one: which script and style elements a markup
+    // source wrote, and (for a changed markup file) whether a place in the document is that file's or another's.
+    const scope = sourceIndex && html ? { index: sourceIndex, route: pageKey(urlPath, this.model) } : null;
+    // The response as the portal sent it against what the baseline says the portal has.
+    const served = scope ? this.#servedState(body, scope) : null;
+    const markupBlocks = served && this.blocks.length ? served.markupBlocks : null;
+    let out = html
+      ? this.#rewriteBlocks(body, urlPath, applied, matched, notes, provenance, { markupBlocks, absent })
+      : body;
+    out = this.#applyPatches(
+      out,
+      { applied, notes, provenance },
+      { isHtml: html, urlPath, scope, deployed: served?.deployed },
+    );
+    if (served?.drift.files.length) this.#driftNotes(served.drift.files, scope, notes);
+    // Markup a changed file spells out that the page still shows differently: laid over where it stands.
+    if (scope && this.changedMarkup.length) out = this.#layLiteral(out, scope, applied, notes, provenance);
+    // What the document holds beyond the local changes laid over it: every other tag is matched against the export,
+    // so an element the portal rendered from an unchanged template is identified as well.
+    const alignment = provenance ? this.#alignProvenance(out, provenance, sourceIndex, urlPath) : null;
     const finalized = provenance
       ? finalizePortalProvenance({
           fragment: { text: out, intervals: provenance.intervals },
           index: sourceIndex,
           channel: 'lense-applied-response',
+          tagBindings: alignment?.byStart ?? null,
         })
       : { html: out };
-    return { ...finalized, applied, notes, matched };
+    return {
+      ...finalized,
+      applied,
+      notes,
+      matched,
+      absent,
+      ...(served ? { drift: served.drift } : {}),
+      ...(alignment ? { alignment: alignmentSummary(alignment) } : {}),
+    };
+  }
+
+  // The notes that say how the served files compare with the baseline (the drift a response showed).
+  #driftNotes(driftFiles, scope, notes) {
+    const patched = new Map();
+    for (const patch of this.patches) {
+      const own = this.#indexSource(scope.index, patch);
+      if (own) patched.set(own.id, patch.rel);
+    }
+    for (const file of driftFiles)
+      if (file.deployed)
+        notes.push({
+          rel: patched.get(file.sourceRefId) ?? file.rel,
+          reason:
+            'the portal already serves this version of the file where the page shows it: those changes are not laid over a second time',
+        });
+      else if (patched.has(file.sourceRefId))
+        notes.push({
+          rel: patched.get(file.sourceRefId),
+          reason:
+            'the portal serves another version of this file than the comparison baseline: a local change next to a place that differs may not be laid over',
+        });
+  }
+
+  // What the document holds beyond the local changes laid over it: the tags matched against the export.
+  #alignProvenance(out, provenance, sourceIndex, urlPath) {
+    let alignment;
+    const wrappers = provenance.intervals.filter((interval) => interval.mapping === 'wrapper');
+    provenance.intervals = provenance.intervals.filter((interval) => interval.mapping !== 'wrapper');
+    try {
+      alignment = alignDocument(out, sourceIndex, pageKey(urlPath, this.model));
+    } catch (error) {
+      alignment = { failed: String(error?.message ?? error).split(/\r?\n/)[0], byStart: new Map() };
+    }
+    // An inline block matched to a field: its element was written by the portal to carry that field.
+    // Script text a markup source holds literally maps to that source line for line.
+    for (const interval of alignment.scriptIntervals ?? [])
+      if (
+        !provenance.intervals.some(
+          (existing) =>
+            existing.start < interval.end && existing.end > interval.start && existing.mapping === 'literal',
+        )
+      )
+        provenance.intervals.push(interval);
+    for (const wrapper of wrappers)
+      alignment.byStart.set(wrapper.start, {
+        start: wrapper.start,
+        end: wrapper.end,
+        tag: wrapper.tag,
+        mapping: 'generated',
+        sourceRefId: wrapper.sourceRefId,
+        region: wrapper.sourceSpan,
+        contexts: alignment.byStart.get(wrapper.start)?.contexts ?? [],
+      });
+    return alignment;
   }
 
   #provenanceSource(src, index, text) {
@@ -1418,32 +1843,70 @@ export class HtmlRewriter {
     const replace = !identical && src.active;
     // A script replaced by the local file can be debugged in that file, but debuggers do not
     // follow source maps of inline scripts. Modules stay inline because moving their URL changes imports.
-    const external =
-      this.sourceMaps &&
-      !src.extract &&
-      block.tag === 'script' &&
-      canExternalize(src, scriptType(attributes(m[2]))) &&
-      (identical || src.active) &&
-      src.text.trim() !== '';
-    if (!replace && !external) return null;
+    const external = this.sourceMaps && staysExternal(block, src, identical);
+    // The element the portal wrote for this field (a page's custom JavaScript, a form's, a list's): bound to that
+    // field whether its text is replaced or not.
+    const source = this.#provenanceSource(src, provenance?.index, src.text);
+    const wrapper = (openingLength) => wrapperIntervals(source, block.tag, src, openingLength);
+    if (!replace && !external) {
+      if (!source) return null;
+      // Nothing is replaced: the served text stays. An identical one is the local file's text line for line, so
+      // code it runs can be followed to the file.
+      return {
+        start: m.index,
+        end: m.index + m[0].length,
+        text: m[0],
+        intervals: [...wrapper(m.opening.length), ...(identical ? this.#servedBlockIntervals(m, src, source) : [])],
+      };
+    }
     let replacement;
-    let intervals = [];
+    let intervals;
     if (external) {
-      // Retaining async/defer/integrity after adding src changes execution or blocks the local script.
-      const attrs = m[2].replace(
-        /* NOSONAR */ /(?<!\s)\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
-        (whole, name) =>
-          // NOSONAR: preserve the exact grammar and captured values
-          /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
-      );
-      replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
+      replacement = externalScriptTag(m, src);
+      intervals = wrapper(replacement.indexOf('>') + 1);
     } else {
       const inline = this.#inlineBlockReplacement(block, src, replace, provenance, notes);
       if (!inline) return null;
       ({ replacement, intervals } = inline);
+      intervals = [...wrapper(m.opening.length), ...intervals];
     }
     if (replace) applied.push({ kind: src.kind, rel: src.rel, action: 'replaced inline block' });
     return { start: m.index, end: m.index + m[0].length, text: replacement, intervals };
+  }
+
+  // Lines of a served block that equal the lines of the local file, in order: each maps to its place in the file.
+  #servedBlockIntervals(m, src, source) {
+    const normalized = normalise(src.text);
+    const sourceLines = normalized.text.split('\n');
+    const intervals = [];
+    let sourceAt = 0;
+    let line = 0;
+    while (line < sourceLines.length && !sourceLines[line].trim()) sourceAt += sourceLines[line++].length + 1;
+    let generated = m.opening.length;
+    let started = false;
+    for (const part of m[3].split(/(\r\n|\n|\r)/)) {
+      if (/^(?:\r\n|\n|\r)$/.test(part)) {
+        generated += part.length;
+        continue;
+      }
+      if (!started && !part.trim()) {
+        generated += part.length;
+        continue;
+      }
+      started = true;
+      if (line >= sourceLines.length || sourceLines[line] !== part) break;
+      if (part)
+        intervals.push({
+          start: generated,
+          end: generated + part.length,
+          sourceRefId: source.id,
+          sourceSpan: { start: normalized.original(sourceAt), end: normalized.original(sourceAt + part.length) },
+          mapping: 'literal',
+        });
+      generated += part.length;
+      sourceAt += sourceLines[line++].length + 1;
+    }
+    return intervals;
   }
 
   #applyBlockReplacements(html, found, context) {
@@ -1482,27 +1945,50 @@ export class HtmlRewriter {
       return out;
     }
     let element;
-    let opening = '<style type="text/css">';
+    // A strict CSP admits an inline style or a script only with the nonce of the page.
+    const nonce = pageScriptNonce(out);
+    const nonceAttribute = nonce ? ` nonce="${nonce}"` : '';
+    let opening = `<style type="text/css"${nonceAttribute}>`;
     if (src.tag === 'style') element = `${opening}${src.text}</style>\n`;
-    else if (external) element = `<script type="text/javascript" src="${inlineScriptUrl(src.rel)}"></script>\n`;
-    else {
+    else if (external) {
+      opening = `<script type="text/javascript"${nonceAttribute} src="${inlineScriptUrl(src.rel)}">`;
+      element = `${opening}</script>\n`;
+    } else {
       opening = pageScriptOpening(out);
       element = `${opening}\n${src.text}\n</script>\n`;
     }
     const anchor = closingElementOffset(out, src.tag === 'style' ? 'head' : 'body');
-    if (anchor < 0) return out;
+    if (anchor < 0) {
+      notes.push({
+        rel: src.rel,
+        reason: `the page has no closing ${src.tag === 'style' ? 'head' : 'body'} tag to put the new ${src.tag} before; deploy it to see it`,
+      });
+      return out;
+    }
     if (provenance) {
-      const source = !external ? this.#provenanceSource(src, provenance.index, src.text) : null;
+      const source = this.#provenanceSource(src, provenance.index, src.text);
       const start = opening.length + (src.tag === 'style' ? 0 : '\n'.length);
       const intervals = source
         ? [
             {
-              start,
-              end: start + src.text.length,
+              start: 0,
+              end: opening.length,
+              mapping: 'wrapper',
+              tag: src.tag,
               sourceRefId: source.id,
               sourceSpan: { start: 0, end: src.text.length },
-              mapping: 'literal',
             },
+            ...(external
+              ? []
+              : [
+                  {
+                    start,
+                    end: start + src.text.length,
+                    sourceRefId: source.id,
+                    sourceSpan: { start: 0, end: src.text.length },
+                    mapping: 'literal',
+                  },
+                ]),
           ]
         : [];
       provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, [
@@ -1527,17 +2013,34 @@ export class HtmlRewriter {
     return out;
   }
 
-  #rewriteBlocks(html, urlPath, applied, matched, notes, provenance) {
+  #rewriteBlocks(html, urlPath, applied, matched, notes, provenance, { markupBlocks = null, absent = null } = {}) {
     if (!this.blocks.length) return html;
     const docKey = pageKey(urlPath, this.model);
     const minSim = this.site.inline?.minSimilarity ?? 0.5;
-    const candidates = this.blocks.filter((b) => !b.pageKey || b.pageKey === docKey);
+    const candidates = sourcesForDocumentLanguage(
+      this.blocks.filter((b) => !b.pageKey || b.pageKey === docKey),
+      html,
+      urlPath,
+      this.model,
+    );
     if (!candidates.length) return html;
-    const { found, pairs } = collectBlockPairs(html, candidates, docKey, minSim, this.lineWeight);
+    const { found, pairs } = collectBlockPairs(html, candidates, docKey, minSim, this.lineWeight, markupBlocks);
     const { claimed, identity } = claimBlockPairs(pairs, notes);
     let out = this.#applyBlockReplacements(html, found, { applied, matched, notes, provenance });
     if (this.site.inline?.injectMissingPageBlocks !== false)
       out = this.#injectPageBlocks(out, candidates, docKey, claimed, identity, { applied, notes, provenance });
+    for (const src of candidates) {
+      if (!src.text.trim() || claimed.has(identity(src))) continue;
+      // Custom code of a form, list or step that exists only locally: the portal does not print it yet, and Lense
+      // cannot tell where in the page it would stand. Said on a page that is configured to show the component.
+      if (!src.pageKey && src.isNew && src.active && src.usedKeys.has(docKey))
+        notes.push({
+          rel: src.rel,
+          reason: `new ${src.kind}: the portal does not print it yet, deploy it to run it on this page`,
+        });
+      // A page field with local text the served page does not carry: not deployed, or not printed by the template.
+      else if (src.pageKey && !src.isNew && absent) absent.push({ kind: src.kind, rel: src.rel, file: src.file });
+    }
     return out;
   }
 
@@ -1608,17 +2111,23 @@ export class HtmlRewriter {
     return { replacement, ...state };
   }
 
-  #patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes) {
+  #patchHunkEdits(patch, hunk, { text, original, eol }, sourceRef, notes, locate = null) {
     const all = findMatches(hunk.pattern, text);
     if (!all.length) return [];
-    const found = all.filter((match) => standsAlone(hunk.pattern, text, match));
+    let found = all.filter((match) => standsAlone(hunk.pattern, text, match));
     if (!found.length) return [];
     if ((!hunk.unique || hunk.literalSegment) && found.length > 1) {
-      notes.push({
-        rel: patch.rel,
-        reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied`,
-      });
-      return [];
+      // The text stands in the page more than once. Where the export's view of the page shows which of those places
+      // this line of this file wrote, the change goes there; otherwise nowhere.
+      const placed = locate ? locate(found, hunk, original) : [];
+      if (!placed.length) {
+        notes.push({
+          rel: patch.rel,
+          reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied`,
+        });
+        return [];
+      }
+      found = placed;
     }
     const edits = [];
     for (const match of found) {
@@ -1673,7 +2182,326 @@ export class HtmlRewriter {
     return next;
   }
 
-  #applyPatch(out, patch, applied, notes, isHtml, urlPath, provenance) {
+  /**
+   * A changed line is laid over the page only where this file wrote it. The same line can stand in another template
+   * or snippet that is not changed: there the served text is that other source's, and patching it would show a
+   * change the deployment would not make. The document is aligned with the export and with this file's baseline; a
+   * place that another source explains (alone, or as well as this file) keeps the served text.
+   */
+  /**
+   * The served document aligned with the export and with the baseline of a changed file: which tag of the document
+   * is which tag of which source. Null when the file is not one field of the export's index.
+   */
+  #patchView(out, patch, scope) {
+    const own = this.#indexSource(scope.index, patch);
+    if (!own || typeof patch.baseText !== 'string') return null;
+    const baseline = 'baseline:' + own.id;
+    let aligned;
+    try {
+      aligned = alignDocument(out, scope.index, scope.route, {
+        extra: [{ id: baseline, text: patch.baseText, like: own.id }],
+      });
+    } catch {
+      return null;
+    }
+    return {
+      aligned,
+      baseline,
+      starts: [...aligned.byStart.keys()].sort((a, b) => a - b),
+      mine: (id) => id === own.id || id === baseline,
+      // false: tags of the file are found, none of them one of its outer tags (the file is not shown to render here)
+      rooted: rootedState(aligned, [own.id, baseline]),
+    };
+  }
+
+  /**
+   * Lays literal markup of the changed files over the page by position. A line change is laid over where its
+   * surrounding text is found (the patches); that fails for a change inside one long line with Liquid code elsewhere
+   * in it, and where the portal serves another version than the baseline. Here the page, with the patches applied, is
+   * aligned with the working copies: between two tags of a changed file found in the page, with no Liquid code in
+   * between, the page must hold exactly what the file holds. Where it does not, the file's text goes there. A stretch
+   * that holds Liquid code is left to the portal.
+   */
+  #layLiteral(out, scope, applied, notes, provenance) {
+    const targets = new Map();
+    for (const changed of this.changedMarkup) {
+      if (!changed.overlay) continue;
+      const own = this.#indexSource(scope.index, changed);
+      if (own && typeof own.text === 'string') targets.set(own.id, { changed, own });
+    }
+    if (!targets.size) return out;
+    const edits = this.#literalEdits(out, scope, targets);
+    if (!edits.length) return out;
+    edits.sort((a, b) => b.start - a.start || b.end - a.end);
+    const { accepted, counts } = acceptLiteralEdits(edits, out.length, notes);
+    let next = out;
+    for (const change of accepted) next = next.slice(0, change.start) + change.text + next.slice(change.end);
+    if (provenance)
+      provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, accepted).intervals;
+    notePatchedCounts(counts, applied);
+    return next;
+  }
+
+  // The stretches of the page that differ from a changed file and that its text is laid over (empty: none).
+  #literalEdits(out, scope, targets) {
+    let aligned;
+    try {
+      aligned = alignDocument(out, scope.index, scope.route);
+    } catch {
+      return [];
+    }
+    const wanted = aligned.differences.filter((difference) => targets.has(difference.sourceRefId) && !difference.open);
+    if (!wanted.length) return [];
+    // A file whose outer markup is not on the page is not shown to be rendered here: lines of it that stand inside
+    // other markup (the portal's own, or data another template prints) are not its place.
+    const unrooted = new Set(aligned.coverage.filter((row) => row.rooted === false).map((row) => row.sourceRefId));
+    // Only the user's own change is laid over. Where the page differs from the baseline as well, the portal has
+    // another version of that place: neither the baseline's nor the working copy's text is the page's there.
+    let against;
+    try {
+      against = this.#servedAlignment(out, scope).aligned.differences;
+    } catch {
+      return [];
+    }
+    const edits = [];
+    for (const difference of wanted) {
+      if (unrooted.has(difference.sourceRefId) || servedElsewhere(against, difference)) continue;
+      const { own, changed } = targets.get(difference.sourceRefId);
+      const text = own.text.slice(difference.region.start, difference.region.end);
+      // Liquid code inside the stretch (a tag with an expression in it): only the portal can write what it prints.
+      if (hasLiquid(text)) continue;
+      edits.push(literalEdit(difference, own, changed, text));
+    }
+    return edits;
+  }
+
+  /** The source of the export's index that is this markup file (or this field of a record file); null unless one is. */
+  #indexSource(index, src) {
+    let byFile = this.#indexFiles.get(index);
+    if (!byFile) {
+      byFile = new Map();
+      for (const source of index.sources.values()) {
+        if (!source.file) continue;
+        const key = source.file.toLowerCase();
+        if (!byFile.has(key)) byFile.set(key, []);
+        byFile.get(key).push(source);
+      }
+      this.#indexFiles.set(index, byFile);
+    }
+    const field =
+      src.field?.replace(/^(?:adx|mspp)_/, '') ??
+      { 'web-template': 'source', 'content-snippet': 'value', 'page-copy': 'copy', 'page-summary': 'summary' }[
+        src.kind
+      ];
+    const own = (byFile.get(String(src.file ?? '').toLowerCase()) ?? []).filter(
+      (source) => source.fieldPath?.at(-1) === field && (src.lcid === undefined || source.lcid === src.lcid),
+    );
+    return own.length === 1 ? own[0] : null;
+  }
+
+  #indexFiles = new WeakMap();
+
+  /**
+   * Aligns a response as the portal sent it with what the portal is taken to have: every unchanged file as it is, and
+   * every changed file as the baseline has it, or as `instead` says (by index source id; null leaves the file out).
+   */
+  #servedAlignment(body, scope, instead = null) {
+    const extra = [];
+    const exclude = [];
+    const stand = new Map();
+    for (const changed of this.changedMarkup) {
+      const own = this.#indexSource(scope.index, changed);
+      if (!own || instead?.has(own.id)) continue;
+      // The working copy of a changed file is not what the portal has: only its baseline may explain the response.
+      exclude.push(own.id);
+      if (typeof changed.baseText !== 'string') continue;
+      const id = 'baseline:' + own.id;
+      extra.push({ id, text: changed.baseText, like: own.id, name: own.name });
+      stand.set(id, { own, text: changed.baseText });
+    }
+    for (const [id, other] of instead ?? []) {
+      const own = scope.index.sources.get(id);
+      if (!own) continue;
+      exclude.push(id);
+      if (typeof other !== 'string') continue;
+      extra.push({ id: 'version:' + id, text: other, like: id, name: own.name });
+      stand.set('version:' + id, { own, text: other });
+    }
+    return { aligned: alignDocument(body, scope.index, scope.route, { extra, exclude }), stand };
+  }
+
+  /**
+   * Whether a response as the portal sent it is what the given version of one source renders: the response holds
+   * tags of that version and differs from it nowhere. `text` null asks about the working copy.
+   * @returns {{fits: boolean, matched: number, places: number}|null} null when the response cannot be compared
+   */
+  servedFits(body, urlPath, sourceIndex, sourceRefId, text = null) {
+    const scope = { index: sourceIndex, route: pageKey(urlPath, this.model) };
+    const source = sourceIndex.sources.get(sourceRefId);
+    if (!source) return null;
+    let aligned;
+    try {
+      ({ aligned } = this.#servedAlignment(body, scope, new Map([[sourceRefId, text ?? source.text]])));
+    } catch {
+      return null;
+    }
+    const id = 'version:' + sourceRefId;
+    const places = aligned.differences.filter((difference) => difference.sourceRefId === id).length;
+    const matched = aligned.coverage.find((row) => row.sourceRefId === id)?.matched ?? 0;
+    return { fits: matched > 0 && places === 0, matched, places };
+  }
+
+  /** The text one version of a file gives the source `sourceRefId` names; `readRaw(file)` reads that version. */
+  versionText(sourceIndex, sourceRefId, readRaw) {
+    const source = sourceIndex.sources.get(sourceRefId);
+    if (!source?.file) return null;
+    const src = this.model.inlineSources.find(
+      (candidate) =>
+        candidate.mode !== 'block' &&
+        candidate.file?.toLowerCase() === source.file.toLowerCase() &&
+        this.#indexSource(sourceIndex, candidate)?.id === sourceRefId,
+    );
+    if (!src) return null;
+    try {
+      return createSourceReader(null, { readRaw })(src);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The response as the portal sent it, against what the comparison baseline says the portal has: an unchanged file
+   * as it is, a changed file as the baseline has it. Where the two disagree in markup a file spells out, the portal
+   * rendered another version of that file than the baseline: the checkout is ahead of what is deployed, or behind it.
+   * A changed file whose working copy is what the portal rendered is already deployed.
+   * @returns {{markupBlocks: Set<number>|null, deployed: Set<string>, drift: {files: object[], places: object[],
+   *   seen: string[], truncated: boolean}}} `markupBlocks`: script and style elements a markup source wrote.
+   *   `deployed`: files (rel) whose working copy the portal already serves. `drift.places`: each place with its
+   *   file, the line in the compared version of the file, and both texts cut short.
+   */
+  #servedState(body, scope) {
+    const none = {
+      markupBlocks: null,
+      deployed: new Map(),
+      drift: { files: [], places: [], seen: [], truncated: false },
+    };
+    let aligned;
+    let stand;
+    try {
+      ({ aligned, stand } = this.#servedAlignment(body, scope));
+    } catch {
+      return none;
+    }
+    const markupBlocks = new Set();
+    for (const binding of aligned.byStart.values())
+      if (binding.mapping === 'aligned' && (binding.tag === 'script' || binding.tag === 'style'))
+        markupBlocks.add(binding.start);
+    // A changed file the baseline does not explain: is the working copy what the portal rendered?
+    // By index source id: the places of the baseline's text (offsets) that the page shows as the working copy has
+    // them. Only a change at such a place is known to be served already; a change the page does not show compared
+    // (beyond the last tag found, behind Liquid code) is laid over as usual.
+    const deployed = new Map();
+    const settled = new Set();
+    // A source whose outer markup is not on the page is not shown to be rendered here: no other version is claimed.
+    const unrooted = new Set(aligned.coverage.filter((row) => row.rooted === false).map((row) => row.sourceRefId));
+    for (const id of new Set(aligned.differences.map((difference) => difference.sourceRefId))) {
+      const own = stand.get(id)?.own;
+      if (!own || unrooted.has(id)) continue;
+      const working = this.servedFits(body, scope.route, scope.index, own.id);
+      if (!working?.fits) continue;
+      deployed.set(
+        own.id,
+        aligned.differences
+          .filter((difference) => difference.sourceRefId === id)
+          .map((difference) => difference.region),
+      );
+      settled.add(id);
+    }
+    const { files, places, truncated } = collectDrift(body, scope, aligned, stand, { settled, unrooted });
+    const seen = [];
+    for (const row of aligned.coverage ?? []) {
+      const source = stand.get(row.sourceRefId)?.own ?? scope.index.sources.get(row.sourceRefId);
+      if (source && seen.length < DRIFT_SEEN) seen.push(driftRel(source));
+    }
+    return { markupBlocks, deployed, drift: { files: [...files.values()], places, seen, truncated } };
+  }
+
+  /**
+   * Of several places where a changed line's text stands in the page, the ones this line wrote. A place that holds
+   * tags is this line's when those tags are the baseline's tags of exactly these lines. A place of text only is this
+   * line's when the tag before it is the last tag the baseline has before these lines.
+   */
+  #placedMatches(view, matches, hunk, original) {
+    if (!view) return [];
+    const { aligned, baseline, starts } = view;
+    const ofBaseline = (start) => {
+      const binding = aligned.byStart.get(start);
+      // A tag the baseline holds in several identical places, shown fewer times than that, names no line.
+      return binding.mapping === 'aligned' && binding.sourceRefId === baseline && !binding.oneOf ? binding : null;
+    };
+    let closest = -1;
+    for (const start of starts) {
+      const binding = ofBaseline(start);
+      if (binding && binding.region.start < hunk.baseStart) closest = Math.max(closest, binding.region.start);
+    }
+    return matches.filter((match) => {
+      const from = original(match.core);
+      const to = original(match.after);
+      const inside = starts.filter((start) => start >= from && start < to).map(ofBaseline);
+      if (inside.length)
+        return inside.every(
+          (binding) => binding && binding.region.start >= hunk.baseStart && binding.region.start < hunk.baseEnd,
+        );
+      let before = null;
+      for (const start of starts) {
+        if (start >= from) break;
+        before = aligned.byStart.get(start);
+      }
+      return (
+        closest >= 0 &&
+        before?.mapping === 'aligned' &&
+        before.sourceRefId === baseline &&
+        before.region.start === closest
+      );
+    });
+  }
+
+  #scopedEdits(view, patch, edits, scope, notes) {
+    if (!view) return edits;
+    const { aligned, starts, mine } = view;
+    // Inner lines of the file inside markup that is not the file's (the portal's own, data another template prints):
+    // the file is not what rendered them.
+    if (view.rooted === false) return [];
+    // A page that shows nothing of this file has no place for its change: the look-alike text of another source is
+    // left alone without a word. A page that shows the file is told where a change was held back.
+    const present = [...aligned.byStart.values()].some(
+      (binding) => binding.mapping === 'aligned' && mine(binding.sourceRefId),
+    );
+    const kept = [];
+    for (const edit of edits) {
+      const foreign = editBindings(edit, starts, aligned).find(
+        (binding) =>
+          (binding.mapping === 'aligned' && !mine(binding.sourceRefId)) ||
+          (binding.mapping === 'conflict' && binding.sourceRefIds.some(mine) && !binding.sourceRefIds.every(mine)),
+      );
+      if (!foreign) {
+        kept.push(edit);
+        continue;
+      }
+      if (!present) continue;
+      const other = (foreign.sourceRefIds ?? [foreign.sourceRefId]).find((id) => !mine(id));
+      const name = scope.index.sources.get(other)?.name;
+      notes.push({
+        rel: patch.rel,
+        reason: `${edit.where}: this text is written here by ${name ? '"' + name + '"' : 'another source'}${foreign.mapping === 'conflict' ? ' as well' : ''}, change not applied`,
+      });
+    }
+    return kept;
+  }
+
+  // `record` is where the result is written ({applied, notes, provenance}); `page` is the response being rewritten
+  // ({isHtml, urlPath, scope, deployed}).
+  #applyPatch(out, patch, { applied, notes, provenance }, { isHtml, urlPath, scope = null }) {
     const sourceRef = this.#patchSourceReference(patch, provenance);
     if (!isHtml && patch.kind !== 'web-template') return out;
     if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) return out;
@@ -1682,16 +2510,43 @@ export class HtmlRewriter {
     const { text, original, crlf } = normalise(out);
     const eol = crlf ? '\r\n' : '\n';
     const edits = [];
+    // The export's view of this document, worked out once and only when a hunk or the scoping needs it.
+    let view;
+    const viewOf = () => {
+      if (view === undefined) view = scope && isHtml ? this.#patchView(out, patch, scope) : null;
+      return view;
+    };
+    const locate = scope && isHtml ? (matches, hunk, at) => this.#placedMatches(viewOf(), matches, hunk, at) : null;
     for (const hunk of patch.hunks) {
-      const hunkEdits = this.#patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes);
+      const hunkEdits = this.#patchHunkEdits(patch, hunk, { text, original, eol }, sourceRef, notes, locate);
       for (const edit of hunkEdits) edits.push(edit);
     }
-    return this.#applyPatchEdits(out, patch, edits, applied, notes, provenance);
+    const scoped = scope && isHtml && edits.length ? this.#scopedEdits(viewOf(), patch, edits, scope, notes) : edits;
+    return this.#applyPatchEdits(out, patch, scoped, applied, notes, provenance);
   }
 
-  #applyPatches(body, applied, notes, isHtml, urlPath, provenance) {
+  #applyPatches(body, record, page) {
+    const { scope = null, deployed = null } = page;
     let out = body;
-    for (const patch of this.patches) out = this.#applyPatch(out, patch, applied, notes, isHtml, urlPath, provenance);
+    for (const patch of this.patches) {
+      let current = patch;
+      const places = deployed?.size && scope ? deployed.get(this.#indexSource(scope.index, patch)?.id) : null;
+      if (places?.length && typeof patch.baseText === 'string') {
+        // The portal rendered these places from the working copy: laying a change over one would make it twice.
+        // The lines of each place, with the line break after them (where an added line would go).
+        const lines = places.map((place) => {
+          const from = patch.baseText.lastIndexOf('\n', Math.max(0, place.start - 1)) + 1;
+          const end = patch.baseText.indexOf('\n', place.end);
+          return [from, end < 0 ? patch.baseText.length : end + 1];
+        });
+        const served = (hunk) =>
+          hunk.baseStart !== undefined && lines.some(([from, to]) => from <= hunk.baseEnd && hunk.baseStart <= to);
+        const hunks = patch.hunks.filter((hunk) => !served(hunk));
+        if (!hunks.length) continue;
+        if (hunks.length !== patch.hunks.length) current = { ...patch, hunks };
+      }
+      out = this.#applyPatch(out, current, record, page);
+    }
     return out;
   }
 }

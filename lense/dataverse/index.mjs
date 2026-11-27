@@ -1,7 +1,12 @@
 export { DataverseClient, connectedClient } from './client.mjs';
 export { loadConnection, publicConnection, registerApplication, connectExistingApplication } from './connection.mjs';
 export { saveProtectedState, loadProtectedState } from './protected-state.mjs';
-export { readPowerPagesSites, readPowerPagesSite, setPowerPagesSiteVisibility } from './power-pages.mjs';
+export {
+  readPowerPagesSites,
+  readPowerPagesSite,
+  readPowerPagesEdge,
+  setPowerPagesSiteVisibility,
+} from './power-pages.mjs';
 export { readManifest, validateManifest, compileManifest } from './manifest.mjs';
 export {
   planManifest,

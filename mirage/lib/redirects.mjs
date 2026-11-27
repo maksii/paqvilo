@@ -67,13 +67,13 @@ export const loginPath = (portal) => signInPath(portal).path;
 
 /**
  * Attach a site's observed configuration (lib/project-config.mjs observedConfig) to an
- * imported portal as portal.observed. For loginPath an exported LoginPath setting wins
- * and a differing observation is reported.
+ * imported portal without annotating the cached export shared by other runtimes.
+ * For loginPath an exported LoginPath setting wins and a differing observation is reported.
  */
 export function applyObserved(portal, observed) {
   if (!observed || !Object.keys(observed).some((key) => key !== 'evidence')) return portal;
-  portal.observed = { ...observed };
-  if (!observed.loginPath) return portal;
+  const applied = { ...portal, observed: { ...observed } };
+  if (!observed.loginPath) return applied;
   const configured = String(siteSetting(portal, LOGIN_PATH_SETTING) ?? '').trim();
   let diagnostic = null;
   if (!sitePath(configured))
@@ -91,11 +91,8 @@ export function applyObserved(portal, observed) {
       evidence: observed.evidence,
       message: `The export sets ${LOGIN_PATH_SETTING} to ${configured}; the observed sign-in path ${observed.loginPath} (evidence: ${observed.evidence}) is not used.`,
     };
-  if (diagnostic) {
-    portal.diagnostics ??= [];
-    portal.diagnostics.push(diagnostic);
-  }
-  return portal;
+  if (diagnostic) applied.diagnostics = [...(portal.diagnostics ?? []), diagnostic];
+  return applied;
 }
 
 /**
@@ -293,6 +290,29 @@ function historyMatch(portal, url) {
 }
 
 /**
+ * The platform's robots.txt for a request no exported page or web file answers (any case, any query). Hosted session F3
+ * (two runs, private site): 200 text/plain, `private, max-age=3600`, an inline disposition and exactly the 26 bytes
+ * `User-agent: *\r\nDisallow: /`. Only the private-site body was captured, so a site observed as public, or without the
+ * observation, keeps the Page Not Found answer. sitemap.xml has no platform answer (404).
+ */
+export function platformRobotsResponse(portal, url, now = Date.now()) {
+  if (url.pathname.toLowerCase() !== '/robots.txt' || portal.observed?.siteVisibility !== 'private') return null;
+  const body = Buffer.from('User-agent: *\r\nDisallow: /', 'utf8');
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'text/plain',
+      'content-disposition': "inline;filename*=UTF-8''robots.txt",
+      'cache-control': 'private, max-age=3600',
+      expires: new Date(now + 3600 * 1000).toUTCString(),
+      vary: 'Accept-Encoding',
+      'content-length': body.byteLength,
+    },
+    body,
+  };
+}
+
+/**
  * Decide the response for a request that no exported page or web file resolves.
  * `readable(page)` reports whether the current persona may read a page.
  */
@@ -325,7 +345,7 @@ export function resolveUnmatchedRoute(portal, url, { readable, urlHistory = fals
  * and query, RFC 3986 escaped> with the "Access Denied" page as the response body; signed-in visitors receive the "Access Denied" site-marker page with 403
  * (else Page Not Found with 404).
  */
-export function deniedPageRoute(portal, url, identity, access = {}, { origin = '' } = {}) {
+export function deniedPageRoute(portal, url, identity, access = {}, { origin = '', languageCode, returnUrl } = {}) {
   if (access.status === 404) {
     const notFound = servicePages(portal).notFound;
     return notFound
@@ -335,11 +355,11 @@ export function deniedPageRoute(portal, url, identity, access = {}, { origin = '
   const authenticated = Boolean(identity?.contactId ?? identity?.id);
   const { accessDenied, notFound } = servicePages(portal);
   if (!authenticated) {
-    const code = portal.language?.code ?? urlLanguages(portal)[0]?.code;
+    const code = languageCode ?? portal.language?.code ?? urlLanguages(portal)[0]?.code;
     return {
       kind: 'redirect',
       status: 302,
-      location: `${origin}${code ? '/' + code : ''}${loginPath(portal)}?ReturnUrl=${escapeDataString(url.pathname + url.search)}`,
+      location: `${origin}${code ? '/' + code : ''}${loginPath(portal)}?ReturnUrl=${escapeDataString(returnUrl ?? url.pathname + url.search)}`,
       source: 'sign-in',
       code: access.code,
       ...(accessDenied ? { page: accessDenied } : {}),

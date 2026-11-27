@@ -1,4 +1,4 @@
-import { redactUrlQuery } from './query-redaction.mjs';
+import { redactUrlQuery, redactUrlUserinfo } from './query-redaction.mjs';
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
 import { xmlAttributes } from './xml-text.mjs';
@@ -10,6 +10,7 @@ import { renderFormLabel } from './form-labels.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
 import { mountRichTextEditors } from './richtext-client.mjs';
+import { customTable, notesRichTextEnabled, PORTAL_COMMENT_TABLE } from './portal-timeline.mjs';
 import { clientLocalSelfOriginRuntime } from './local-self-origin.mjs';
 import { clientDateControlsRuntime } from './date-controls.mjs';
 import {
@@ -23,10 +24,12 @@ import {
   formCells,
   metaFilterGroups,
   executeGridQuery,
+  readDenied,
   gridMasked,
   settingsJson,
 } from './native-services.mjs';
-import { modernListFallback, modernListUnservedActions } from './platform-changes.mjs';
+import { gridItemActions } from './grid-item-actions.mjs';
+import { modernListIds, modernListUnservedActions } from './platform-changes.mjs';
 import {
   webFormSession,
   sessionRecord,
@@ -37,16 +40,30 @@ import {
   appendRedirectRecordId,
   nativeFormSubmissionContext,
   formCreateAllowed,
+  formAttachmentCount,
+  formAttachmentLimit,
+  formAttachmentAllowed,
 } from './form-service.mjs';
 import { formErrorPanel, createAccessDeniedForm } from './form-error-presentation.mjs';
+import { portalDocumentAccess } from './permissions.mjs';
+import { sharePointControlMarkup } from './sharepoint-documents.mjs';
 import { deniedPageRoute } from './redirects.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
-import { systemFormSchemaFor } from './solution-metadata.mjs';
+import { isNativeTextarea, systemFormSchemaFor } from './solution-metadata.mjs';
 import { hasPlatformBundles, bootstrapVariant } from './platform-manifest.mjs';
+import { documentAnchors, insertAt, scriptMarker } from './document-injection.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import { clientPortalObjectRuntime } from './portal-client-object.mjs';
-import { parseDateValue } from './dataverse-values.mjs';
-import { nativeFormActions } from './native-form-actions.mjs';
+import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
+import {
+  nativeFormActions,
+  nativeFormActionApplies,
+  pipelinePhaseOptions,
+  nativeFormWorkflowId,
+  NATIVE_FORM_WORKFLOW,
+  NATIVE_STATE_ACTIONS,
+  nativeStateActionKey,
+} from './native-form-actions.mjs';
 import { timeZoneChoices } from './platform-time-zones.mjs';
 import {
   missingLiquidComponent,
@@ -59,12 +76,25 @@ import {
   nativeFormPostbackDescriptor,
   nativeFormTransport,
   encodeNativeViewState,
+  numberCultureMarks,
+  localizedNumberCulture,
 } from './native-postback.mjs';
 import { renderCalendarList } from './list-views.mjs';
 import { portalSearch } from './portal-search.mjs';
 import { LiquidError } from './liquid-engine.mjs';
 import { attributeTypeCode, attributeTypeCodeName } from './attribute-metadata.mjs';
 import { choiceColumnsOf, choiceTextRow } from './liquid.mjs';
+import { PCF_HOST_SCRIPT } from './code-components.mjs';
+import { formDataFetch, stepRecordFetches, activeSessionFetch, recordIdFilter } from './form-read-messages.mjs';
+import {
+  nativeFieldAdmission,
+  nativeFieldRefusal,
+  nativeFieldRefusalSummary,
+  nativeFieldUnknownProblem,
+  nativeFieldHostId,
+  nativeFieldServerValue,
+  nativeFieldHiddenValue,
+} from './pcf-field-host.mjs';
 const escape = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -282,13 +312,15 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
     if (!name) continue;
     if (!/^[a-z]\w*$/i.test(name)) throw new Error(`Invalid form field ${name}`);
     const config = typeof fieldTypes[name] === 'object' ? fieldTypes[name] : { type: fieldTypes[name] };
+    const cellAttrs = attributes(cell[1]);
     fields.push({
       name,
       id: attrs.id ?? name,
       label: label(cell[2]) ?? name,
       type: config.type ?? 'text',
       readOnly: attrs.disabled === 'true',
-      hidden: attributes(cell[1]).visible === 'false',
+      hidden: cellAttrs.visible === 'false',
+      ...(Number(cellAttrs.rowspan) === 1 && isNativeTextarea(config) ? { rowspan: 1 } : {}),
       ...config,
     });
   }
@@ -358,6 +390,7 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
       const url=document.getElementById('antiforgerytoken')?.getAttribute('data-url')||'/_layout/tokenhtml';
       return tokenRequest(url,3).then(html=>{
         for(const input of [...document.querySelectorAll('input[name="__RequestVerificationToken"]')]){const template=document.createElement('template');template.innerHTML=html;input.replaceWith(...template.content.childNodes);}
+        const holder=document.getElementById('antiforgerytoken');if(holder&&!tokenInput())holder.innerHTML=html;
         return /value="([^"]+)"/.exec(html)?.[1];
       },error=>{if(error?.responseText)console.log('GetAntiForgeryToken failedDetails: '+error.responseText);});
     };
@@ -444,6 +477,11 @@ function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = fal
     `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
   return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource('rca')}" style="height:50px;width:180px;display:block;"${selfClose ? ' /' : ''}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${attr(jsText(unique))}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource('cah')}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
 }
+function renderFixtureCaptcha(unique, challenge) {
+  const client = unique.replaceAll('$', '_');
+  return `<div class="tr"><div class="captcha-cell" id="captcha"><span id="${attr(client)}_ctl00" style="display:none"></span><input type="hidden" data-pp-captcha-challenge name="${attr(unique)}$FixtureChallengeToken" value="${attr(challenge.id)}"><label for="${attr(client)}_Answer">${escape(challenge.prompt)}</label><input type="text" data-pp-captcha-answer name="${attr(unique)}$FixtureAnswerToken" id="${attr(client)}_Answer" maxlength="80" autocomplete="off" required></div></div>`;
+}
+
 /** The RadCaptcha control after a form's honeypot box; rcInvalid after a rejected answer. */
 function captchaControl(unique, pathname, invalid = false) {
   const client = unique.replaceAll('$', '_');
@@ -516,7 +554,10 @@ export function injectRuntime(
   identity = {},
   traceId = null,
   languages = null,
-  rootTraceId = null,
+  // rootTraceId: the page's trace-store trace id; sent: shown the document as it leaves here (the caller's record of
+  // what it answers), it changes nothing; injectedScripts: the response's injected-script marker under a nonce policy
+  // (lib/document-injection.mjs scriptMarker)
+  { rootTraceId = null, sent = null, site = {}, injectedScripts = null } = {},
 ) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
@@ -525,19 +566,22 @@ export function injectRuntime(
   const runtime = clientRuntime(token, revision, identity, traceId, {
     ...pageSite(html),
     ...(languages?.length ? { languages } : {}),
+    ...site,
     rootTraceId,
   });
+  const mark = scriptMarker(injectedScripts);
   const script = hasPlatformBundles(html)
-    ? `<script data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
-    : `<script data-paqvilo-mirage-runtime>${runtime}</script><script src="${PAGES_CLIENT_API_SCRIPT}" data-paqvilo-mirage-runtime></script>`;
+    ? `<script${mark} data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
+    : `<script${mark} data-paqvilo-mirage-runtime>${runtime}</script><script${mark} src="${PAGES_CLIENT_API_SCRIPT}" data-paqvilo-mirage-runtime></script>`;
   // The server form's __VIEWSTATE carries the visitor's anti-forgery key (k), as ASP.NET binds
   // ViewState to the visitor (ViewStateUserKey): WebForms postbacks then post the page's own
   // fields only (the bodies carry no __RequestVerificationToken; lib/native-postback.mjs
   // nativeViewStateKey, lib/webforms-compat.js).
-  // Decode the attribute once: chained replacements would decode nested entities twice.
-  if (token)
+  // Decode the attribute once: chained replacements would decode nested entities twice. A proved document stamps the
+  // input with its binding directly after the tag name (lib/render-provenance.mjs attributeOffset).
+  if (token && !site.isSpaSite)
     html = html.replace(
-      /(<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value=")([^"]*)(")/g,
+      /(<input(?: data-paqvilo-source="[^"]*")? type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value=")([^"]*)(")/g,
       (_match, open, value, close) =>
         `${open}${attr(
           viewStateWithKey(
@@ -546,16 +590,21 @@ export function injectRuntime(
           ),
         )}${close}`,
     );
-  // Native pages always carry the empty anti-forgery holder and its token URL.
-  if (!/\bid=["']antiforgerytoken["']/i.test(html))
-    html = html.replace(/<body\b[^>]*>/i, `$&<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>`);
+  // The insertions go to the document's real head and body tags (lib/document-injection.mjs), the last one first so
+  // the earlier offsets stay valid.
+  const anchors = documentAnchors(html);
   // The managed grid/lookup/notes runtime loads after the page content, like
   // the native app bundle, so authored ready handlers are registered first. Documents
   // with the platform bundles get it from the app bundle's local equivalent.
-  const grid = `<script src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
-  if (!html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
-    html = /<\/body>/i.test(html) ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`) : html + grid;
-  return /<head\b[^<>]*>/i.test(html) ? html.replace(/<head\b[^<>]*>/i, (head) => head + script) : script + html;
+  const grid = `<script${mark} src="${NATIVE_GRID_SCRIPT}" data-paqvilo-mirage-native></script>`;
+  if (!site.isSpaSite && !html.includes(NATIVE_GRID_SCRIPT) && !hasPlatformBundles(html))
+    html = anchors.bodyEnd >= 0 ? insertAt(html, anchors.bodyEnd, grid) : html + grid;
+  // Native pages always carry the empty anti-forgery holder and its token URL.
+  if (!/\bid=["']antiforgerytoken["']/i.test(html) && anchors.bodyStart >= 0)
+    html = insertAt(html, anchors.bodyStart, `<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>`);
+  const answered = anchors.headStart >= 0 ? insertAt(html, anchors.headStart, script) : script + html;
+  sent?.(answered);
+  return answered;
 }
 
 /**
@@ -625,6 +674,19 @@ function componentError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
+// A rich text column whose FormXml binds only the rich text editor renders the plain native textarea; the editor renders
+// when the form's attribute metadata gives the column code component style (756150001). Hosted capture F2 (2026-11-27,
+// runs a and b of choices and choices-rte): the platform then hosts MscrmControls.RichTextEditorV2.RichTextEditorControlV2.
+const CODE_COMPONENT_STYLE = 756150001;
+
+/** The field as its form renders it: without its rich text editor binding unless `metadataRow` enables the code component. */
+export function formRichTextField(field, metadataRow) {
+  if (!field?.richText || Number(portalField(metadataRow ?? {}, 'controlstyle')) === CODE_COMPONENT_STYLE) return field;
+  const plain = { ...field };
+  delete plain.richText;
+  return plain;
+}
+
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export function nativeControlKind(field) {
   const type = String(field.dataverseType ?? '').toLowerCase();
   if (field.richText) return 'richtext';
@@ -646,23 +708,98 @@ function componentError(message, status, code) {
   return 'text';
 }
 
-function isNativeTextarea(field, type) {
+const boundFormChoice = Symbol('boundFormChoice');
+
+// The native control kind each choice column type binds to its global choice through.
+const BOUND_CHOICE_CONTROLS = { picklist: 'picklist', multiselectpicklist: 'multiselect' };
+/** Use published options for an authored native choice or choices field with a bound Dataverse column. */
+export function formChoiceField(field, column, globalChoices, lcid) {
+  const control = BOUND_CHOICE_CONTROLS[column?.dataverseType];
+  if (
+    !control ||
+    !column.globalOptionSet ||
+    !globalChoices ||
+    field.codeComponent ||
+    nativeControlKind(field) !== control
+  )
+    return field;
+  const options = choiceFieldOptions({ ...column, options: field.options }, globalChoices, lcid);
+  return { ...field, options, [boundFormChoice]: true };
+}
+
+export function acceptsFormChoice(field, value) {
+  if (field[boundFormChoice] && !Number.isSafeInteger(value)) return false;
+  if (!field[boundFormChoice] && !field.options?.length) return true;
+  return field.options.some((option) => Number(option.value) === Number(value));
+}
+
+/** The first posted value of a bound choices field outside its effective options, or null when every value is listed. */
+export function rejectedFormChoices(field, value) {
+  // Dataverse refuses a value outside the column's options, its own or its bound global choice's (hosted F2).
+  if (!field[boundFormChoice] && !field.options?.length) return null;
   return (
-    /^(memo|ntext)$/.test(type) || field.type === 'textarea' || String(field.format ?? '').toLowerCase() === 'textarea'
+    multiSelectValues(value).find(
+      (item) =>
+        !/^-?\d+$/.test(item) ||
+        !Number.isSafeInteger(Number(item)) ||
+        !field.options.some((option) => Number(option.value) === Number(item)),
+    ) ?? null
   );
 }
 
+// The supported range of each Dataverse number column type (Microsoft.Xrm.Sdk.Metadata IntegerAttributeMetadata,
+// DecimalAttributeMetadata, DoubleAttributeMetadata and MoneyAttributeMetadata MinSupportedValue/MaxSupportedValue).
+const SUPPORTED_NUMBER_RANGE = {
+  integer: [-2147483648, 2147483647],
+  decimal: [-100000000000, 100000000000],
+  double: [-100000000000, 100000000000],
+  money: [-922337203685477, 922337203685477],
+};
+
+/**
+ * The [minimum, maximum] a native number field validates. Dataverse metadata always carries both bounds, so a bound
+ * the exported metadata omits beside a configured one is the column type's supported limit.
+ */
+export function nativeRangeBounds(field) {
+  const bounds = [field.minimum ?? field.minValue, field.maximum ?? field.maxValue].map((value) =>
+    value === '' || value == null ? null : value,
+  );
+  if (bounds.every((value) => value == null)) return bounds;
+  const supported =
+    String(field.dataverseType ?? '').toLowerCase() === 'bigint'
+      ? null
+      : SUPPORTED_NUMBER_RANGE[nativeControlKind(field)];
+  return supported ? bounds.map((value, index) => value ?? supported[index]) : bounds;
+}
+
 /** Native numeric range messages use the column's exported decimal precision. */
-export function nativeRangeMessage(field) {
+export function nativeRangeMessage(field, locale) {
   const control = nativeControlKind(field);
   const precision =
     Number.isInteger(field.precision) && field.precision >= 0 && field.precision <= 100 ? field.precision : null;
-  const bound = (value) => {
+  // Each bound is formatted on its own; whole numbers keep their digits ungrouped in every language (captured).
+  const formatter = locale && precision != null && control !== 'integer' ? numberBoxFormatter(locale, precision) : null;
+  const [lower, upper] = nativeRangeBounds(field).map((value) => {
     if (value == null) return '';
+    if (formatter && Number.isFinite(Number(value))) return formatter.format(String(value));
     if (precision != null && control !== 'integer') return Number(value).toFixed(precision);
     return String(value);
-  };
-  return `${field.label ?? field.name} must have a value between ${bound(field.minimum ?? field.minValue)} and ${bound(field.maximum ?? field.maxValue)}.`;
+  });
+  const label = field.label ?? field.name;
+  return locale === 'de-DE'
+    ? `${label} muss einen Wert zwischen ${lower} und ${upper} haben.`
+    : `${label} must have a value between ${lower} and ${upper}.`;
+}
+
+/** The native format validator copy of a number field (IntegerValidator/FloatValidator) in the page language. */
+export function nativeNumberFormatMessage(field, locale, control = nativeControlKind(field)) {
+  const label = field.label ?? field.name;
+  if (locale === 'de-DE') {
+    const kind = { integer: 'ganzzahliger Wert', double: 'Gleitkommawert' }[control] ?? 'Dezimalwert';
+    return `${label} muss ein gültiger ${kind} sein.`;
+  }
+  const kind = { integer: 'integer', double: 'floating-point' }[control] ?? 'decimal';
+  return `${label} must be a valid ${kind} value.`;
 }
 
 /** The exported Dataverse format takes precedence over the generic input type. */
@@ -765,41 +902,179 @@ const metadataFor = (rows, type, predicate) =>
   return { mode, id: id ?? null, queryName };
 }
 
-function nativeCodeComponentBindings(field, component, getValue) {
+// The static arguments of a native field component. The bound value is not an argument: the host reads it from the
+// field's hidden input. A FormXml binding of another column is not honoured by the Power Pages host (that property
+// gets no value, captured), so it is left out and named.
+function nativeCodeComponentBindings(field, component) {
   const args = { disabled: field.readOnly };
   const properties = [];
   const propertyTypes = {};
+  const ignored = [];
   for (const [name, parameter] of Object.entries(component.parameters)) {
     if (parameter.kind === 'static') {
       args[name] = parameter.value;
       continue;
     }
-    if (parameter.kind !== 'binding' || parameter.column !== field.name)
+    if (parameter.kind !== 'binding')
       return {
         error: `Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`,
       };
-    const current = getValue(field);
-    args[name] = nativeCodeComponentValue(field, current);
+    if (parameter.column !== field.name) {
+      ignored.push(name);
+      continue;
+    }
     properties.push(name);
     if (parameter.type) propertyTypes[name] = parameter.type;
   }
-  return { args, properties, propertyTypes };
+  return { args, properties, propertyTypes, ignored };
 }
 
-function nativeCodeComponentValue(field, current) {
-  if (field.control === 'lookup') {
-    if (current)
-      return [
-        {
-          id: canonicalId(scalarValue(current)),
-          entityType: current.logical_name ?? field.targets?.[0],
-          name: current.name ?? '',
-        },
-      ];
-    return [];
+// Skip findings are reported once per loaded portal sources (form, field, reason): every page render and quick view
+// reload would otherwise repeat them in the bounded diagnostic buffer. A source reload reports them again.
+const reportedNativeSkips = new WeakMap();
+function nativeSkipUnreported(portal, key) {
+  if (!portal || typeof portal !== 'object') return true;
+  let reported = reportedNativeSkips.get(portal);
+  if (!reported) {
+    reported = new Set();
+    reportedNativeSkips.set(portal, reported);
   }
-  if (field.control === 'multiselect') return multiSelectValues(current);
-  return scalarValue(current);
+  const text = JSON.stringify(key);
+  if (reported.has(text)) return false;
+  reported.add(text);
+  return true;
+}
+
+function nativeOtherColumnBindingMessage(component, field, ignored) {
+  const which = ignored.length === 1 ? 'that property' : 'those properties';
+  return `Code component ${component.name} on ${field.label} binds ${ignored.join(', ')} to other columns; like the Power Pages host, Mirage gives ${which} no value.`;
+}
+
+// The column facts the field host derives the bound property's attributes from (lib/code-components-client.js).
+function nativeBindingColumnFacts(field, tableFields) {
+  // LOCAL MODEL, unproven: the captured columns were not secured (IsSecured false, security editable and readable on
+  // edit, insert and read-only forms). A column-secured field reports IsSecured and, when the form renders it
+  // read-only for the visitor, a security that is not editable.
+  const secured = field.isSecured === true || tableFields[field.name]?.isSecured === true;
+  return {
+    attributes: {
+      LogicalName: field.name,
+      Options: nativeCodeComponentOptions(field) ?? null,
+      // The column's own maximum length (a text property reports it up to 100, captured).
+      MaxLength: Number.isInteger(field.maxLength) ? field.maxLength : null,
+      IsSecured: secured,
+    },
+    security: { secured, readable: true, editable: !(secured && field.readOnly === true) },
+    column: {
+      logicalName: field.name,
+      dataverseType: field.dataverseType ?? null,
+      ...(field.control === 'datetime' ? { dateOnly: nativeDateOnly(field) } : {}),
+    },
+  };
+}
+
+/** Why an exported or enabled field component is not mounted on a native field that renders without it, or null. */
+function nativeCodeComponentSkip(field, referenceForm, readOnlyForm) {
+  const enabled = field.controlStyle === 756150001;
+  if (enabled && field.hidden)
+    return {
+      reason: 'PCF_NATIVE_HIDDEN_FIELD',
+      message: `Code component metadata for ${field.label} is enabled on a hidden field; like the Power Pages host, Mirage renders neither the cell nor an input for it, so the form posts no value.`,
+    };
+  if (enabled && readOnlyForm && field.codeComponent && ['richtext', 'status', 'state'].includes(field.control))
+    return {
+      reason: 'PCF_NATIVE_READ_ONLY_FIELD',
+      message: `Code component ${field.codeComponent.name} on ${field.label} is not mounted on a read-only form: like the Power Pages host, Mirage renders the native read-only ${field.control === 'richtext' ? 'text' : 'status'} control.`,
+    };
+  if (referenceForm && field.codeComponent)
+    return {
+      reason: 'PCF_NATIVE_REFERENCE_FORM',
+      message: `Code component ${field.codeComponent.name} on ${field.label} is exported on a quick view or reference read-only form; like the Power Pages host, Mirage renders it without a code component host.`,
+    };
+  return null;
+}
+
+/** The saved primary name of the form record when the form renders the name column visibly and it is not column-secured; else null. */
+function nativeRecordName(record, mapping, fields, tableFields) {
+  const column = mapping.nameColumn;
+  const field = column && fields.find((candidate) => candidate.name === column);
+  if (!field || field.hidden || field.isSecured || tableFields[column]?.isSecured) return null;
+  const name = scalarValue(record?.[column]);
+  return name == null ? null : String(name);
+}
+
+// Choice options of a native PCF field: the column options with their colour; Two Options use the labels the native
+// control renders (No/Yes by default); a status (statecode) column hands the component none (captured).
+function nativeCodeComponentOptions(field) {
+  if (field.control === 'state') return [];
+  const options =
+    field.control === 'boolean' && !field.options?.length
+      ? [
+          { value: 0, label: 'No' },
+          { value: 1, label: 'Yes' },
+        ]
+      : field.options;
+  return options?.map((option) => ({
+    Label: option.label,
+    Value: Number(option.value),
+    ...(option.color ? { Color: option.color } : {}),
+  }));
+}
+
+/** The native control kind and date behaviour of a field, as the field host's hidden value carries them. */
+function nativeFieldColumn(field) {
+  return {
+    control: field.control,
+    behavior: field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal'),
+  };
+}
+
+/** The Power Pages markup of a mounted field component (captured): no native control, the
+ * host element named by the FormXml control, its configuration span and control view, and the hidden input that
+ * holds the value as JSON and posts it. The local host script, mount element and mount script sit in the control view
+ * (the platform loads its bundle script before the configuration span instead). A read-only form drops the change handler and marks the container. */
+function nativeFieldComponentMarkup({
+  field,
+  component,
+  host,
+  nameAttribute,
+  current,
+  disabled,
+  readOnlyForm,
+  dynamic,
+  statics = {},
+  platformScripts = '',
+}) {
+  const id = field.id ?? field.name;
+  const column = nativeFieldColumn(field);
+  const value = nativeFieldServerValue(column, current);
+  // Set static inputs stand next to the value (captured).
+  const properties = { ...statics };
+  if (['picklist', 'multiselect', 'status'].includes(field.control)) {
+    properties.value_Options = (nativeCodeComponentOptions(field) ?? []).map((option) => ({
+      Value: option.Value,
+      Label: { LocalizedLabels: [{ Label: option.Label }], UserLocalizedLabel: { Label: option.Label } },
+      Color: option.Color ?? null,
+    }));
+    properties.value_DefaultValue = null;
+    if (field.control !== 'picklist') properties.value_DisplayName = field.label;
+  }
+  if (dynamic && value != null) properties.value = value;
+  const controlContext = {
+    UniqueId: `${id}_ControlView`,
+    ControlId: id,
+    GridDataControlId: null,
+    ControlName: component.name,
+    ControlProperties: properties,
+    IsDisabled: disabled,
+    PcfControlHiddenValueId: id,
+    PcfDynamicProperyName: dynamic ?? null,
+  };
+  // The manifest configuration (data-pcf-control) is reduced: the local mount specification carries the manifest.
+  const manifest = { SubscribedFunctionalities: {}, DataConnectors: [], AuthConfigPropertiesGroups: [], Resources: [] };
+  const hostId = nativeFieldHostId(component.controlId, id);
+  const hidden = dynamic ? nativeFieldHiddenValue(column, current) : '';
+  return `<div id="${attr(hostId)}"${readOnlyForm ? '' : ' onchange="setIsDirty(this.id);"'}><span id="${attr(id)}_Container" class="flexbox"${readOnlyForm ? ' readonly="readonly"' : ''}>${platformScripts}<span id="PcfControlConfig_${attr(id)}" data-pcf-control="${attr(JSON.stringify(manifest))}" pcf-controlcontext="${attr(JSON.stringify(controlContext))}"></span><div id="${attr(id)}_ControlView" class="flexbox">${host}</div></span></div><input type="hidden" name="${nameAttribute}" id="${attr(id)}" value="${attr(hidden)}">`;
 }
 
 function buildNativeLookupLayouts(field, lookupBase, context) {
@@ -896,7 +1171,7 @@ export function summaryLink(fieldId, message, linksEnabled, focusId = fieldId) {
 }
 
 /** Native validators (ASP.NET ids, Page_Validators expandos) for one field. */
-function fieldValidators(field, { linksEnabled }) {
+function fieldValidators(field, { linksEnabled, numberCopyLocale }) {
   // CellTemplate instantiates validators unless the field itself is read-only; a read-only
   // form keeps them.
   if ((field.fieldReadOnly ?? field.readOnly) || field.hidden) return [];
@@ -946,9 +1221,9 @@ function fieldValidators(field, { linksEnabled }) {
     });
   const format = {
     email: ['EmailFormatValidator', `${label} must be a valid email address.`],
-    integer: ['IntegerValidator', `${label} must be a valid integer value.`],
-    decimal: ['FloatValidator', `${label} must be a valid decimal value.`],
-    double: ['FloatValidator', `${label} must be a valid floating-point value.`],
+    integer: ['IntegerValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'integer')],
+    decimal: ['FloatValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'decimal')],
+    double: ['FloatValidator', nativeNumberFormatMessage(field, numberCopyLocale, 'double')],
     datetime: ['DateFormatValidator', `${label} must have a valid date format.`],
   }[field.control];
   const formatValidator = format && {
@@ -958,7 +1233,7 @@ function fieldValidators(field, { linksEnabled }) {
     evaluationfunction: 'CustomValidatorEvaluateIsValid',
   };
   appendFormatAndLengthValidators({ field, validators, formatValidator, required, id, label, linksEnabled, focus });
-  appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus);
+  appendRangeAndLateRequired({ field, validators, required, requiredLate, id, linksEnabled, focus, numberCopyLocale });
   return validators;
 }
 
@@ -992,7 +1267,16 @@ function appendFormatAndLengthValidators({
   if (formatValidator && field.control !== 'email') validators.push(formatValidator);
 }
 
-function appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus) {
+function appendRangeAndLateRequired({
+  field,
+  validators,
+  required,
+  requiredLate,
+  id,
+  linksEnabled,
+  focus,
+  numberCopyLocale,
+}) {
   if (
     ['integer', 'decimal', 'double', 'money'].includes(field.control) &&
     (field.minimum != null || field.maximum != null)
@@ -1000,13 +1284,23 @@ function appendRangeAndLateRequired(field, validators, required, requiredLate, i
     validators.push({
       id: `RangeValidator${id}`,
       controltovalidate: id,
-      errormessage: summaryLink(id, field.rangeMessage || nativeRangeMessage(field), linksEnabled, focus),
+      errormessage: summaryLink(
+        id,
+        field.rangeMessage || nativeRangeMessage(field, numberCopyLocale),
+        linksEnabled,
+        focus,
+      ),
       evaluationfunction: 'CustomValidatorEvaluateIsValid',
-      minimumvalue: String(field.minimum ?? ''),
-      maximumvalue: String(field.maximum ?? ''),
+      ...nativeRangeValues(field),
       type: field.control === 'integer' ? 'Integer' : 'Double',
     });
   if (required && requiredLate && field.control !== 'email') validators.push(required);
+}
+
+/** The range validator's bounds, a bound absent from the metadata being the column type's supported limit. */
+function nativeRangeValues(field) {
+  const [minimum, maximum] = nativeRangeBounds(field);
+  return { minimumvalue: String(minimum ?? ''), maximumvalue: String(maximum ?? '') };
 }
 
 function validatorStartupScript(validators, summaryId, summaryHeader, group = '') {
@@ -1143,12 +1437,13 @@ function nativeModal({
   dismissText = 'Close',
   rawTitle = false,
   titleAttr = null,
+  titleCss = '',
 }) {
   // headingLabel: the Bootstrap 5 lookup dialog labels its heading instead of the section.
   // rawTitle: the label and title attributes carry the title markup as is (details, error dialogs).
   const labelText = rawTitle ? title : (label ?? plainText(title));
   const labelAttr = ` aria-label="${attr(labelText)}"`;
-  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></section>`;
+  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title${titleCss ? ' ' + attr(titleCss) : ''}" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></section>`;
 }
 // An attribute value whose line breaks are CRLF: the HTML parser folds raw CR LF into LF, so the
 // platform's indented JSON attributes keep their CR as character references.
@@ -1220,9 +1515,7 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
     'DetailsFormDialog',
     "<span class='fa fa-info-circle' aria-hidden='true'></span> View details",
   );
-  const deleteAction = (settings?.ItemActions ?? []).find(
-    (action) => action?.Type === 'CrmEntityFormView-DeleteAction',
-  );
+  const deleteAction = gridItemActions(settings).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
   const primary = escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, 'Delete'));
   const close = escape(localizedText(settings?.DeleteDialog?.CloseButtonText, 'Cancel'));
   return [
@@ -1272,17 +1565,25 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
       dismissText: dismiss('DeleteDialog'),
     }),
     gridErrorModal(bs, settings?.ErrorDialog, language),
+    qualifyGridModal(bs, settings, language),
+    // A grid with a Resolve Case action asks for the resolution in its resolve dialog (legacy ResolveCaseModal).
+    ...gridItemActions(settings)
+      .filter((action) => /^(?:CrmEntityFormView-)?ResolveCaseAction$/.test(action?.Type ?? ''))
+      .slice(0, 1)
+      .map((action) =>
+        resolveCaseDialog({
+          bs,
+          action,
+          dialog: settings?.ResolveCaseDialog,
+          actionIndex: 'grid',
+          formLabel: (value, fallback) => formText(value, fallback, language),
+        }),
+      ),
     // Bootstrap 5 subgrids render no workflow, (de)activate or disassociate dialogs.
     ...(bs.v5
       ? []
       : [
-          nativeModal({
-            bs,
-            className: 'modal-run-workflow',
-            title: 'Run workflow',
-            body: 'Are you sure you want to run this workflow?',
-            footer: `<button class="primary btn btn-primary" type="button">Run workflow</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
-          }),
+          workflowGridModal(bs),
           nativeModal({
             bs,
             className: 'modal-deactivate',
@@ -1308,12 +1609,42 @@ function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.Bo
   ].join('');
 }
 
+/**
+ * The legacy grid's workflow dialog (a Bootstrap 3 subgrid): always the platform defaults. The list's WorkflowDialog
+ * and its workflow actions' texts are not drawn (captured on lists, paqvilo-developer hosted-f2 summary-F2 LIST-01d).
+ */
+function workflowGridModal(bs) {
+  return nativeModal({
+    bs,
+    className: 'modal-run-workflow',
+    title: 'Run workflow',
+    body: escape('<p>Are you sure you want to run this workflow?</p>'),
+    footer: `<button class="primary btn btn-primary" type="button">Run workflow</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
+  });
+}
+
+/**
+ * The list's workflow dialog: always drawn with the platform defaults and its body HTML-escaped; the list's
+ * WorkflowDialog and its workflow actions' texts are ignored (captured, paqvilo-developer hosted-f2 summary-F2
+ * LIST-01d, Bootstrap 5 and Bootstrap 3, runs a and b).
+ */
+function workflowListModal(bs) {
+  return listModalV5({
+    bs,
+    className: 'modal-run-workflow',
+    title: ' Run workflow',
+    body: escape('<p>Are you sure you want to run this workflow?</p>'),
+    footer: `<button class="primary btn btn-primary " type="button">Run workflow</button><button class="cancel btn btn-default " ${bs.dismiss}="modal" type="button">Cancel</button>`,
+  });
+}
+
 /*
  * Bootstrap 5 list modals (entity_list template): plain div dialogs whose class, size and
  * title class slots come from the list's dialog settings (CssClass, Size, TitleCssClass).
  */
 const MODAL_SIZES = { 1: 'modal-lg', 2: 'modal-sm' };
 function listModalV5({
+  bs = BOOTSTRAP_MARKUP.BootstrapV5,
   className,
   dialog = {},
   title,
@@ -1327,28 +1658,39 @@ function listModalV5({
   const titleCss = formText(dialog?.TitleCssClass, '', language);
   const dismiss = formText(dialog?.DismissButtonSrText, 'Close', language);
   const heading = dialog?.Title ? escape(formText(dialog.Title, '', language)) : title;
-  return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ' aria-label="' + attr(label) + '"' : ''}${labelledBy ? ' aria-labelledby="' + attr(labelledBy) + '"' : ''}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ''}"><div class="modal-content"><div class="modal-header"><h4${labelledBy ? ' id="' + attr(labelledBy) + '"' : ''} class="modal-title ${attr(titleCss)}">${heading}</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></div>`;
+  const titleHtml = `<h4${labelledBy ? ' id="' + attr(labelledBy) + '"' : ''} class="modal-title ${attr(titleCss)}">${heading}</h4>`;
+  // The Bootstrap 3 list template draws its close button before the title (captured, hosted-f2 summary-F2 LIST-01d).
+  const close = bs.v5
+    ? `<button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button>`
+    : `<button class="close" data-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="sr-only">${escape(dismiss)}</span></button>`;
+  return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ' aria-label="' + attr(label) + '"' : ''}${labelledBy ? ' aria-labelledby="' + attr(labelledBy) + '"' : ''}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ''}"><div class="modal-content"><div class="modal-header">${bs.v5 ? titleHtml + close : close + titleHtml}</div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></div>`;
 }
-function gridModalsV5(page, settings = {}, language = {}, listId = '') {
+function gridModalsV5(page, settings = {}, language = {}, listId = '', bs = BOOTSTRAP_MARKUP.BootstrapV5) {
   // A list without grid settings renders the platform defaults: the loading spinner, the resolve
   // dialog's default field names; a configured dialog repeats the default button classes after
-  // its own.
+  // its own. A Bootstrap 3 site draws the same template with its own tokens, icons and resolve form (captured,
+  // paqvilo-developer hosted-f2 summary-F2 LIST-01d, lists-bs3 runs a and b).
   const defaults = !Object.keys(settings).length;
   const formBody = (dialog, hidden = false) =>
     `<div class="form-loading">${defaults ? '<span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span>' : escape(formText(dialog?.LoadingMessage, '', language))}</div><iframe${hidden ? ' aria-hidden="true"' : ''} data-page="${attr(page)}" src="about:blank"></iframe>`;
   const confirm = (name, primary, cancel = 'Cancel') =>
-    `<button class="primary btn btn-primary ${settings?.[name] ? 'btn btn-primary' : ''}" type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default ${settings?.[name] ? 'btn btn-default' : ''}" data-bs-dismiss="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
-  const deleteAction = (settings.ItemActions ?? []).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
-  const resolve = `<div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? 'Resolution (required)' : ''}</label><div class="col-md-9"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label="${defaults ? 'Resolution (required)' : ''}"></div></div><div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? 'Description of resolution' : ''}</label><div class="col-md-9"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label="${defaults ? 'Description of resolution' : ''}"></textarea></div></div>`;
+    `<button class="primary btn btn-primary ${settings?.[name] ? 'btn btn-primary' : ''}" type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default ${settings?.[name] ? 'btn btn-default' : ''}" ${bs.dismiss}="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
+  const deleteAction = gridItemActions(settings).find((action) => action?.Type === 'CrmEntityFormView-DeleteAction');
+  const [group, label, field] = bs.v5
+    ? ['row mb-3', 'required col-form-label col-md-3', 'col-md-9']
+    : ['form-group', 'required control-label col-sm-3', 'col-sm-9'];
+  const resolve = `<div class="${group}"><label class="${label}">${defaults ? 'Resolution (required)' : ''}</label><div class="${field}"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label="${defaults ? 'Resolution (required)' : ''}"></div></div><div class="${group}"><label class="${label}">${defaults ? 'Description of resolution' : ''}</label><div class="${field}"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label="${defaults ? 'Description of resolution' : ''}"></textarea></div></div>`;
   return [
     listModalV5({
+      bs,
       className: 'modal-form modal-form-insert',
       dialog: settings.CreateFormDialog,
-      title: "<span class='fa fa-edit' aria-hidden='true'></span> Create",
+      title: `<span class='fa ${bs.v5 ? 'fa-edit' : 'fa-pencil-square-o'}' aria-hidden='true'></span> Create`,
       body: formBody(settings.CreateFormDialog),
       language,
     }),
     listModalV5({
+      bs,
       className: 'modal-form modal-form-edit',
       dialog: settings.EditFormDialog,
       title: "<span class='fa fa-edit' aria-hidden='true'></span> Edit",
@@ -1356,6 +1698,7 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
       language,
     }),
     listModalV5({
+      bs,
       className: 'modal-form modal-form-details',
       dialog: settings.DetailsFormDialog,
       title: "<span class='fa fa-info-circle' aria-hidden='true'></span> View details",
@@ -1364,9 +1707,10 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
       labelledBy: `modalTitleID_${listId}`,
     }),
     listModalV5({
+      bs,
       className: 'modal-delete',
       dialog: settings.DeleteDialog,
-      title: "<span class='fa fa-trash-can' aria-hidden='true'></span> Delete",
+      title: `<span class='fa ${bs.v5 ? 'fa-trash-can' : 'fa-trash-o'}' aria-hidden='true'></span> Delete`,
       body: escape(
         formText(
           deleteAction?.Confirmation ?? settings.DeleteDialog?.Confirmation,
@@ -1380,28 +1724,25 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
     }),
     // A configured error dialog shows its own body and close text; its close button repeats the default classes.
     listModalV5({
+      bs,
       className: 'modal-error',
       dialog: settings.ErrorDialog,
       body: listErrorDialogBody(settings, defaults, language),
       title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error",
-      footer: `<button class="cancel btn btn-default ${settings.ErrorDialog ? 'btn btn-default' : ''}" data-bs-dismiss="modal" type="button">${escape(formText(settings.ErrorDialog?.CloseButtonText, 'Close', language))}</button>`,
+      footer: `<button class="cancel btn btn-default ${settings.ErrorDialog ? 'btn btn-default' : ''}" ${bs.dismiss}="modal" type="button">${escape(formText(settings.ErrorDialog?.CloseButtonText, 'Close', language))}</button>`,
       language,
     }),
     listModalV5({
+      bs,
       className: 'modal-form modal-form-createrecord',
       dialog: settings.CreateRelatedRecordDialog,
       title: "<span class='fa fa-plus-circle' aria-hidden='true'></span> Create related record",
       body: formBody(settings.CreateRelatedRecordDialog),
       language,
     }),
+    workflowListModal(bs),
     listModalV5({
-      className: 'modal-run-workflow',
-      title: ' Run workflow',
-      body: escape('<p>Are you sure you want to run this workflow?</p>'),
-      footer: confirm('WorkflowDialog', 'Run workflow'),
-      language,
-    }),
-    listModalV5({
+      bs,
       className: 'modal-deactivate',
       dialog: settings.DeactivateDialog,
       title: ' Deactivate',
@@ -1410,6 +1751,7 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
       language,
     }),
     listModalV5({
+      bs,
       className: 'modal-activate',
       dialog: settings.ActivateDialog,
       title: ' Activate',
@@ -1417,8 +1759,16 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
       footer: confirm('ActivateDialog', 'Activate'),
       language,
     }),
-    `<div aria-hidden="true" aria-label="Resolve case" class="modal fade modal-resolvecase  " data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog  "><div class="modal-content"><div class="modal-header"><h4 class="modal-title "> Resolve case</h4><button class="form-close" data-bs-dismiss="modal" tabindex="0" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">Close</span></button></div><div class="modal-body">${resolve}</div><div class="modal-footer"><button tabindex="0" class="primary btn btn-success " type="button">Resolve</button><button tabindex="0" class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Cancel</button></div></div></div></div>`,
+    resolveCaseListModal(bs, resolve),
+    qualifyGridModal(bs, settings, language),
   ].join('');
+}
+
+/** The list template's resolve case dialog; its close button comes before the title on Bootstrap 3 (captured). */
+function resolveCaseListModal(bs, body) {
+  const title = '<h4 class="modal-title "> Resolve case</h4>';
+  const close = `<button class="form-close" ${bs.dismiss}="modal" tabindex="0" type="button"><span aria-hidden="true">&times;</span><span class="${bs.srOnly}">Close</span></button>`;
+  return `<div aria-hidden="true" aria-label="Resolve case" class="modal fade modal-resolvecase  " data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog  "><div class="modal-content"><div class="modal-header">${bs.v5 ? title + close : close + title}</div><div class="${bs.v5 ? '' : 'form-horizontal '}modal-body">${body}</div><div class="modal-footer"><button tabindex="0" class="primary btn btn-success " type="button">Resolve</button><button tabindex="0" class="cancel btn btn-default " ${bs.dismiss}="modal" type="button">Cancel</button></div></div></div></div>`;
 }
 
 function listErrorDialogBody(settings, defaults, language) {
@@ -1428,6 +1778,26 @@ function listErrorDialogBody(settings, defaults, language) {
 }
 
 /** Native ViewConfiguration subset consumed by the grid runtime. */
+// The view's search box texts: a SearchAction among the grid's ViewActions replaces each non-blank text in the request
+// language (legacy ViewConfiguration.SetViewActions: TooltipText, ButtonLabel, PlaceholderText); search itself is enabled
+// by the list or subgrid, not by the action.
+function viewSearch(model, settings, language) {
+  const action = (settings.ViewActions ?? []).find((item) =>
+    /^(?:CrmEntityFormView-)?SearchAction$/.test(item?.Type ?? ''),
+  );
+  const text = (value, fallback) => formText(value, '', language).trim() || fallback;
+  return {
+    Enabled: Boolean(model.search?.enabled),
+    SearchQueryStringParameterName: 'query',
+    PlaceholderText: text(action?.PlaceholderText, model.search?.placeholder ?? 'Search'),
+    TooltipText: text(action?.TooltipText, model.search?.tooltip ?? ''),
+    ButtonLabel: text(
+      action?.ButtonLabel,
+      "<span class='sr-only'>Search</span><span class='fa fa-search' aria-hidden='true'></span>",
+    ),
+  };
+}
+
 function viewConfiguration(model, view, { actions, websiteId, languageCode = 1033, language = {} }) {
   const link = (type) => actions.find((action) => action.Type === type) ?? null;
   const disabledLink = { Enabled: false, Type: 0, FilterCriteriaId: '00000000-0000-0000-0000-000000000000' };
@@ -1453,13 +1823,7 @@ function viewConfiguration(model, view, { actions, websiteId, languageCode = 103
       Width: column.Width ?? null,
     })),
     EnableEntityPermissions: true,
-    Search: {
-      Enabled: Boolean(model.search?.enabled),
-      SearchQueryStringParameterName: 'query',
-      PlaceholderText: model.search?.placeholder ?? 'Search',
-      TooltipText: model.search?.tooltip ?? '',
-      ButtonLabel: "<span class='sr-only'>Search</span><span class='fa fa-search' aria-hidden='true'></span>",
-    },
+    Search: viewSearch(model, settings, language),
     FilterQueryStringParameterName: 'filter',
     SortQueryStringParameterName: 'sort',
     PageQueryStringParameterName: 'page',
@@ -1497,6 +1861,7 @@ function gridLayouts(
   { secureBase, websiteId, metadata, actions, selectColumn = false, language = {}, masked = null },
 ) {
   const actionColumn = actions.some((action) => action.position === 'item');
+  const choiceLabelLcid = language.lcid ?? language.defaultLcid;
   return model.views.map((view) =>
     buildLayout({
       view,
@@ -1506,7 +1871,7 @@ function gridLayouts(
       metadata,
       settings: model.settings,
       configuration: viewConfiguration(model, view, { actions, websiteId, language }),
-      secure: { ...secureBase, view: view.id },
+      secure: { ...secureBase, view: view.id, choiceLabelLcid },
       selectColumn,
       actionColumn,
       masked,
@@ -1525,6 +1890,12 @@ function columnDescription(field, language) {
     Object.values(labels)[0] ??
     ''
   );
+}
+
+/** The LCID grid action labels and dialog texts are localized in: the request language, else the default one. */
+function actionLanguage(context, portal) {
+  const { lcid, defaultLcid } = requestLanguage(context, portal);
+  return lcid ?? defaultLcid ?? 1033;
 }
 
 function requestLanguage(context, portal) {
@@ -1594,7 +1965,10 @@ async function renderListGrid(model, context, options) {
       websiteId,
       viewId: model.views[0].id,
       variant: bootstrapVariant(options.portal.settings),
-      culture: options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ?? 'en-US',
+      culture:
+        context.__language?.code ??
+        options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ??
+        'en-US',
     });
   const language = requestLanguage(context, options.portal);
   const page = `/_portal/modal-form-template-path/${websiteId}`;
@@ -1636,6 +2010,7 @@ function listActionLinks(model, context, options, { websiteId, v5, pageControl }
     portal: options.portal,
     requestUrl: context.request?.url ?? 'http://localhost/',
     website: websiteId,
+    lcid: actionLanguage(context, options.portal),
   });
   if (model.detailsPage && !actions.some((action) => action.Type === 1)) {
     const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.detailsPage);
@@ -1759,24 +2134,26 @@ function listGridMarkup({
   // Bootstrap 5 page control: the legacy grid markup (as subgrids), not the Bootstrap 5 list markup.
   if (bs.v5 && pageControl)
     return `<div><div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? '')}" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, language)}${PAGINATION}${gridModals(page, settings, language, bs)}</div></div>`;
-  if (bs.v5) return listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language });
+  // A list renders the list template on Bootstrap 3 too, with Bootstrap 3 tokens (captured, paqvilo-developer hosted-f2
+  // summary-F2 LIST-01d, lists-bs3 runs a and b); a page control keeps the legacy grid markup.
+  if (!pageControl)
+    return listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language, bs });
   return `<div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? 'table-striped')}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
 }
 
 /**
- * A modern list (entity_list include with isModern 'true'): local, neutral markup over the list's own secured
- * grid query (/_services/entity-grid-data.json, the same Base64SecureConfiguration as the classic grid). The
- * client adapter in lib/pages-client-api.js continues the query page by page as the list scrolls (infinite
- * scroll, Learn add-list "Modern list") and publishes rows, columns and the loaded/rowclick/cellclick events
- * through $pages.currentPage.lists. Views, search, metadata filters, sorting and the details, edit, create,
- * delete and download actions reuse the classic grid engine: the same layouts (with the list's action links), the
- * same filter panel and the same grid, delete, download and modal form routes. Other action types are reported
- * (MODERN_LIST_FEATURES_UNSERVED). The platform's modern list markup and styling are not documented, so the
- * markup stays local (MODERN_LIST_LOCAL_MARKUP).
+ * A modern list (entity_list include with isModern 'true'), as a hosted page serves it: `pages-native-container` with
+ * a `pages-grid` naming the list (captured, paqvilo-developer hosted-f2 summary-F2 LIST-01d, runs a and b, Bootstrap 5
+ * and Bootstrap 3). The hosted page loads Microsoft's data_grid control from
+ * content.powerapps.com/resource/powerappsportal/controls/data_grid/<build>/ (its locales/en-US/GridTranslation.json
+ * among its requests), which Mirage does not serve; the local adapter (lib/pages-client-api.js) draws its grid in the
+ * container instead and makes the control's calls: GET /_services/portal/GetListViewConfiguration/<list>
+ * (listViewConfiguration) and the entity-grid-data pages with odataFilterQuery and nlSearchFilter. Views, search,
+ * metadata filters, sorting and the details, edit, create, delete and download actions reuse the classic grid engine
+ * (the same layouts and the grid, delete, download and modal form routes); other action types are reported
+ * (MODERN_LIST_FEATURES_UNSERVED).
  */
 async function renderModernList(model, context, options) {
-  const websiteId = canonicalId(options.portal.website?.id);
-  const language = requestLanguage(context, options.portal);
   const unserved = modernListUnservedActions(model.list);
   if (unserved.length)
     options.diagnostic?.({
@@ -1787,41 +2164,71 @@ async function renderModernList(model, context, options) {
       items: unserved,
       message: `Modern list '${model.list.name}' configures action(s) the local modern list does not serve: ${unserved.join(', ')}. They are absent from the local list.`,
     });
-  const actions = listActionLinks(model, context, options, { websiteId, v5: false, pageControl: false }).filter(
-    (action) => [1, 2, 3, 4, 8].includes(action.Type),
-  );
-  const layouts = gridLayouts(model, {
-    secureBase: { t: 'list', w: websiteId, list: model.list.id },
-    websiteId,
-    metadata: options.metadata,
-    actions,
-    language,
-    masked: gridMasked({ store: options.store, identity: context.user ?? context.identity }),
-  });
-  const columns = (layouts[0]?.Columns ?? []).filter((column) => column.Type === 0);
-  const head = columns
-    .map(
-      (column) =>
-        `<th scope="col" data-logical-name="${attr(column.LogicalName)}">${escape(column.Name ?? column.LogicalName)}</th>`,
-    )
-    .join('');
-  // The native batch size of a modern list's continuation is not known; the list's page size is used.
-  const pageSize = Number(model.pageSize) || 10;
   const empty = model.emptyText ? model.emptyText : 'There are no records to display.';
-  const viewOptions = () =>
-    layouts
-      .map(
-        (layout, index) =>
-          `<option value="${attr(layout.Id)}">${escape(model.views[index]?.displayName || layout.ViewName || layout.Id)}</option>`,
-      )
-      .join('');
-  const views =
-    layouts.length > 1 ? `<select data-pp-modern-list-view aria-label="View">${viewOptions()}</select>` : '';
+  const views = '<select data-pp-modern-list-view aria-label="View" hidden></select>';
   const search = model.search?.enabled
     ? `<input type="search" data-pp-modern-list-search placeholder="${attr(model.search.placeholder)}" aria-label="${attr(model.search.placeholder)}" title="${attr(model.search.tooltip)}">`
     : '';
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : '';
-  return `<div class="entitylist" data-mirage-component="modern-list"><div id="list_${attr(compactId(model.list.id))}" class="pp-modern-list" data-pp-modern-list data-get-url="/_services/entity-grid-data.json/${websiteId}" data-website-id="${attr(websiteId)}" data-selected-view="${attr(model.views[0]?.id ?? '')}" data-page-size="${pageSize}" data-view-layouts="${base64Json(layouts)}"><div class="pp-modern-list-toolbar">${views}${search}<span data-pp-modern-list-actions></span></div>${modernFilterMarkup(filter)}<table class="table" role="grid"><thead><tr>${head}</tr></thead><tbody></tbody></table><div class="view-empty message" hidden>${empty}</div><div class="view-access-denied message" hidden>You don't have permissions to view these records.</div><div class="view-error message" hidden>Error completing request.</div><div data-pp-modern-list-more aria-hidden="true" style="min-height:1px"></div><dialog data-pp-modern-list-dialog aria-label="Form"><button type="button" data-pp-modern-list-close>Close</button><iframe title="Form"></iframe></dialog></div></div>`;
+  const local = `<div id="list_${attr(compactId(model.list.id))}" class="pp-modern-list" data-mirage-component="modern-list" data-pp-modern-list data-list-id="${attr(canonicalId(model.list.id))}"><div class="pp-modern-list-toolbar">${views}${search}<span data-pp-modern-list-actions></span></div>${modernFilterMarkup(filter)}<table class="table" role="grid"><thead><tr></tr></thead><tbody></tbody></table><div class="view-empty message" hidden>${empty}</div><div class="view-access-denied message" hidden>You don't have permissions to view these records.</div><div class="view-error message" hidden>Error completing request.</div><div data-pp-modern-list-more aria-hidden="true" style="min-height:1px"></div><dialog data-pp-modern-list-dialog aria-label="Form"><button type="button" data-pp-modern-list-close>Close</button><iframe title="Form"></iframe></dialog></div>`;
+  const grid = `<pages-grid list-id="${attr(canonicalId(model.list.id))}" table-style="" row-style="" header-style="" table-stripes="" ai-insights-enabled="false" ai-insights-title="AI Insights" ai-insights-expanded="true" ai-custom-prompt="" ai-chart-types="" ai-summary-heading-style="" ai-summary-content-style="" ai-insights-style="" ai-insights-position="top" nl-search-enabled="false" enable-streaming="true" name="Grid_1"></pages-grid>`;
+  return `<pages-native-container>${local}${grid}</pages-native-container>`;
+}
+
+/** The layouts of a modern list: the classic list's layouts with the actions the local modern list serves. */
+function modernListLayouts(model, context, options) {
+  const websiteId = canonicalId(options.portal.website?.id);
+  const actions = listActionLinks(model, context, options, { websiteId, v5: false, pageControl: false }).filter(
+    (action) => [1, 2, 3, 4, 8].includes(action.Type),
+  );
+  return gridLayouts(model, {
+    secureBase: { t: 'list', w: websiteId, list: model.list.id },
+    websiteId,
+    metadata: options.metadata,
+    actions,
+    language: requestLanguage(context, options.portal),
+    masked: gridMasked({ store: options.store, identity: context.user ?? context.identity }),
+  });
+}
+
+/**
+ * GET /_services/portal/GetListViewConfiguration/<list>: the modern list's configuration (captured keys and values,
+ * paqvilo-developer hosted-f2 summary-F2 LIST-01d): the layouts without their FetchXML, layout XML and view name, the
+ * default view, the data, AI insights and modal form routes. Null for a list the sources do not hold or a list no
+ * source includes as a modern list, `{ AccessDenied: true }` for a
+ * visitor without read access to the list's table: what a hosted site answers there is not captured (a signed-in
+ * visitor of a modern include was), so the route fails closed with these inferred refusals.
+ */
+export function listViewConfiguration(listId, context, options) {
+  const list = options.portal.lists?.find((candidate) => canonicalId(candidate.id) === canonicalId(listId));
+  if (!list || !modernListIds(options.portal).has(canonicalId(list.id))) return null;
+  const model = listModel({
+    portal: options.portal,
+    metadata: options.metadata,
+    store: options.store,
+    list,
+    schemas: options.schemas,
+  });
+  if (readDenied({ store: options.store, identity: options.identity, config: options.config }, model.entity))
+    return { AccessDenied: true };
+  const websiteId = canonicalId(options.portal.website?.id);
+  const layouts = modernListLayouts(model, context, options).map((layout) => ({
+    Configuration: { ...layout.Configuration, ViewName: null, LayoutXml: null, FetchXml: null },
+    Base64SecureConfiguration: layout.Base64SecureConfiguration,
+    ViewName: layout.ViewName,
+    Columns: layout.Columns,
+    ColumnsTotalWidth: layout.ColumnsTotalWidth,
+    SortExpression: layout.SortExpression,
+    Id: layout.Id,
+  }));
+  return {
+    filterenabled: Boolean(model.filter?.enabled),
+    getDataUrl: `/_services/entity-grid-data.json/${websiteId}`,
+    getAiInsightsUrl: `/_services/entity-grid-ai-summary.json/${websiteId}`,
+    layouts,
+    defaultViewId: model.views[0]?.id ?? null,
+    modalFormTemplateUrl: `/_portal/modal-form-template-path/${websiteId}`,
+  };
 }
 
 function modernFilterMarkup(filter) {
@@ -1835,9 +2242,10 @@ function gridColumnWidthStyle(settings) {
   return Number(settings.GridColumnWidthStyle) === 0 ? 'Pixels' : 'Percent';
 }
 
-function listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) {
+function listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language, bs }) {
   const attributes = [
-    ['class', `entity-grid entitylist ${settings.CssClass ?? ''}`],
+    // No trailing space without a CssClass (captured, hosted-f2 summary-F2 LIST-01d).
+    ['class', `entity-grid entitylist ${settings.CssClass ?? ''}`.trim()],
     // An instance id the platform derives from the render time.
     ['data-id', `${Date.now()}.${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`], // NOSONAR: pseudo-random value for simulation, not a secret
     ['data-column-width-style', gridColumnWidthStyle(settings)],
@@ -1846,7 +2254,8 @@ function listGridV5({ model, settings, layouts, websiteId, identity, authenticat
     ['data-get-url', `/_services/entity-grid-data.json/${websiteId}`],
     ['data-get-ai-insights-url', `/_services/entity-grid-ai-summary.json/${websiteId}`],
     ['data-update-url', `/_services/entity-grid-update-entity/${websiteId}`],
-    ['data-grid-class', settings.GridCssClass ?? ''],
+    // A Bootstrap 3 list keeps its striped default (not captured without a GridCssClass).
+    ['data-grid-class', settings.GridCssClass ?? (bs?.v5 === false ? 'table-striped' : '')],
     ['data-select-mode', 'None'],
     ['data-selected-view', model.views[0].id],
     ['data-view-layouts', base64Json(layouts)],
@@ -1868,7 +2277,7 @@ function listGridV5({ model, settings, layouts, websiteId, identity, authenticat
   const message = (className, key, fallback) =>
     `<div class="${className}">${custom(key) ? escape(custom(key)) : fallback}</div>`;
   const messages = `<div class="view-grid"></div>${message('view-empty message', 'EmptyMessage', 'There are no records to display.')}<div class="view-empty-maker message">To see records displayed here, choose preview.</div>${message('view-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don&#39;t have permissions to view these records.</div>')}${message('view-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class=\'details\'></span></div>')}${message('view-loading message text-center', 'LoadingMessage', "<span class='fa fa-spinner fa-spin' aria-hidden='true'></span> Loading...")}${PAGINATION}`;
-  return `<div${attributes}>${messages}${gridModalsV5(page, settings, language, model.list.id)}</div>`;
+  return `<div${attributes}>${messages}${gridModalsV5(page, settings, language, model.list.id, bs)}</div>`;
 }
 
 const TEXT_FILTER_HINT = 'To search on partial text, use the asterisk (*) wildcard character. ';
@@ -1936,7 +2345,9 @@ async function filterChoices(group, context, options, model = null) {
   if (group.type === 'rangeset') return indexed(node.filters ?? []);
   if (group.type === 'dynamicpicklistset') {
     const attribute = node['adx.attribute'] ?? node.conditions?.[0]?.attribute;
-    return (options?.metadata?.entities?.[model?.entity]?.fields?.[attribute]?.options ?? []).map((option) => ({
+    const field = options?.metadata?.entities?.[model?.entity]?.fields?.[attribute];
+    const { lcid, defaultLcid } = requestLanguage(context, options?.portal);
+    return choiceFieldOptions(field, options?.globalChoices, lcid ?? defaultLcid).map((option) => ({
       id: String(option.value),
       label: String(option.label ?? option.value),
     }));
@@ -1984,6 +2395,7 @@ function entityListDrop(model, options, context) {
     portal: options.portal,
     requestUrl: context.request?.url ?? 'http://localhost/',
     website: websiteId,
+    lcid: actionLanguage(context, options.portal),
   });
   const layouts = gridLayouts(model, {
     secureBase: { t: 'list', w: websiteId, list: model.list.id },
@@ -2064,6 +2476,35 @@ function findList(portal, args, name) {
   return null;
 }
 
+/** The layout a list renders in: modern, map, calendar or the classic grid. */
+function entityListLayout(listMetadata, model, modern) {
+  // A map, calendar or dataset code component list included as modern renders the modern grid of its view
+  // (hosted-f2 summary-F2 LIST-01d and LIST-01f).
+  if (modern) return 'modern';
+  if (truthy(fieldOf(listMetadata, 'map_enabled'))) return 'map';
+  if (model.calendar) return 'calendar';
+  return 'grid';
+}
+
+/**
+ * The dataset code component a list configured with one renders (component), or the fallback notice above its native
+ * grid when no supported view binding is available; neither for a list without a code component.
+ */
+async function entityListCodeComponent(list, model, options) {
+  if (!truthy(fieldOf(list.metadata, 'iscodecomponent'))) return { notice: '' };
+  const name = options.metadata?.entities?.[model.entity]?.grid?.control;
+  // A list with several views binds its first view and draws its view dropdown (renderNativeDataset).
+  const supported =
+    !model.approximated &&
+    !model.calendar &&
+    !truthy(fieldOf(list.metadata, 'map_enabled')) &&
+    !Object.values(model.userFilters).some(Boolean);
+  const component =
+    supported && (await renderNativeDataset(options, model, { name, secure: { t: 'list', list: list.id } }));
+  if (component) return { component };
+  return { notice: nativeDatasetFallback(options, `List ${list.name}`, { component: 'entitylist', list: list.id }) };
+}
+
 async function renderEntityList(name, context, options) {
   const list = findList(options.portal, options.args, name);
   if (!list) {
@@ -2103,33 +2544,103 @@ async function renderEntityList(name, context, options) {
       options.args?.name == null &&
       context.key != null &&
       String(context.key) === String(key));
-  let notice = '';
-  if (builtin && truthy(fieldOf(list.metadata, 'iscodecomponent'))) {
-    const message = `List ${list.name} uses a configured dataset code component. Its hosted list binding is not implemented locally; the native grid below is a fallback. Use an explicit exported view/table binding with a standard Liquid code component for local dataset development.`;
-    options.diagnostic?.({
-      code: 'PCF_NATIVE_DATASET_UNSUPPORTED',
-      severity: 'warning',
-      component: 'entitylist',
-      list: list.id,
-      message,
-    });
-    notice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
-  }
   if (!builtin) return { context: { entitylist: drop }, html: '' };
-  // The design studio's Modern list toggle is exported as the include's isModern argument (platform-changes.mjs).
-  if (/^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''))) {
-    // The same rule preflight applies (platform-changes.mjs modernListFallback); page controls are a render-time case.
-    const fallback = modernListFallback(list) ?? (pageControl ? 'page-control lists' : null);
-    if (!fallback) return { context: { entitylist: drop }, html: await renderModernList(model, context, options) };
+  // Render provenance (lib/component-provenance.mjs): the list, its views and its action settings.
+  const modern = /^true$/i.test(String(context.isModern ?? options.args?.isModern ?? ''));
+  const listMetadata = list.metadata ?? {};
+  // The modern list serves every list a page includes as modern; a page control renders, and reports, the classic one.
+  const servedModern = modern && !pageControl;
+  const listLayout = entityListLayout(listMetadata, model, servedModern);
+  options.onComponentRendered?.({
+    type: 'list',
+    id: canonicalId(list.id),
+    name: list.name,
+    entity: model.entity,
+    views: model.views.map((view) => canonicalId(view.id)),
+    layout: listLayout,
+    settings: model.settings ?? {},
+    scriptRecord: list.js != null ? list.metadata : null,
+  });
+  // The design studio's Modern list toggle is exported as the include's isModern argument (platform-changes.mjs). A
+  // calendar or dataset code component list included as modern renders the modern grid of its view: no calendar and no
+  // code component (hosted-f2 summary-F2 LIST-01f).
+  if (servedModern) return { context: { entitylist: drop }, html: await renderModernList(model, context, options) };
+  const { component, notice } = await entityListCodeComponent(list, model, options);
+  if (component) return { context: { entitylist: drop }, html: component };
+  if (modern)
     options.diagnostic?.({
       code: 'MODERN_LIST_RENDERED_CLASSIC',
       severity: 'warning',
       component: 'entitylist',
       list: list.name,
-      message: `List '${list.name}' asks for the modern list, but the local modern list adapter does not serve ${fallback}; the classic list renders instead.`,
+      message: `List '${list.name}' asks for the modern list, but the local modern list adapter does not serve page-control lists; the classic list renders instead.`,
     });
-  }
   return { context: { entitylist: drop }, html: notice + (await renderListGrid(model, context, options)) };
+}
+
+/**
+ * The dataset code component of a list or subgrid, bound to its first view. Rows come from the native grid service of
+ * its kind (entity-grid-data.json / entity-subgrid-data.json), signed for the dataset host (`pcf`), never from the
+ * portal Web API (captured), so
+ * the grid service's table permissions apply and no Web API site setting gates the component.
+ *
+ * With two or more views (a list's views, a subgrid with its view picker on) the list's or subgrid's own toolbar draws
+ * its view dropdown above the control, whatever the control's manifest declares, and choosing a view destroys the
+ * control and initialises a new one on that view (captured, paqvilo-developer pcf-parity summary-F section 4, runs fa
+ * and fb). The control is then hosted in the grid element whose toolbar entity-grid-compat.js draws, as live.
+ * `gridElement(layouts, view)` names the opening tag of a grid element that hosts the control whatever its number of
+ * views (a form subgrid, captured: paqvilo-developer hosted-f2 summary-F2 "PCF subgrid chain").
+ */
+async function renderNativeDataset(options, model, { name, args = {}, secure, gridElement = null, ...binding }) {
+  if (!options.codeComponent || !name || !model.views.length) return null;
+  const view = model.views[0];
+  const websiteId = canonicalId(options.portal.website?.id);
+  const signed = (entry) =>
+    buildLayout({
+      view: entry,
+      entity: model.entity,
+      idColumn: model.idColumn,
+      primaryName: model.primaryName,
+      metadata: options.metadata,
+      settings: model.settings,
+      configuration: {},
+      secure: { ...secure, w: websiteId, view: entry.id, pcf: true },
+    }).Base64SecureConfiguration;
+  const service = secure.t === 'subgrid' ? 'entity-subgrid-data.json' : 'entity-grid-data.json';
+  const views = model.views.length > 1 ? model.views.map((entry) => ({ id: entry.id, secure: signed(entry) })) : null;
+  const component = await options.codeComponent({
+    name,
+    args,
+    nativeDataset: {
+      entity: model.entity,
+      viewId: view.id,
+      kind: secure.t,
+      pageSize: Math.min(5000, Math.max(1, Math.floor(model.pageSize) || 25)),
+      service: `/_services/${service}/${websiteId}`,
+      update: `/_services/entity-grid-update-entity/${websiteId}`,
+      secure: views ? views[0].secure : signed(view),
+      ...(views ? { views } : {}),
+      ...binding,
+    },
+  });
+  if ((!views && !gridElement) || typeof component !== 'string' || !component.includes('__paqviloPcf.mount('))
+    return component;
+  // The grid's layouts name the views for the toolbar (the list's display names, else the saved query names); the
+  // grid runtime draws only the toolbar of a grid marked data-pcf-view-host and leaves the rows to the control.
+  const layouts = gridLayouts(model, {
+    secureBase: { ...secure, w: websiteId },
+    websiteId,
+    metadata: options.metadata,
+    actions: [],
+  });
+  if (gridElement) return `${gridElement(layouts, view)}${component}</div>`;
+  return `<div class="entity-grid ${secure.t === 'subgrid' ? 'subgrid' : 'entitylist'}" data-pcf-view-host data-selected-view="${attr(view.id)}" data-view-layouts="${base64Json(layouts)}">${component}</div>`;
+}
+
+function nativeDatasetFallback(options, label, source) {
+  const message = `${label} uses a configured dataset code component. No supported exported view binding is available locally; the native grid below is a fallback.`;
+  options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', ...source, message });
+  return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
 }
 
 async function renderEntityView(name, context, options) {
@@ -2247,21 +2758,73 @@ const POWERBI_INPUTS = [
   ['tileid', 'data-powerbi-tileid'],
   ['filter', 'data-powerbi-filter'],
 ];
-// ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
-// fragment (absolute or relative), not a URL parser.
+// ponytail: redaction is a pattern over the userinfo of a `//` authority (`user:password@`, redacted first so a password
+// holding `&` or `=` cannot pass as a query pair) and over `?key=value`, `&key=value` and `#key=value` pairs of any
+// value with a query or fragment (absolute or relative), not a URL parser.
 function powerBiPlaceholderMarkup(args, options) {
   const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) =>
     args?.[input] == null || args[input] === ''
       ? []
-      : [` ${attribute}="${escape(redactUrlQuery(String(args[input])))}"`],
+      : [` ${attribute}="${escape(redactUrlQuery(redactUrlUserinfo(String(args[input]))))}"`],
   ).join('');
+  // AAD and powerbiembedded need the platform's own Microsoft Entra application or Power BI Embedded service principal,
+  // which issues the embed token; a local runtime cannot obtain one on the site's behalf.
+  const secure = ['aad', 'powerbiembedded'].includes(powerBiAuthenticationType(args));
   options.diagnostic?.({
     code: 'LIQUID_POWERBI_PLACEHOLDER',
     severity: 'warning',
     component: 'powerbi',
-    message: 'The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made.',
+    authenticationType: powerBiAuthenticationType(args),
+    message: secure
+      ? 'The powerbi tag emits a placeholder: a secure (AAD or powerbiembedded) report needs the embed token that the platform service principal issues, which a local runtime cannot obtain; check it on the live site with Lense. No request is made.'
+      : 'The powerbi tag emits a placeholder; the Power BI report is not rendered locally and no request is made.',
   });
   return `<div class="paqvilo-powerbi-placeholder" data-mirage-component="powerbi"${attributes}>Power BI report is not rendered locally.</div>`;
+}
+
+// Learn (Dataverse Liquid tags, powerbi): authentication_type is case-insensitive and Anonymous is the default.
+function powerBiAuthenticationType(args) {
+  return (
+    String(args?.authentication_type ?? '')
+      .trim()
+      .toLowerCase() || 'anonymous'
+  );
+}
+// Anonymous embeds a Power BI Publish to web report: Learn sends makers to Power BI's Publish to web embed code, whose
+// public URL is https://app.powerbi.com/view?r=<embed key>. Only that shape becomes an iframe: any other path (another
+// scheme, host or route, credentials or a port) keeps the redacting placeholder, so a value never becomes a frame of a
+// script URL or of an arbitrary origin.
+function publishToWebUrl(path) {
+  let url;
+  try {
+    url = new URL(String(path ?? ''));
+  } catch {
+    return null;
+  }
+  const valid =
+    url.protocol === 'https:' &&
+    url.hostname.toLowerCase() === 'app.powerbi.com' &&
+    !url.port &&
+    !url.username &&
+    !url.password &&
+    url.pathname === '/view' &&
+    Boolean(url.searchParams.get('r'));
+  return valid ? url.href : null;
+}
+/**
+ * The iframe of a Publish to web report, in the shape of Power BI's embed code (src, frameborder, allowFullScreen).
+ * The wrapper markup that hosted Power Pages writes around it is not recorded, so the diagnostic names the shape.
+ * Learn: an anonymous report does not support filtering, so filter, roles and tileid are not applied.
+ */
+function powerBiAnonymousMarkup(url, options) {
+  options.diagnostic?.({
+    code: 'LIQUID_POWERBI_ANONYMOUS_EMBED',
+    severity: 'info',
+    component: 'powerbi',
+    message:
+      "The powerbi tag renders the Publish to web report as an iframe in the shape of Power BI's embed code; the browser loads the public report from Power BI.",
+  });
+  return `<iframe class="powerbi" data-mirage-component="powerbi" title="Power BI report" src="${escape(url)}" frameborder="0" allowfullscreen="true"></iframe>`;
 }
 
 function powerBiMarkup(args, context, options) {
@@ -2296,20 +2859,26 @@ function powerBiMarkup(args, context, options) {
     });
     return '';
   }
+  const publicReport = powerBiAuthenticationType(args) === 'anonymous' ? publishToWebUrl(args?.path) : null;
+  if (publicReport) return powerBiAnonymousMarkup(publicReport, options);
   return powerBiPlaceholderMarkup(args, options);
 }
 
 /** The searchindex tag (lib/portal-search.mjs): results filtered by the visitor's table permissions. */
 async function renderSearchIndex(context, options) {
   const args = options.args ?? {};
+  const identity = context.user ?? context.identity;
   const found = await portalSearch({
     portal: options.portal,
     store: options.store,
     readProvider: options.readProvider,
     metadata: options.metadata,
     config: options.config,
-    identity: context.user ?? context.identity,
+    identity,
+    // Note bodies kept in a storage provider, read as this visitor (column security applies).
+    attachmentBody: options.attachmentReader?.(identity) ?? null,
     query: args.query ?? '',
+    recoverQuerySyntax: true,
     filter: args.filter ?? null,
     logicalNames: args.logical_names ?? null,
     page: args.page ?? 1,
@@ -2423,10 +2992,11 @@ function prepopulateValue(row, identity, now) {
   const bs = bootstrapMarkup(portal.settings);
   // Labels and messages in the request's website language (context.__language).
   const formLanguage = requestLanguage(context, portal);
+  const observedSite = options.observed ?? portal.observed;
+  const transport = nativeFormTransport(observedSite);
   // Number formats follow the request's website language (en-US when it is unknown).
   const languageCode = portalLanguage({ lcid: formLanguage.lcid ?? formLanguage.defaultLcid })?.code ?? 'en-US';
-  const decimalSeparator =
-    new Intl.NumberFormat(languageCode).formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
+  const decimalSeparator = numberCultureMarks(languageCode)?.decimal ?? '.';
   const formLabel = (value, fallback = '') => formText(value, fallback, formLanguage);
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === 'true';
   // A multistep step's reference entity read-only form (options.referenceForm) is rendered as a
@@ -2493,6 +3063,7 @@ function prepopulateValue(row, identity, now) {
   let session = null;
   let completedSuccessGet = false;
   if (kind === 'webform' && schema.steps) {
+    await activeSessionRead({ portal, store, readProvider, definition, identity, context, options });
     const startNew = truthy(fieldOf(definition?.metadata ?? {}, 'startnewsessiononload'));
     // The runtime's sessions and the request's owner: the signed-in contact or browser visitor.
     const sessions = options.webFormSessions;
@@ -2744,6 +3315,34 @@ function prepopulateValue(row, identity, now) {
   const websiteId = canonicalId(portal.website?.id);
   const N = compactId(definition?.id ?? name);
   const ids = options.referenceForm?.ids ?? nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
+  // Render provenance (lib/component-provenance.mjs): the form this markup comes from and, filled while the layout
+  // renders, the tabs, sections and cells in the order their elements are written. Metadata beside the markup only.
+  const renderedLayout = { tabs: [], sections: [], cells: [] };
+  let scriptRecord = null;
+  if (schema.js != null) scriptRecord = schema.metadata;
+  else if (definition?.js != null) scriptRecord = definition.metadata;
+  options.onComponentRendered?.({
+    type: kind === 'webform' ? 'advanced-form' : 'basic-form',
+    id: canonicalId(definition?.id ?? name),
+    name: definition?.name ?? name,
+    reference: Boolean(options.referenceForm),
+    stepId: kind === 'webform' ? canonicalId(schema.stepId) || null : null,
+    stepName: kind === 'webform' ? (fieldOf(schema.metadata ?? {}, 'name') ?? null) : null,
+    entity: schema.entity,
+    formId: schema.formId ? canonicalId(schema.formId) : null,
+    ids: { wrapper: ids.wrapper, panel: ids.panel, view: ids.view },
+    scriptRecord,
+    metadataRows: metadataRows.map((row) => ({
+      id: canonicalId(row.id),
+      type: Number(fieldOf(row, 'type') ?? 100000000),
+      attribute: fieldOf(row, 'attributelogicalname') ?? null,
+      subgrid: fieldOf(row, 'subgrid_name') ?? null,
+      subgridSettings: fieldOf(row, 'subgrid_settings') ?? null,
+      section: fieldOf(row, 'sectionname') ?? null,
+      tab: fieldOf(row, 'tabname') ?? null,
+    })),
+    layout: renderedLayout,
+  });
 
   const startupScript = async () => {
     const source = schema.js ?? definition?.js;
@@ -2791,7 +3390,16 @@ function prepopulateValue(row, identity, now) {
       );
     else {
       try {
-        record = (await readProvider.get(schema.entity, id, identity)) ?? null;
+        record = await formRecordReads({
+          kind,
+          readProvider,
+          entity: schema.entity,
+          mapping,
+          id,
+          identity,
+          options,
+          context,
+        });
         if (!record) notFound = `Entity '${schema.entity}' With Id = ${canonicalId(id)} Does Not Exist`;
       } catch (error) {
         // A local table-permission denial is the native in-form message; a live
@@ -2878,6 +3486,8 @@ function prepopulateValue(row, identity, now) {
   const rebuiltPostback = Boolean(postback) && truthy(fieldOf(componentMetadata, 'setentityreference'));
   const restoredPostback = Boolean(postback) && !rebuiltPostback;
   // Posted values re-render; an unchanged lookup keeps its record value, which carries the display name.
+  // The record as read, before posted values re-render (PCF record context names only saved data).
+  const readRecord = record;
   if (postback?.values)
     record = {
       ...record,
@@ -2907,20 +3517,57 @@ function prepopulateValue(row, identity, now) {
   // column display name; the logical name is used only when the table metadata is absent.
   const tableFields = metadata?.entities?.[canonicalId(schema.entity)]?.fields ?? {};
   const fields = (schema.fields ?? []).map((field) =>
-    normalizedFormField(field, {
-      metadataRows,
-      mode,
-      formLabel,
-      tableFields,
-      componentMetadata,
-      formLanguage,
-      forceRequired,
-      recommendedRequired,
-      identity,
-      now,
-      readOnly,
-    }),
+    normalizedFormField(
+      formChoiceField(
+        field,
+        tableFields[canonicalId(field.name)],
+        options.globalChoices,
+        formLanguage.lcid ?? formLanguage.defaultLcid,
+      ),
+      {
+        metadataRows,
+        mode,
+        formLabel,
+        tableFields,
+        componentMetadata,
+        formLanguage,
+        forceRequired,
+        recommendedRequired,
+        identity,
+        now,
+        readOnly,
+      },
+    ),
   );
+  // Geolocation Lookup Validator (adx_controlstyle 100000002) needs the hosted Bing Maps service (form-service.mjs).
+  if (fields.some((field) => field.controlStyle === 100000002))
+    options.diagnostic?.({
+      code: 'FORM_GEOLOCATION_VALIDATOR_HOSTED',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      message:
+        'Geolocation Lookup Validator checks the text with the hosted Bing Maps service; it renders as plain text.',
+    });
+  // The code component style of a rich text column hosts the platform's RichTextEditorControlV2 (formRichTextField).
+  for (const field of fields.filter((candidate) => candidate.richText))
+    options.diagnostic?.({
+      code: 'RICHTEXT_HOSTED_V2_CONTROL',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      field: field.name,
+      message: `The hosted form renders ${field.label} with MscrmControls.RichTextEditorV2.RichTextEditorControlV2 from /_pcfwebresource; Mirage renders its local rich text editor in its place.`,
+    });
+  // Timeline metadata (adx_type 756150000): Learn names its settings but not the adx_timeline_settings shape.
+  if (metadataRows.some((row) => Number(fieldOf(row, 'type')) === 756150000))
+    options.diagnostic?.({
+      code: 'FORM_TIMELINE_METADATA_UNSUPPORTED',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      message: 'Timeline form metadata is not applied locally; notes follow the Notes metadata and the form timeline.',
+    });
   // A column placed on the form more than once renders only its first cell (see layout below).
   const byName = new Map();
   for (const field of fields) if (!byName.has(field.name)) byName.set(field.name, field);
@@ -2946,6 +3593,55 @@ function prepopulateValue(row, identity, now) {
     identity,
   });
   const value = (field) => resolveFormFieldValue(field, { record, mode, entityReference, reference, mapping, fields });
+  // Every stock number box of a Basic Form or multistep form step (insert, edit and read-only forms, modal and
+  // page-control forms) shows and parses the page culture's format, and its validators speak the page language. A
+  // field whose code component mounts (pcfFields, filled when its cell renders) posts JSON instead; an exported
+  // desktop control that does not mount leaves the stock box. Mirage's JSON transport keeps its invariant markup and
+  // comma-aware manifest. en-US and de-DE are captured; another page culture is localized only with
+  // observed.nativeNumberCultures: locale-data (lib/native-postback.mjs localizedNumberCulture).
+  const nativeNumberForm = ['entityform', 'webform'].includes(kind) && transport === 'postback';
+  const localizedNumberBoxes = nativeNumberForm && localizedNumberCulture(languageCode, observedSite);
+  if (
+    nativeNumberForm &&
+    !localizedNumberBoxes &&
+    fields.some((field) => ['integer', 'decimal', 'double', 'money'].includes(field.control))
+  )
+    options.diagnostic?.({
+      code: 'FORM_NUMBER_CULTURE_UNCAPTURED',
+      severity: 'warning',
+      component: kind,
+      form: definition?.name ?? name,
+      language: languageCode,
+      message: `Native number boxes of the ${languageCode} page culture are not captured: they show and accept invariant numbers. observed.nativeNumberCultures: locale-data formats and parses them with the culture's marks from the locale data.`,
+    });
+  const numberCopyLocale = (field) =>
+    localizedNumberBoxes &&
+    !field.hidden &&
+    !pcfFields.has(field.name) &&
+    ['integer', 'decimal', 'double', 'money'].includes(field.control)
+      ? languageCode
+      : undefined;
+  // Whole numbers keep their digits as typed (no captured grouping), so only fractional boxes take the culture format.
+  const numberBoxLocale = (field) =>
+    field.control !== 'integer' && numberBoxPrecision(field) !== null ? numberCopyLocale(field) : undefined;
+  // The page culture of every localized number field, including fields of auto-generated step tabs this request does
+  // not render: their values travel in __VIEWSTATE and are parsed and validated with the final tab's postback. An
+  // unrendered field whose portal-enabled code component may mount keeps its hidden-input decoding.
+  const numberLocales = () =>
+    Object.fromEntries(
+      fields
+        .filter(
+          (field) =>
+            !field.ownerHidden &&
+            !field.readOnly &&
+            numberCopyLocale(field) &&
+            (renderedFields.has(field.name) || !(field.controlStyle === 756150001 && field.codeComponent)),
+        )
+        .map((field) => [
+          field.name,
+          { ...(numberBoxLocale(field) ? { parse: numberBoxLocale(field) } : {}), messages: numberCopyLocale(field) },
+        ]),
+    );
   // Lookup choices for dropdown lookups and bindings for every lookup.
   for (const field of fields.filter((candidate) => candidate.control === 'lookup')) {
     const targets = field.lookupTargets ?? [
@@ -3046,7 +3742,7 @@ function prepopulateValue(row, identity, now) {
       return '';
     }
   };
-  /* NOSONAR: single-pass routine, splitting it would change shared state */ const nativeInput = async (field) => {
+  /* NOSONAR: shared state requires one pass. */ const nativeInput = async (field, cell) => {
     const current = value(field);
     const scalar = scalarValue(current);
     const disabled = field.readOnly;
@@ -3235,6 +3931,7 @@ function prepopulateValue(row, identity, now) {
           nameAttr,
           hostKey: `${field.id}:${N}`,
           lcid: formLanguage?.lcid ?? formLanguage?.defaultLcid ?? 1033,
+          baseLcid: formLanguage?.defaultLcid ?? 1033,
         });
       case 'datetime': {
         // Solution columns use Format=DateAndTime while their generic input
@@ -3275,7 +3972,10 @@ function prepopulateValue(row, identity, now) {
           readOnly,
           origin: requestOrigin(context),
         });
-      case 'textarea':
+      case 'textarea': {
+        const text = String(scalar ?? '');
+        // HTML parsing consumes the first newline immediately after a textarea's opening tag.
+        const valueHtml = (/^[\r\n]/.test(text) ? '\n' : '') + escape(text);
         if (field.composite === 'address') {
           // The platform's address composite: the trigger box (its value the composed address) and
           // a hidden container with one box per address part, labelled by the platform's part
@@ -3298,28 +3998,33 @@ function prepopulateValue(row, identity, now) {
                 `<input name="${nameAttr(field, '_' + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[prefix + '_' + part]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`,
             )
             .join('');
-          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}" readonly="readonly">${escape(String(scalar ?? ''))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
+          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}" readonly="readonly">${valueHtml}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
         }
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
-        // A one-row cell keeps the two-row (4 line) memo box.
-        return `<textarea name="${nameAttr(field)}" rows="${Math.max(Number(field.rowspan) || 2, 2) * 3 - 2}" cols="20"${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ' aria-required="true" title="' + attr(field.requiredMessage || field.label + ' is a required field.') + '"' : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${escape(scalar ?? '')}</textarea>`;
+        // Bootstrap 3 Basic Forms honor an explicitly authored one-row cell.
+        const layoutSpan = cell.rowspan == null ? field : cell;
+        const rowspan = Number(field.rowspan) || 2;
+        const rows =
+          !bs.v5 &&
+          kind === 'entityform' &&
+          !options.referenceForm &&
+          Number(layoutSpan.rowspan) === 1 &&
+          !layoutSpan.rowspanDefaulted
+            ? 1
+            : Math.max(rowspan, 2) * 3 - 2;
+        return `<textarea name="${nameAttr(field)}" rows="${rows}" cols="20"${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ' aria-required="true" title="' + attr(field.requiredMessage || field.label + ' is a required field.') + '"' : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${valueHtml}</textarea>`;
+      }
       case 'integer':
       case 'decimal':
       case 'double':
       case 'money': {
-        const precision = Number(field.precision);
-        const displayed =
-          field.control !== 'integer' &&
-          scalar != null &&
-          scalar !== '' &&
-          Number.isFinite(Number(scalar)) &&
-          field.precision != null &&
-          Number.isInteger(precision) &&
-          precision >= 0 &&
-          precision <= 10
-            ? Number(scalar).toFixed(precision)
-            : (scalar ?? '');
+        const displayed = numberBoxValue(
+          scalar,
+          numberBoxPrecision(field),
+          numberBoxLocale(field),
+          Object.hasOwn(postback?.values ?? {}, field.name),
+        );
         // Whole numbers formatted as a duration or a language are option lists (blank first).
         const choices = field.control === 'integer' ? integerFormatChoices(field, portal) : null;
         if (choices) {
@@ -3398,12 +4103,53 @@ function prepopulateValue(row, identity, now) {
   };
 
   const renderedFields = new Set();
-  const input = async (field) => {
+  // Field components of this form: the columns the Power Pages host refused (its summary) and the columns whose
+  // hidden input a mounted component owns (both save transports decode it, lib/pcf-field-host.mjs).
+  const pcfRefusals = [];
+  const pcfFields = new Set();
+  // One page state for the platform-library scripts of this form's field hosts (options.pcfPlatformScripts).
+  const pcfPageState = options.pcfPageState ?? {};
+  const platformScriptsBefore = () => options.pcfPlatformScripts?.(pcfPageState) ?? '';
+  // A hidden field whose component the host would load renders no cell and no input at all, so the form posts no
+  // value for it (captured).
+  const pcfOmitted = new Set();
+  // A mounted field without a dynamic property (a FormXml binding of an input property only) leaves its hidden input
+  // empty and posts no value: the live save keeps the column (captured).
+  const pcfUnposted = new Set();
+  // A skip finding of a field component, once per loaded portal sources (nativeSkipUnreported).
+  const reportNativeSkip = (field, skipped) => {
+    if (skipped && nativeSkipUnreported(portal, [definition?.id ?? null, field.name, skipped.reason]))
+      options.diagnostic?.({
+        code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        form: definition?.id,
+        field: field.name,
+        sourceFile: field.codeComponent?.sourceFile,
+        ...skipped,
+      });
+  };
+  const omittedField = (field) => {
+    if (
+      !field?.hidden ||
+      field.controlStyle !== 756150001 ||
+      !field.codeComponent ||
+      options.referenceForm ||
+      !nativeFieldAdmission(field.control, field.dataverseType).admitted
+    )
+      return false;
+    pcfOmitted.add(field.name);
+    reportNativeSkip(field, nativeCodeComponentSkip(field, null, readOnly));
+    return true;
+  };
+  const input = async (field, cell) => {
     if (byName.has(field.name)) renderedFields.add(field.name);
-    const original = await nativeInput(field);
+    const original = await nativeInput(field, cell);
     // The portal's attribute metadata explicitly enables the desktop PCF from
     // FormXml. Model-driven defaults alone do not activate a portal component.
-    if (field.controlStyle !== 756150001 || field.richText || field.hidden) return original;
+    const skipped = nativeCodeComponentSkip(field, options.referenceForm, readOnly);
+    if (field.controlStyle !== 756150001 || field.hidden || skipped) {
+      reportNativeSkip(field, skipped);
+      return original;
+    }
     const component = field.codeComponent;
     const unsupported = (message) => {
       options.diagnostic?.({
@@ -3416,55 +4162,113 @@ function prepopulateValue(row, identity, now) {
       return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>${original}`;
     };
     if (!component) {
+      // On a rich text column the style enables the platform's own editor (RICHTEXT_HOSTED_V2_CONTROL), no finding here.
+      if (!field.richText)
+        options.diagnostic?.({
+          code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+          form: definition?.id,
+          field: field.name,
+          message: `Code component metadata for ${field.label} has no exported desktop FormXml binding; the native control is rendered.`,
+        });
+      return original;
+    }
+    // The host refuses a column type it does not support before loading the component: the native control stays
+    // and the form's summary names the column (captured).
+    const admission = nativeFieldAdmission(field.control, field.dataverseType);
+    if (!admission.admitted) {
+      const message = nativeFieldRefusal(admission.typeCode ?? 'Unknown', field.label, field.name);
+      pcfRefusals.push({ message, link: true });
       options.diagnostic?.({
         code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        reason: 'PCF_NATIVE_TYPE_UNSUPPORTED',
         form: definition?.id,
         field: field.name,
-        message: `Code component metadata for ${field.label} has no exported desktop FormXml binding; the native control is rendered.`,
+        sourceFile: component.sourceFile,
+        message,
       });
       return original;
     }
     if (!options.codeComponent)
       return unsupported(`The enabled code component for ${field.label} requires its solution control sources.`);
-    if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name)
-      return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
-    const bindings = nativeCodeComponentBindings(field, component, value);
+    if (!component.boundAttributes.includes(field.name))
+      return unsupported(`Code component ${component.name} must bind to its native form field ${field.name}.`);
+    const bindings = nativeCodeComponentBindings(field, component);
     if (bindings.error) return unsupported(bindings.error);
-    const { args, properties, propertyTypes } = bindings;
-    const attributes = Object.fromEntries(
-      Object.entries({
-        DisplayName: field.label,
-        LogicalName: field.name,
-        RequiredLevel: field.required
-          ? 2
-          : { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 }[
-              String(field.requiredLevel ?? '').toLowerCase()
-            ],
-        MaxLength: field.maxLength,
-        MinValue: field.minimum,
-        MaxValue: field.maximum,
-        Precision: field.precision,
-        PrecisionSource: field.precisionSource,
-        Behavior: { UserLocal: 1, DateOnly: 2, TimeZoneIndependent: 3 }[field.dateTimeBehavior],
-        Format: field.format,
-        Targets: field.targets,
-        IsSecured: field.isSecured,
-        Options: field.options?.map((option) => ({ Label: option.label, Value: option.value })),
-        DefaultValue: field.defaultValue,
-      }).filter(([, item]) => item !== undefined),
-    );
+    const { args, properties, propertyTypes, ignored } = bindings;
+    if (ignored.length)
+      options.diagnostic?.({
+        code: 'PCF_NATIVE_BINDING_UNSUPPORTED',
+        severity: 'warning',
+        reason: 'PCF_NATIVE_OTHER_COLUMN_BINDING',
+        form: definition?.id,
+        field: field.name,
+        sourceFile: component.sourceFile,
+        message: nativeOtherColumnBindingMessage(component, field, ignored),
+      });
+    // The field label and the form record (mode.label and mode.contextInfo for the component). The record name is
+    // the saved value, and only when this form shows the name column readably to the visitor.
+    const recordName = id ? nativeRecordName(readRecord, mapping, fields, tableFields) : null;
+    let mounted = null,
+      statics = {},
+      refusal = null;
     const host = await options.codeComponent({
       name: component.name,
       args,
-      nativeBinding: { id: field.id, control: field.control, properties, propertyTypes, attributes },
+      nativeBinding: {
+        id: field.id,
+        control: field.control,
+        properties,
+        propertyTypes,
+        ...nativeBindingColumnFacts(field, tableFields),
+        context: {
+          label: field.label,
+          entityId: id ? canonicalId(id) : null,
+          entityTypeName: schema.entity,
+          entityRecordName: recordName,
+        },
+      },
+      // The saved PCF control state is scoped to this form (and step), not only to the field id.
+      stateScope: { form: definition?.id ?? name, step: schema?.stepId ?? null },
+      // The binding the component mounts with: its dynamic property is the one the hidden input carries.
+      onNativeBinding: (binding, converted) => {
+        mounted = binding;
+        statics = converted;
+      },
+      onNativeRefused: (detail) => {
+        refusal = detail;
+      },
     });
-    // Original inputs retain validators, names and the native form postback.
-    // The client hides them after a successful mount and reveals them on failure.
-    return `<div data-pcf-native-field="${attr(field.id)}"><div data-pcf-native-input>${original}</div>${host}</div>`;
+    // A static value the host cannot convert refuses the control like the platform: the native control and an
+    // "unknown problem" summary entry (captured).
+    if (refusal?.reason === 'PCF_NATIVE_STATIC_UNCONVERTIBLE') {
+      pcfRefusals.push({ message: nativeFieldUnknownProblem(field.label, field.name), link: false });
+      return original;
+    }
+    // A local refusal (sources, feature declarations, bindings) keeps the native control under its alert.
+    if (!mounted || !host.startsWith(`<script src="${PCF_HOST_SCRIPT}"></script>`)) return `${host}${original}`;
+    const dynamic = mounted.properties[0] ?? null;
+    pcfFields.add(field.name);
+    if (!dynamic) pcfUnposted.add(field.name);
+    return nativeFieldComponentMarkup({
+      field,
+      component,
+      host,
+      nameAttribute: nameAttr(field),
+      current: value(field),
+      disabled: readOnly || field.readOnly === true || ['status', 'state'].includes(field.control),
+      readOnlyForm: readOnly,
+      dynamic,
+      statics,
+      // The platform library scripts (React, ReactDOM, Fluent UI) the page loads once before the first field host's
+      // bundle, where the platform loads it: a hook for the integration of the platform-library loader; '' until then.
+      platformScripts: platformScriptsBefore(),
+    });
   };
 
   // Subgrids, quick views and notes cells.
   const extraControls = new Map();
+  // A create-mode form with a Document Locations subgrid shows the platform's unknown-failure alert (F7 insert-s0).
+  let documentsFailure = '';
   const subgridLabel = (label) =>
     options.config?.observed?.subgridLabelMarkup === 'encoded' ? escape(label) : renderFormLabel(label);
   const subgridLabelMarkup = (cell, label) => {
@@ -3475,6 +4279,15 @@ function prepopulateValue(row, identity, now) {
     if (unbound) return '';
     return ` data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}"`;
   };
+  // A dataset code component subgrid's grid element names its parent also in insert mode (the zero GUID) and the
+  // referenced role of a self-referential relationship (captured, paqvilo-developer hosted-f2 summary-F2 "PCF subgrid
+  // chain": s0a, s0b, s0c pcfchain.json, pcf1 and pcf2 pcfvariants.json).
+  const pcfSubgridReferenceAttributes = (unbound, cell, model) => {
+    if (unbound) return '';
+    const role = canonicalId(cell.entity) === canonicalId(schema.entity) ? ' data-ref-rel-role="Referenced"' : '';
+    return ` data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(id ? canonicalId(id) : '00000000-0000-0000-0000-000000000000')}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}"${role}`;
+  };
+  const pcfSubgridCells = new Set();
   const subgridParentAccount = () => {
     if (!bs.v5) return '';
     return ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}"`;
@@ -3546,6 +4359,7 @@ function prepopulateValue(row, identity, now) {
     if (cell.type === 'notes') {
       const row = metadataFor(metadataRows, 100000005, () => true);
       const settings = { ...cell.settings, ...settingsJson(fieldOf(row, 'notes_settings')) };
+      const createConfigured = settings.CreateEnabled === true;
       const target = { objectid: { id, logical_name: schema.entity } };
       // A form whose notes allow adding carries its note attachment settings, even when the
       // visitor may not add.
@@ -3567,6 +4381,28 @@ function prepopulateValue(row, identity, now) {
         !store.allowed(schema.entity, 'appendTo', record, identity)
       )
         settings.CreateEnabled = false;
+      // A notescontrol whose default tab is ActivitiesTab is the activity timeline: it lists the record's activities
+      // instead of its notes and adds portal comments, not notes.
+      const timeline = String(cell.defaultTab ?? '').toLowerCase() === 'activitiestab';
+      if (timeline) {
+        settings.EditEnabled = false;
+        settings.DeleteEnabled = false;
+        // Adding a comment creates a portal comment regarding the record: the visitor needs Create and Append on the portal
+        // comment table and AppendTo on the record (the open-sourced portal's NotesControlTemplate permission check).
+        settings.CreateEnabled = createConfigured && portalCommentAllowed(store, schema.entity, id, record, identity);
+        const custom = customTable(schema.entity);
+        options.diagnostic?.({
+          code: custom ? 'PORTAL_TIMELINE_CUSTOM_TABLE_NOTES' : 'PORTAL_TIMELINE_ACTIVITIES',
+          severity: custom ? 'warning' : 'info',
+          level: 'contract',
+          component: kind,
+          form: definition?.id,
+          control: cell.id,
+          message: custom
+            ? `The timeline on ${schema.entity} shows activities, not notes: showing both notes and activities on one form for a custom table is not supported with configuration (Learn, configure-notes).`
+            : `The timeline on ${schema.entity} shows the record's activities instead of its notes.`,
+        });
+      }
       extraControls.set(
         cell.id,
         renderNotesControl({
@@ -3579,14 +4415,18 @@ function prepopulateValue(row, identity, now) {
           language: formLanguage,
           bs,
           rowspan: cell.rowspan,
+          timeline,
+          rich: !timeline && notesRichTextEnabled(portal),
+          richTextCompatibility,
+          controlId: cell.id,
         }),
       );
       continue;
     }
     const label = cell.label ?? cell.id;
-    // A Document Locations subgrid is the SharePoint document control (Learn, manage-sharepoint-documents). Its markup and
-    // service wire format are not documented: a local, labelled grid over /_apps/portal-documents/ (sharepoint-documents.mjs
-    // createPortalDocumentService) lists, uploads, downloads and deletes per the visitor's table permissions.
+    // A Document Locations subgrid is the SharePoint document control (Learn, manage-sharepoint-documents), rendered as hosted
+    // session F7 recorded it (sharepoint-documents.mjs sharePointControlMarkup): its services answer the recorded failure
+    // shapes with the integration off; with it on they serve the local storage route (answers labelled local).
     if (canonicalId(cell.entity) === 'sharepointdocumentlocation') {
       options.diagnostic?.({
         code: 'PORTAL_SHAREPOINT_DOCUMENTS_LOCAL',
@@ -3595,23 +4435,54 @@ function prepopulateValue(row, identity, now) {
         component: kind,
         form: definition?.id,
         grid: cell.id,
-        message: `Subgrid ${label} is the SharePoint document control; the local runtime renders a local document grid over its document service.`,
+        message: `Subgrid ${label} is the SharePoint document control; with SharePoint storage configured its listing, uploads, folders and deletes are served locally.`,
       });
-      const heading =
-        cell.showLabel === false
-          ? ''
-          : `<h3 class="${bs.info} form-subgrid-heading"><label class="field-label">${escape(label)}</label></h3>`;
-      // Learn: uploading needs the parent record, so a create-mode form shows no document grid.
+      const info = `<div class="${bs.info}">${subgridLabelMarkup(cell, label)}</div>`;
+      if (!id) {
+        // Create mode (F7 insert-s0): a multiple file input named like a form field, and the form's unknown-failure alert.
+        documentsFailure ||= `<div class="alert alert-block alert-danger">An unknown failure has occurred. Error ID # [${randomUUID()}]</div>`;
+        extraControls.set(
+          cell.id,
+          `${info}<div class="control"><input type="file" multiple="multiple" name="${attr(ids.names + cell.id)}" id="${attr(cell.id)}" class="sharepoint-documents table table-striped"></div>`,
+        );
+        continue;
+      }
+      // F7 steps-s0: a multistep step that edits the record named in the query string needs its primary key column.
+      if (
+        kind === 'webform' &&
+        Number(fieldOf(componentMetadata, 'entitysourcetype') ?? 100000001) === 100000001 &&
+        !fieldOf(componentMetadata, 'primarykeyattributelogicalname')
+      )
+        throw componentError(
+          `A step of multistep form '${name}' shows the document control but names no primary key column (adx_primarykeyattributelogicalname).`,
+          500,
+          'FORM_DOCUMENTS_PRIMARY_KEY_MISSING',
+        );
+      // Add and delete follow the visitor's document permissions; a read-only form offers neither (F7 read-s0).
+      const allowed =
+        typeof store.allowed === 'function'
+          ? portalDocumentAccess(store, { entity: schema.entity, row: record }, identity)
+          : { upload: true, delete: true };
       extraControls.set(
         cell.id,
-        id
-          ? `${heading}<div class="control"><div id="${attr(cell.id)}" class="subgrid" data-mirage-component="portal-documents" data-pp-documents data-documents-url="/_apps/portal-documents/${encodeURIComponent(schema.entity)}/${encodeURIComponent(canonicalId(id))}" aria-busy="true"><table class="table"><thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Modified</th><th scope="col"><span class="sr-only visually-hidden">Actions</span></th></tr></thead><tbody></tbody></table><p class="message" role="status" hidden></p></div></div>`
-          : `${heading}<div class="control"><p class="message" role="status" data-mirage-component="portal-documents">Documents can be added after the record is saved.</p></div>`,
+        `${info}<div class="control">${sharePointControlMarkup({
+          controlId: cell.id,
+          entity: schema.entity,
+          id: canonicalId(id),
+          websiteId,
+          canAdd: !readOnly && allowed.upload,
+          canDelete: !readOnly && allowed.delete,
+          portal,
+        })}</div>`,
       );
       continue;
     }
-    if (!id) {
-      // Native subgrids bind to an existing record: Insert mode renders an empty plain cell.
+    const gridMetadata = metadataFor(metadataRows, 100000003, (row) => fieldOf(row, 'subgrid_name') === cell.id);
+    const codeComponentGrid = Number(fieldOf(gridMetadata, 'controlstyle')) === 756150001;
+    // Native subgrids bind to an existing record: Insert mode renders an empty plain cell. A code component subgrid
+    // still mounts there without a parent record: its requests send entityId "" and a related subgrid lists no rows,
+    // an unrelated one its view (captured, paqvilo-developer hosted-f2 summary-F2 "PCF-01c / CPCF-040c", pcf1, pcf2).
+    if (!id && !codeComponentGrid) {
       extraControls.set(cell.id, '');
       continue;
     }
@@ -3635,20 +4506,6 @@ function prepopulateValue(row, identity, now) {
       }),
       ...(options.referenceForm ? { settings: {} } : {}),
     };
-    const gridMetadata = metadataFor(metadataRows, 100000003, (row) => fieldOf(row, 'subgrid_name') === cell.id);
-    let codeComponentNotice = '';
-    if (Number(fieldOf(gridMetadata, 'controlstyle')) === 756150001) {
-      const message = `Subgrid ${label} uses a configured dataset code component. Its hosted relationship binding is not implemented locally; the native related grid below is a fallback.`;
-      options.diagnostic?.({
-        code: 'PCF_NATIVE_DATASET_UNSUPPORTED',
-        severity: 'warning',
-        component: kind,
-        form: definition?.id,
-        grid: cell.id,
-        message,
-      });
-      codeComponentNotice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
-    }
     // A subgrid without a relationship (empty RelationshipName) lists its whole view and carries no
     // parent attributes.
     const unbound = !String(cell.relationship ?? '').trim();
@@ -3658,10 +4515,74 @@ function prepopulateValue(row, identity, now) {
         501,
         'SUBGRID_RELATIONSHIP_REQUIRED',
       );
+    let codeComponentNotice = '';
+    if (codeComponentGrid) {
+      const control = cell.codeComponent;
+      const parameters = Object.entries(control?.parameters ?? {});
+      const dataset = parameters.filter(([, parameter]) => parameter.kind === 'dataset');
+      const supported =
+        dataset.length === 1 &&
+        // An N:N subgrid mounts too: the grid service scopes its rows through the intersect relationship of the signed
+        // configuration, as for the native N:N subgrid.
+        parameters.every(([, parameter]) => ['static', 'dataset'].includes(parameter.kind));
+      const binding = dataset[0]?.[1];
+      const component =
+        supported &&
+        (!binding.entity || binding.entity === model.entity) &&
+        (!binding.viewId || binding.viewId === model.views[0].id) &&
+        (await renderNativeDataset(options, model, {
+          name: control?.name,
+          args: Object.fromEntries(
+            parameters
+              .filter(([, parameter]) => parameter.kind === 'static')
+              .map(([name, parameter]) => [name, parameter.value]),
+          ),
+          property: dataset[0][0],
+          // The native subgrid's own signed scope: the grid service restricts rows to the parent record.
+          secure: {
+            t: 'subgrid',
+            kind,
+            form: schemaSourceId ?? definition?.id ?? name,
+            step: schema.stepId ?? null,
+            grid: cell.id,
+            parent: canonicalId(id),
+          },
+          // The parent form record the subgrid host reports as mode.contextInfo (lists send none).
+          context: { entityTypeName: schema.entity, entityId: id ? canonicalId(id) : '' },
+          gridElement: (layouts, view) => {
+            const settings = model.settings ?? {};
+            return `<div class="entity-grid subgrid${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-default-pcf-controlid="${attr(cell.id)}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? ' ' + attr(settings.GridCssClass) : ''}" data-mobile-view-enabled="${!bs.v5}"${pcfSubgridReferenceAttributes(unbound, cell, model)} data-select-mode="None" data-selected-view="${attr(view.id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${subgridParentAccount()} data-view-layouts="${base64Json(layouts)}" data-pcf-view-host>`;
+          },
+        }));
+      if (component) {
+        const heading =
+          cell.showLabel === false
+            ? ''
+            : `<h3 class="${bs.info} form-subgrid-heading"><label class="field-label">${escape(label)}</label></h3>`;
+        // div#<name>.subgrid > the grid element > the control, in the subgrid cell also in insert mode (captured).
+        pcfSubgridCells.add(cell.id);
+        extraControls.set(
+          cell.id,
+          `${heading}<div class="control"><div id="${attr(cell.id)}" class="subgrid">${component}</div></div>`,
+        );
+        continue;
+      }
+      // The native grid fallback binds to an existing record: an insert-mode cell stays empty.
+      if (!id) {
+        extraControls.set(cell.id, '');
+        continue;
+      }
+      codeComponentNotice = nativeDatasetFallback(options, `Subgrid ${label}`, {
+        component: kind,
+        form: definition?.id,
+        grid: cell.id,
+      });
+    }
     const actions = actionLinks(model.settings, {
       portal,
       requestUrl: context.request?.url ?? 'http://localhost/',
       website: websiteId,
+      lcid: actionLanguage(context, portal),
     });
     for (const action of actions)
       action.Enabled =
@@ -3669,6 +4590,8 @@ function prepopulateValue(row, identity, now) {
         (action.Type !== 3 ||
           !store.allowed ||
           store.allowed(cell.entity, 'create', unbound ? {} : { [model.relationship.to]: id }, identity));
+    // With the view picker on, the layouts carry every picker view: the grid draws its view dropdown and a choice loads
+    // that view's rows (captured, paqvilo-developer hosted-f2 summary-F2 "Ordinary subgrid view picker", runs a and c).
     const layouts = gridLayouts(model, {
       secureBase: {
         t: 'subgrid',
@@ -3772,7 +4695,12 @@ function prepopulateValue(row, identity, now) {
     if (extraControls.has(cell.id)) return extraControls.get(cell.id);
     const resolved = byName.get(cell.name) ?? cell;
     if (resolved.ownerHidden) return '';
-    const fieldValidatorsList = fieldValidators(resolved, { linksEnabled, readOnly });
+    // The control renders first: whether a code component mounts on the field decides its range copy.
+    const control = await input(resolved, cell);
+    const fieldValidatorsList = fieldValidators(resolved, {
+      linksEnabled,
+      numberCopyLocale: numberCopyLocale(resolved),
+    });
     // A server-side validation failure (postback) shows the failing validator and starts it
     // invalid (no style, isvalid = "False").
     applyPostbackValidatorErrors(postback, resolved, fieldValidatorsList);
@@ -3793,11 +4721,14 @@ function prepopulateValue(row, identity, now) {
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
     // Bootstrap 5 marks a required column required even when it is read-only.
-    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${control}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === 'quickform') return 'crmquickform-cell';
-    if (cell.type === 'subgrid') return id ? 'subgrid-cell' : '';
+    // The document control's cell (F7 view-s0, insert-s0), in create mode too.
+    if (cell.type === 'subgrid' && canonicalId(cell.entity) === 'sharepointdocumentlocation')
+      return 'sharepoint-documents table table-striped-cell';
+    if (cell.type === 'subgrid') return id || pcfSubgridCells.has(cell.id) ? 'subgrid-cell' : '';
     if (cell.type === 'notes') return id ? 'notes-cell' : '';
     if (cell.type === 'webresource') return 'web-resource-cell';
     const field = byName.get(cell.name);
@@ -3887,9 +4818,28 @@ function prepopulateValue(row, identity, now) {
     repeated.sort((a, b) => [...seen].indexOf(a) - [...seen].indexOf(b));
     if (repeated.length)
       layoutHtml += `<div class="alert alert-danger alert-block">${escape(repeated.join(', '))} field is present multiple times on this form. Only first field will be rendered in the UI</div>`;
+    // Each written tab, section and cell element, in document order (the form's render provenance).
+    const layoutCell = (cell, field) =>
+      renderedLayout.cells.push({
+        name: cell.name ?? null,
+        id: field?.id ?? cell.id ?? null,
+        field: field?.name ?? null,
+        type: cell.type ?? null,
+        entity: cell.entity ?? null,
+        viewId: cell.viewId ?? null,
+        lookup: cell.lookup ?? null,
+        quickFormId: cell.schema?.formId ?? null,
+        createFormId: field?.createFormId ?? null,
+      });
+    let geolocationRendered = false;
     for (const tab of autoSteps ? [autoSteps.tabs[autoSteps.index]] : schema.layout) {
       const tabRow = tabMetadata(tab.name);
       const tabLabel = formLabel(fieldOf(tabRow, 'label'), tab.label ?? '');
+      renderedLayout.tabs.push({
+        name: tab.name ?? null,
+        label: tabLabel,
+        metadataId: canonicalId(tabRow?.id) || null,
+      });
       let tabHtml = tab.showLabel ? `<h2 class="tab-title">${escape(tabLabel)}</h2>` : '';
       tabHtml += `<div${tabNameAttribute(tab.name)} class="tab clearfix${fieldOf(tabRow, 'cssclass') ? ' ' + attr(fieldOf(tabRow, 'cssclass')) : ''}">`;
       for (const column of tab.columns) {
@@ -3897,20 +4847,33 @@ function prepopulateValue(row, identity, now) {
         for (const section of column.sections) {
           // A hidden section leaves an empty fieldset.
           if (section.hidden) {
+            renderedLayout.sections.push({ name: section.name ?? null, hidden: true });
             tabHtml += '<fieldset></fieldset>';
             continue;
           }
           const sectionRow = sectionMetadata(section.name);
           const sectionLabel = formLabel(fieldOf(sectionRow, 'label'), section.label ?? '');
           const widths = section.columnWidths ?? [100];
-          // A visible section always names itself, an unlabelled one with an empty name.
-          tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${sectionLegend(section.showLabel, sectionLabel)}<table role="presentation"${sectionNameAttribute(section.name)} class="section${fieldOf(sectionRow, 'cssclass') ? ' ' + attr(fieldOf(sectionRow, 'cssclass')) : ''}"><colgroup>${sectionColumnWidths(widths)}<col></colgroup><tbody>`;
+          renderedLayout.sections.push({
+            name: section.name ?? null,
+            label: sectionLabel,
+            metadataId: canonicalId(sectionRow?.id) || null,
+          });
+          // A visible section always names itself, an unlabelled one with an empty name. The first map section of a
+          // geolocation form holds its mapping fields.
+          const geolocationSection = (candidate) => {
+            if (geolocationRendered || !/section_map$/i.test(String(candidate.name ?? ''))) return false;
+            geolocationRendered = true;
+            return true;
+          };
+          tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${sectionLegend(section.showLabel, sectionLabel)}${geolocationSection(section) ? geolocationFields(componentMetadata, ids, portal.settings) : ''}<table role="presentation"${sectionNameAttribute(section.name)} class="section${fieldOf(sectionRow, 'cssclass') ? ' ' + attr(fieldOf(sectionRow, 'cssclass')) : ''}"><colgroup>${sectionColumnWidths(widths)}<col></colgroup><tbody>`;
           for (const row of section.rows) {
             tabHtml += '<tr>';
             for (const cell of row) {
               const field = byName.get(cell.name);
               // A hidden cell and the repeated cells of a column already on the form render
               // nothing; spacers, the hidden owner and unsupported (Int64) columns an empty cell.
+              if (omittedField(field)) continue;
               if (cell.hidden) continue;
               if (cell.name && field) {
                 if (placed.has(cell.name)) continue;
@@ -3926,6 +4889,7 @@ function prepopulateValue(row, identity, now) {
                 // With ShowUnsupportedFields the cell names the column, its label, type and format.
                 const type = String(field.dataverseType ?? '');
                 const message = `Unsupported: DataFieldName="${field.name}" Label="${field.label}", AttributeType="${UNSUPPORTED_TYPE_NAMES[type.toLowerCase()] ?? type}", Format="${field.format ?? ''}"`;
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell unsupported-cell"><div class="info"><label for="${attr(field.id)}" class="field-label">${escape(field.label)}</label><div class="validators"></div></div><div class="control" data-logical-name="${attr(field.name)}"><span id="${attr(field.id)}">${escape(message)}</span></div></td>`;
                 continue;
               }
@@ -3934,6 +4898,7 @@ function prepopulateValue(row, identity, now) {
                 field?.ownerHidden ||
                 (field && UNSUPPORTED_FORM_TYPES.test(String(field.dataverseType ?? '')))
               ) {
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell"></td>`;
                 continue;
               }
@@ -3946,10 +4911,12 @@ function prepopulateValue(row, identity, now) {
                 const cut = full.indexOf('<div class="validators">');
                 const partial =
                   cut >= 0 ? full.slice(0, cut + '<div class="validators">'.length) : `<div class="${bs.info}">`;
+                layoutCell(cell, field);
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? ' ' + suffix : ''}">${partial}<div class="alert alert-block alert-danger"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${escape(failure.message)}</p></div> </div>${TRUNCATED_ACTIONS} </td></tr></tbody></table></fieldset></div>${progress?.position === 'bottom' ? progress.html + '</div>' : ''}</div></div>${TRUNCATED_CLOSE}`;
                 truncated = true;
                 break;
               }
+              layoutCell(cell, field);
               tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? ' ' + suffix : ''}"${hidden ? ' style="display: none;"' : ''}>${await cellControl(cell)}</td>`;
             }
             if (truncated) break;
@@ -3974,52 +4941,52 @@ function prepopulateValue(row, identity, now) {
       if (truncated) break;
     }
   } else
-    for (const field of fields)
+    for (const field of fields.filter((candidate) => !omittedField(candidate)))
       layoutHtml += `<div class="form-group"${field.hidden ? ' style="display: none;"' : ''}>${await cellControl(field)}</div>`;
 
   // Attach file (adx_attachfile*): the platform's file upload control. Its files are saved as
   // annotations by the form service (JSON transport: data files; postback: multipart parts).
   let attachHtml = '';
-  if (!readOnly && truthy(fieldOf(componentMetadata, 'attachfile'))) {
+  // Without annotation Create on the record the control is not rendered (formAttachmentAllowed).
+  if (
+    !readOnly &&
+    truthy(fieldOf(componentMetadata, 'attachfile')) &&
+    formAttachmentAllowed(store, identity, schema.entity, id)
+  ) {
     // Advanced form steps name the accepted types, multiple files and file count with their own
     // columns (adx_accept, adx_allowmultiplefiles, adx_maximumnooffiles).
     const mime = String(
       fieldOf(componentMetadata, 'attachfileaccept') ?? fieldOf(componentMetadata, 'accept') ?? '',
     ).trim();
     const extensions = String(fieldOf(componentMetadata, 'attachfileacceptextensions') ?? '').trim();
-    const requiredFile = truthy(fieldOf(componentMetadata, 'attachfilerequired'));
     const multiple = truthy(
       fieldOf(componentMetadata, 'attachfileallowmultiple') ?? fieldOf(componentMetadata, 'allowmultiplefiles'),
     );
     const label = formLabel(fieldOf(componentMetadata, 'attachfilelabel'), 'Attach a File');
     const maxKb = Number(fieldOf(componentMetadata, 'attachfilemaxsize')) || 0;
     // The control counts five files when several are allowed (platform default) unless the step sets its count.
-    // The record's existing note attachments use up the count (a revisited start step whose
-    // record already carries one attachment offers 2 of 3).
-    let attached = 0;
-    if (id && readProvider?.fetchXml) {
-      const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${attr(canonicalId(id))}"/></filter></entity></fetch>`;
-      const rows = await readProvider.fetchXml(xml, identity).then(
-        (result) => result.entities ?? result.value ?? [],
-        () => [],
-      );
-      attached = rows.filter((row) => row.filename || truthy(row.isdocument)).length;
-    }
-    const maxFiles = Math.max(
-      0,
-      (Number(fieldOf(componentMetadata, 'maximumnooffiles')) || (multiple ? 5 : 1)) - attached,
-    );
+    // The record's notes use up the count (a revisited start step whose record already carries one attachment offers 2
+    // of 3); the count is the system's (formAttachmentCount). A re-rendered postback keeps the posted MaxFile, as an
+    // ASP.NET hidden field does, while the hint states the current count (hosted session F2, attach runs k and l).
+    const stagedFiles = postback?.stagedAttachments ?? [];
+    const attached = await formAttachmentCount(readProvider, identity, schema.entity, id).catch(() => 0);
+    // Hosted session F2 (attach runs b/e, f/g, i/j, k/l): existing notes do not satisfy Required, so the control stays
+    // required (aria-required and its validator) whatever the record already carries.
+    const requiredFile = truthy(fieldOf(componentMetadata, 'attachfilerequired'));
+    const maxFiles = Math.max(0, formAttachmentLimit(componentMetadata) - attached);
     const sizeMb = maxKb ? Math.round((maxKb / 1024) * 10) / 10 : 0;
     const kinds = [mime ? mime.replace(/\/\*$/, '').replace(/^[^/]+\//, '') : '', extensions]
       .filter(Boolean)
       .join(', ');
-    const hint = `You can upload a maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'}, ${maxFiles === 1 ? '' : 'each '}up to ${sizeMb}MB.${kinds ? ' Supported files include ' + kinds + '.' : ''}`;
+    // Hosted session F2: with several files allowed the hint states the remaining count as "N files, each up to"
+    // ("1 files" included); with one file it always reads "1 file, up to", while MaxFile holds the remaining count (0).
+    const allowance = multiple ? `${maxFiles} files, each up to` : '1 file, up to';
+    const hint = `You can upload a maximum of ${allowance} ${sizeMb}MB.${kinds ? ' Supported files include ' + kinds + '.' : ''}`;
     const sizeMessage = formLabel(fieldOf(componentMetadata, 'attachfilesizeerrormessage'), '');
     const typeMessage = formLabel(fieldOf(componentMetadata, 'attachfiletypeerrormessage'), '');
     const name = (suffix) => `${attr(ids.names)}AttachFile${suffix}`;
     const hiddenField = (suffix, fieldValue) =>
       `<input type="hidden" name="${name(suffix)}" id="AttachFile${suffix}"${valueAttr(fieldValue)}>`;
-    const stagedFiles = postback?.stagedAttachments ?? [];
     const stagedFileInfo = stagedFiles
       .map(
         (file) =>
@@ -4031,11 +4998,16 @@ function prepopulateValue(row, identity, now) {
       `<div class="errordiv ${span === 'retrySpanforgeneric' ? 'generic' : 'deletefail'} alert-danger" style="display:none;"><div class="retrygenericdiv"><img alt="retry" class="imagetag" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/xrm-adx/icons/warning.png'; img.alt = 'retry'; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/icons/warning.png" style="padding: 5px 5px 5px 12px"></div><span class="${span}" style="margin-left:27px;"></span><button aria-hidden="true" class="close" data-dismiss="modal" type="button" style="border:none; background:none;float:right;margin-left:auto" onclick="${close}();"><span aria-hidden="true">×</span><span class="sr-only">Close</span></button></div>`;
     const errorModal = (id, title, body, close) =>
       `<div class="modal fade in errors" id="${id}"><div class="modal-dialog error-modal-dialog"><div class="modal-content" id="modal-content-new"><div class="error-modal-header modal-header" id="error-modal-header" style="display:block;"><h1 class="error-modal-title modal-title" id="error-modal-title">${title}<button aria-hidden="true" class="close" data-dismiss="modal" type="button" style="border:none; background:none;float:right" onclick="${close}();"><span aria-hidden="true">×</span><span class="sr-only">Close</span></button></h1></div><div class="modal-body ${body} modal-content-new" id="${body}"></div><div class="error-modal-footer modal-footer"><button type="button" class="btn btn-primary" data-dismiss="modal" onclick="${close}();">OK</button></div></div></div></div>`;
-    // The upload instance id is an opaque platform token; a stable local value stands in.
-    const instanceId = createHash('sha256')
-      .update(`attach\u0000${definition?.id ?? name}`)
-      .digest('base64');
-    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ''}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? ' required' : ''}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ''} name="${name('')}" id="AttachFile" accept="${attr(mime + ',' + extensions)}" onchange="chooseAttachment();"${fileUploadMessageAttribute(sizeMessage, 'data-file-size-error-message')}${fileUploadMessageAttribute(typeMessage, 'data-file-type-error-message')}${requiredAttr}></div>${hiddenField('_HiddenField_Location', 'CrmDocument')}${hiddenField('_HiddenField_FormID', canonicalId((kind === 'webform' ? schema.stepId : null) ?? definition?.id ?? ''))}${hiddenField('_HiddenField_FormType', kind === 'webform' ? 'multistep' : 'basic')}${hiddenField('_HiddenField_InstanceId', instanceId)}${hiddenField('_HiddenField_RegardingId', id ? canonicalId(id) : '')}${hiddenField('_HiddenField_MaxFile', String(maxFiles))}${hiddenField('_HiddenField_MaxFileSizeInKB', String(maxKb * 1024))}${hiddenField('_HiddenField_SupportedFileType', extensions)}${hiddenField('_HiddenField_SupportedMimeType', mime)}${hiddenField('_HiddenField_SupportedType', mime + ',' + extensions)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning('retrySpanforgeneric', 'genericcloseAlert')}${warning('retrySpanfordelete', 'deletecloseAlert')}</div>${hiddenField('_HiddenField_AnnotationIds', stagedFiles.length ? JSON.stringify(stagedFiles.map((file) => file.id)) : '')}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0">${stagedFileInfo}</div></div></div>${errorModal('ModalToShowErrorForFileSize', 'You’re over the file size limit', 'file-size', 'closeModalForFileSize')}${errorModal('ModalToShowErrorForFileLimit', 'File upload limit reached', 'file-limit', 'closeModalForFileLimit')}${errorModal('ModalToShowErrorForFileType', 'Unsupported file formats', 'file-type', 'closeModalForFileType')}`;
+    // The upload instance id (sent as x-ms-form-session-id) is an opaque platform token; a stable local value stands in
+    // on advanced form steps. A basic form renders it without a value and sends an empty x-ms-form-session-id (hosted
+    // session F2, attach and attachdel runs).
+    const instanceId =
+      kind === 'webform'
+        ? createHash('sha256')
+            .update(`attach\u0000${definition?.id ?? name}`)
+            .digest('base64')
+        : '';
+    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ''}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? ' required' : ''}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ''} name="${name('')}" id="AttachFile" accept="${attr(mime + ',' + extensions)}" onchange="chooseAttachment();"${fileUploadMessageAttribute(sizeMessage, 'data-file-size-error-message')}${fileUploadMessageAttribute(typeMessage, 'data-file-type-error-message')}${requiredAttr}></div>${hiddenField('_HiddenField_Location', 'CrmDocument')}${hiddenField('_HiddenField_FormID', canonicalId((kind === 'webform' ? schema.stepId : null) ?? definition?.id ?? ''))}${hiddenField('_HiddenField_FormType', kind === 'webform' ? 'multistep' : 'basic')}${hiddenField('_HiddenField_InstanceId', instanceId)}${hiddenField('_HiddenField_RegardingId', id ? canonicalId(id) : '')}${hiddenField('_HiddenField_MaxFile', postback?.postedMaxFile ?? String(maxFiles))}${hiddenField('_HiddenField_MaxFileSizeInKB', String(maxKb * 1024))}${hiddenField('_HiddenField_SupportedFileType', extensions)}${hiddenField('_HiddenField_SupportedMimeType', mime)}${hiddenField('_HiddenField_SupportedType', mime + ',' + extensions)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning('retrySpanforgeneric', 'genericcloseAlert')}${warning('retrySpanfordelete', 'deletecloseAlert')}</div>${hiddenField('_HiddenField_AnnotationIds', stagedFiles.length ? JSON.stringify(stagedFiles.map((file) => file.id)) : '')}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0">${stagedFileInfo}</div></div></div>${errorModal('ModalToShowErrorForFileSize', 'You’re over the file size limit', 'file-size', 'closeModalForFileSize')}${errorModal('ModalToShowErrorForFileLimit', 'File upload limit reached', 'file-limit', 'closeModalForFileLimit')}${errorModal('ModalToShowErrorForFileType', 'Unsupported file formats', 'file-type', 'closeModalForFileType')}`;
     if (requiredFile)
       validators.push({
         id: 'RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds',
@@ -4127,10 +5099,49 @@ function prepopulateValue(row, identity, now) {
       const canUpdate = !store.allowed || store.allowed(mapping.logicalName, 'update', record, identity);
       const canDelete = !store.allowed || store.allowed(mapping.logicalName, 'delete', record, identity);
       const linkCss = (action) => attr(`${action.ButtonCssClass || 'btn btn-default'} btn`);
-      // Both state buttons render; the app bundle hides the one the record state rules out.
-      const stateButton = (action, type) =>
-        `<button class="${type}-link ${linkCss(action)}" data-url="/_services/action-${type}/${websiteId}" href="/_services/action-${type}/${websiteId}" type="button">${escape(formLabel(action.ButtonLabel, type === 'activate' ? 'Activate' : 'Deactivate'))}</button>`;
-      for (const action of configuredActions) {
+      // The app bundle hides whichever rendered state button the current record state rules out.
+      // A table-specific action always posts to its bound form endpoint, which rechecks the exported action.
+      const stateButton = async (action, type, index, bound = false) => {
+        if (!action.FilterCriteria && !bound)
+          return renderStateActionButton({
+            action,
+            type,
+            css: linkCss(action),
+            url: `/_services/action-${type}/${websiteId}`,
+            formLabel,
+          });
+        try {
+          if (
+            await nativeFormActionApplies(action, {
+              entity: schema.entity,
+              idColumn: mapping.idColumn,
+              recordId: id,
+              readProvider,
+              identity,
+              context: { website: portal.website },
+            })
+          )
+            return renderStateActionButton({
+              action,
+              type,
+              css: linkCss(action),
+              url: `/__sim/forms/entityform/${encodeURIComponent(definition?.id ?? name)}/submit`,
+              formLabel,
+              index,
+            });
+        } catch (error) {
+          options.diagnostic?.({
+            code: 'FORM_ACTION_FILTER_UNRESOLVED',
+            severity: 'warning',
+            component: 'entityform',
+            form: definition?.name ?? name,
+            action: action.Type,
+            message: error.message,
+          });
+        }
+        return '';
+      };
+      for (const [actionIndex, action] of configuredActions.entries()) {
         if (action.Type === 'DeleteAction' && canDelete) {
           const dialog = formSettings.DeleteDialog ?? {};
           const text = (value, fallback) => formText(value, fallback, formLanguage);
@@ -4151,9 +5162,80 @@ function prepopulateValue(row, identity, now) {
               footer: `<button aria-label="${primary}" class="primary btn btn-primary${dialog.PrimaryButtonCssClass ? ' ' + attr(text(dialog.PrimaryButtonCssClass, '')) : ''}" tabindex="0" title="${primary}" type="button">${primary}</button><button aria-label="${close}" class="cancel btn btn-default${dialog.CloseButtonCssClass ? ' ' + attr(text(dialog.CloseButtonCssClass, '')) : ''}" ${bs.dismiss}="modal" tabindex="0" title="${close}" type="button">${close}</button>`,
             }),
           );
-        } else if (action.Type === 'ActivateAction' && canUpdate) recordButtons.push(stateButton(action, 'activate'));
-        else if (action.Type === 'DeactivateAction' && canUpdate) recordButtons.push(stateButton(action, 'deactivate'));
-        else if (action.Type === 'CreateRelatedRecordAction') {
+        } else if (action.Type === 'ActivateAction' && canUpdate) {
+          const button = await stateButton(action, 'activate', actionIndex);
+          if (button) recordButtons.push(button);
+        } else if (action.Type === 'DeactivateAction' && canUpdate) {
+          const button = await stateButton(action, 'deactivate', actionIndex);
+          if (button) recordButtons.push(button);
+        } else if (NATIVE_STATE_ACTIONS[nativeStateActionKey(action.Type)]?.table) {
+          const key = nativeStateActionKey(action.Type);
+          if (canonicalId(schema.entity) !== NATIVE_STATE_ACTIONS[key].table) {
+            options.diagnostic?.({
+              code: 'FORM_ACTION_TABLE_MISMATCH',
+              severity: 'warning',
+              component: 'entityform',
+              form: definition?.name ?? name,
+              action: action.Type,
+              message: `Native form action '${action.Type}' applies to the ${NATIVE_STATE_ACTIONS[key].table} table only.`,
+            });
+            continue;
+          }
+          if (!canUpdate) continue;
+          const button = await stateButton(action, key, actionIndex, true);
+          if (!button) continue;
+          recordButtons.push(button);
+          if (key === 'resolve-case')
+            recordDialogs.push(
+              resolveCaseDialog({ bs, action, dialog: formSettings.ResolveCaseDialog, actionIndex, formLabel }),
+            );
+          if (key === 'qualify-lead' && Number(action.ShowModal) === 1)
+            recordDialogs.push(
+              qualifyLeadDialog({ bs, action, dialog: formSettings.QualifyLeadDialog, actionIndex, formLabel }),
+            );
+          if (key === 'update-pipeline-phase') {
+            const phases = pipelinePhaseOptions(schema.entity, { metadata: options.metadata, store, schema });
+            if (!phases.length)
+              options.diagnostic?.({
+                code: 'FORM_ACTION_PIPELINE_PHASES_ABSENT',
+                severity: 'warning',
+                component: 'entityform',
+                form: definition?.name ?? name,
+                action: action.Type,
+                message:
+                  'Update Pipeline Phase lists the Sales Stage (salesstage) options of the opportunity, which the configured Solutions do not define: its dialog has no phase to choose.',
+              });
+            recordDialogs.push(
+              pipelinePhaseDialog({
+                bs,
+                action,
+                dialog: formSettings.UpdatePipelinePhaseDialog,
+                actionIndex,
+                formLabel,
+                phases,
+              }),
+            );
+          }
+        } else if (action.Type === NATIVE_FORM_WORKFLOW) {
+          if (!canUpdate) continue;
+          const workflow = await renderFormWorkflowAction({
+            actionIndex,
+            definition,
+            schema,
+            id,
+            mapping,
+            readProvider,
+            identity,
+            portal,
+            options,
+            bs,
+            formLabel,
+          });
+          if (workflow) {
+            recordButtons.push(workflow.button);
+            recordDialogs.push(workflow.modal);
+          }
+        } else if (action.Type === 'CreateRelatedRecordAction') {
           // The platform stamps a fresh filter criteria id on the button and its dialog; the
           // dialog is the generic confirmation, posted to the button's (empty) URL.
           const criteria = randomUUID();
@@ -4207,7 +5289,16 @@ function prepopulateValue(row, identity, now) {
                 footer: `<button aria-label="Ok" class="primary btn btn-primary btn-danger" tabindex="0" title="Ok" type="button">Ok</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button>`,
               }).replace(' role="dialog"', ` data-filtercriteriaid="${criteria}" role="dialog"`),
             );
-        } else if (!['SubmitAction', 'DeleteAction', 'ActivateAction', 'DeactivateAction'].includes(action.Type))
+        } else if (
+          ![
+            'SubmitAction',
+            'DeleteAction',
+            'ActivateAction',
+            'DeactivateAction',
+            'NextAction',
+            'PreviousAction',
+          ].includes(action.Type)
+        )
           options.diagnostic?.({
             code: 'FORM_ACTION_UNSUPPORTED',
             severity: 'warning',
@@ -4262,25 +5353,40 @@ function prepopulateValue(row, identity, now) {
       : {}),
     // A Power Pages export is a WebForms portal: native forms post the page back unless the
     // project selects the JSON transport (observed.nativeFormTransport: json).
-    ...(nativeFormTransport(options.observed ?? portal.observed) === 'postback' ? { transport: 'postback' } : {}),
+    ...(transport === 'postback' ? { transport } : {}),
     // A page rendered by a postback (hosted controls render their postback markup: multiselect-compat.js).
     ...(postback ? { postback: true } : {}),
     fields: fields
       .filter(
         (field) =>
-          !field.ownerHidden && !field.readOnly && !['state', 'status', 'file', 'image'].includes(field.control),
+          !field.ownerHidden &&
+          !field.readOnly &&
+          !pcfOmitted.has(field.name) &&
+          !pcfUnposted.has(field.name) &&
+          !['state', 'status', 'file', 'image'].includes(field.control),
       )
       .map((field) => ({
         name: field.name,
         id: field.id,
-        control: controlForSubmit(field),
+        // A mounted field component posts its hidden input (lib/pcf-field-host.mjs nativeFieldPostedValue).
+        control: pcfFields.has(field.name) ? 'pcf' : controlForSubmit(field),
+        decimalSeparator:
+          transport === 'json' && decimalSeparator === ',' && ['decimal', 'money'].includes(field.control)
+            ? decimalSeparator
+            : undefined,
         readOnly: false,
         bindings: field.bindings,
       })),
   };
   const summaryId = `ValidationSummary${ids.view}`;
   // The form's summary header text (adx_validationsummaryheadertext) replaces the platform default.
-  const summaryHeader = `<h2 class='validation-header'><span role='presentation' class='fa fa-info-circle'></span> ${escape(formLabel(fieldOf(componentMetadata, 'validationsummaryheadertext'), '') || 'The form could not be submitted for the following reasons:')}</h2>`;
+  const summaryHeaderText = escape(
+    formLabel(fieldOf(componentMetadata, 'validationsummaryheadertext'), '') ||
+      'The form could not be submitted for the following reasons:',
+  );
+  // The client validators' header text; a server-refused post renders the summary as the platform does (hosted F2 FORM-06).
+  const summaryHeader = `<h2 class='validation-header'><span role='presentation' class='fa fa-info-circle'></span> ${summaryHeaderText}</h2>`;
+  const postbackSummaryHeader = `<h2 class="validation-header" role="none"><span role="presentation" class="fa fa-info-circle"></span> ${summaryHeaderText}</h2>`;
   const layoutConfig = {
     EntityName: schema.entity,
     // The Bootstrap 5 platform renders the empty GUID as the layout id.
@@ -4335,6 +5441,13 @@ function prepopulateValue(row, identity, now) {
   // Auto-generated steps: WebForms submit buttons after the tab (an empty __EVENTTARGET and
   // the button's own name=value pair); Previous skips validation. The Previous button markup is a guess.
   let stepButtons = '';
+  // A configured NextAction or PreviousAction (legacy FormConfiguration.SetFormActions with auto-generated steps) gives its
+  // step button its label and class; without one the form's next/previous button fields apply.
+  const stepAction = (type) => configuredActions.find((action) => action.Type === type);
+  const stepText = (type, field, fallback) =>
+    formLabel(stepAction(type)?.ButtonLabel, '') || formLabel(fieldOf(componentMetadata, field), fallback);
+  const stepCss = (type, field, fallback) =>
+    stepAction(type)?.ButtonCssClass || fieldOf(componentMetadata, field) || fallback;
   if (autoSteps) {
     const stepButton = (button, text, css, validate) =>
       `<input type="submit" name="${attr(ids.names)}${button}" value="${attr(text)}" onclick="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;${attr(jsText(ids.names))}${attr(jsText(button))}&quot;, &quot;&quot;, ${validate}, &quot;&quot;, &quot;&quot;, false, false))" id="${button}" class="${attr(css)} form-action-container-left">`;
@@ -4342,8 +5455,8 @@ function prepopulateValue(row, identity, now) {
       renderedActions.push({ button: 'PreviousButton', action: 'tab', actionIndex: autoSteps.index - 1, view: true });
       stepButtons += stepButton(
         'PreviousButton',
-        formLabel(fieldOf(componentMetadata, 'previousbuttontext'), 'Previous'),
-        fieldOf(componentMetadata, 'previousbuttoncssclass') || 'btn btn-default',
+        stepText('PreviousAction', 'previousbuttontext', 'Previous'),
+        stepCss('PreviousAction', 'previousbuttoncssclass', 'btn btn-default'),
         false,
       );
     }
@@ -4351,8 +5464,8 @@ function prepopulateValue(row, identity, now) {
       renderedActions.push({ button: 'NextButton', action: 'tab', actionIndex: autoSteps.index + 1, view: true });
       stepButtons += stepButton(
         'NextButton',
-        formLabel(fieldOf(componentMetadata, 'nextbuttontext'), 'Next'),
-        fieldOf(componentMetadata, 'nextbuttoncssclass') || 'btn btn-primary',
+        stepText('NextAction', 'nextbuttontext', 'Next'),
+        stepCss('NextAction', 'nextbuttoncssclass', 'btn btn-primary'),
         true,
       );
     }
@@ -4372,14 +5485,22 @@ function prepopulateValue(row, identity, now) {
     truthy(fieldOf(componentMetadata, 'captcharequired')) &&
     (!signedIn || truthy(fieldOf(componentMetadata, 'showcaptchaforauthenticatedusers')));
   const captchaInvalid = Boolean(postback?.validationErrors?.some((item) => item.field === 'captcha'));
-  const captchaHtml =
-    captchaShown && !readOnly && !autoSteps
-      ? captchaControl(
-          `${ids.names}captcha`,
-          new URL(context.request?.url ?? 'http://localhost/').pathname,
-          captchaInvalid,
-        )
-      : '';
+  const captchaVisible = captchaShown && !readOnly && !autoSteps;
+  const captchaUnique = `${ids.names}captcha`;
+  const issueOnResponse =
+    context.request?.method !== 'POST' || postback?.validationErrors?.length || postback?.outcome?.type === 'error';
+  const fixtureCaptcha =
+    captchaVisible && issueOnResponse
+      ? options.issueCaptcha?.({ kind, formId: definition?.id ?? name, stepId: schema.stepId })
+      : null;
+  let captchaHtml = '';
+  if (fixtureCaptcha) captchaHtml = renderFixtureCaptcha(captchaUnique, fixtureCaptcha);
+  else if (captchaVisible)
+    captchaHtml = captchaControl(
+      captchaUnique,
+      new URL(context.request?.url ?? 'http://localhost/').pathname,
+      captchaInvalid,
+    );
   if (captchaHtml)
     validators.push({
       id: `${ids.names.replaceAll('$', '_')}captcha_ctl00`,
@@ -4394,7 +5515,7 @@ function prepopulateValue(row, identity, now) {
       : '';
   // The entity form view; a reference entity read-only view (options.referenceForm) renders the
   // the "read-only" class and an empty layout configuration, and is returned on its own.
-  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${formLayoutAttribute(options.referenceForm, layoutConfig)}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" role="alert"${postback?.validationErrors ? '' : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${validationSummaryMarkup(postback, summaryHeader, linksEnabled)}</div>${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
+  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${formLayoutAttribute(options.referenceForm, layoutConfig)}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" ${postback?.validationErrors ? ' tabindex="0"' : ' role="alert" style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${validationSummaryMarkup(postback, postbackSummaryHeader, linksEnabled)}</div>${nativeFieldRefusalSummary(ids.view, pcfRefusals)}${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
   if (options.referenceForm) return { html: viewHtml, controls: placed };
   // ActionButtonPlacement 0 puts a basic form's action row above the form view.
   // Actions above the view leave the empty action container below it.
@@ -4429,6 +5550,7 @@ function prepopulateValue(row, identity, now) {
     const writable = fields.filter(
       (field) =>
         renderedFields.has(field.name) &&
+        !pcfUnposted.has(field.name) &&
         !field.readOnly &&
         !field.ownerHidden &&
         !field.disabled &&
@@ -4437,12 +5559,17 @@ function prepopulateValue(row, identity, now) {
     const descriptor = nativeFormPostbackDescriptor({
       kind,
       formId: definition?.id ?? name,
-      fields: writable.map((field) => ({ ...field, control: controlForSubmit(field) })),
+      fields: writable.map((field) => {
+        if (pcfFields.has(field.name)) return { ...field, control: 'pcf' };
+        return { ...field, control: controlForSubmit(field), numberLocale: numberBoxLocale(field) };
+      }),
       actions: renderedActions,
       modal,
       pageControl,
+      numberLocales: numberLocales(),
     });
     Object.freeze(descriptor.ids);
+    Object.freeze(descriptor.numberLocales);
     for (const field of descriptor.fields) Object.freeze(field);
     for (const action of descriptor.actions) Object.freeze(action);
     Object.freeze(descriptor.fields);
@@ -4473,8 +5600,9 @@ function prepopulateValue(row, identity, now) {
     kind === 'webform' && truthy(fieldOf(definition?.metadata ?? {}, 'savechangeswarningonclose'))
       ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, 'savechangeswarningmessage'), ''))}">`
       : '';
-  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
-  const formContent = `${formInstructionsMarkup(instructions)}${confirmOnExit}${formHtml}`;
+  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown && !fixtureCaptcha ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
+  // F7 recorded the documents alert outside the page's forms without its exact place; it leads the form content here.
+  const formContent = `${documentsFailure}${formInstructionsMarkup(instructions)}${confirmOnExit}${formHtml}`;
   if (progress && (progressTop || (!truncated && progressBottom))) {
     const offset = beforeProgress.length + (progressTop ? 0 : formContent.length);
     for (const binding of progress.bindings ?? [])
@@ -4501,6 +5629,47 @@ function quickFormMarkup(cell, bs, readOnly, src, path, formName, { target, rela
   return `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`;
 }
 
+/**
+ * A signed-in contact's multistep page reads the contact's latest active adx_webformsession of the form
+ * (form-read-messages.mjs; enhanced data model, where the session names the form by mspp_webformid). Mirage routes from
+ * its own session bookkeeping; the read is the platform's, so read steps on the table observe it. It runs once the
+ * table is in the data (the first session row adds it) and not on the first render of a postback.
+ */
+async function activeSessionRead({ portal, store, readProvider, definition, identity, context, options }) {
+  const contactId = canonicalId(identity?.contactId ?? identity?.id);
+  if (!contactId || !definition?.id || readProvider?.sendsFormReadMessages !== true) return;
+  if (portal.dataModel === 'standard' || portal.format === 'standard') return;
+  if (context.request?.method === 'POST' && !options.nativePostbackState) return;
+  if (!store?.state?.mappings?.adx_webformsession) return;
+  await readProvider.fetchXml(activeSessionFetch(canonicalId(definition.id), contactId), identity);
+}
+
+/**
+ * The record reads of a form page, as the hosted form sends them (form-read-messages.mjs). The first render of a
+ * postback only collects the page's forms: the hosted page reads nothing then, so that read runs no read steps. The
+ * form renders the record Mirage reads for it; its absence and its permission refusal stay that read's.
+ */
+async function formRecordReads({ kind, readProvider, entity, mapping, id, identity, options, context }) {
+  const postback = context.request?.method === 'POST';
+  // A provider that does not run the portal read pipeline (a library caller's own reader) reads the record once.
+  if (readProvider.sendsFormReadMessages !== true) return (await readProvider.get(entity, id, identity)) ?? null;
+  if (postback && !options.nativePostbackState)
+    return (await readProvider.get(entity, id, identity, { skipPluginRead: true })) ?? null;
+  if (kind === 'webform') {
+    const record = (await readProvider.get(entity, id, identity, { skipPluginRead: true })) ?? null;
+    if (!record) return record;
+    for (const fetch of stepRecordFetches(entity, mapping.idColumn, id)) await readProvider.fetchXml(fetch, identity);
+    return record;
+  }
+  const record = (await readProvider.get(entity, id, identity)) ?? null;
+  if (!record) return record;
+  await readProvider.fetchXml(formDataFetch(entity, mapping.idColumn, id), identity);
+  // The edit page's one-row read; the postback re-render does not send it.
+  if (!postback)
+    await readProvider.query(entity, { $filter: recordIdFilter(mapping.idColumn, canonicalId(id)), $top: 1 }, identity);
+  return record;
+}
+
 function formLayoutAttribute(referenceForm, layoutConfig) {
   if (referenceForm) return '';
   return ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`;
@@ -4510,7 +5679,7 @@ export function validationSummaryMarkup(errors, summaryHeader, linksEnabled) {
   if (!errors?.validationErrors) return '';
   return (
     summaryHeader +
-    '<ul>' +
+    '<ul role="presentation">' +
     errors.validationErrors.map((item) => validationSummaryItem(item, linksEnabled)).join('') +
     '</ul>'
   );
@@ -4555,6 +5724,38 @@ function tabNameAttribute(name) {
 function tabColumnWidthAttribute(width) {
   if (!width) return '';
   return ` style="width:${attr(width)};"`;
+}
+
+// The geolocation mapping fields a basic form with geolocation draws in its section_map section, in the platform's
+// order, with the neighbourhood field's platform default (captured, paqvilo-developer hosted-f2 summary-F2 LIST-02c,
+// runs a and b). The page also loads the Bing Maps control and /xrm-adx/js/bingmap.js (platform-manifest.mjs); the
+// platform's Content Security Policy blocks the control, so a post saves the address without latitude and longitude.
+const GEOLOCATION_FIELDS = [
+  ['geolocation_latitudefieldname', 'geolocation_latitudefieldname'],
+  ['geolocation_longitudefieldname', 'geolocation_longitudefieldname'],
+  ['geolocation_addresslinefieldname', 'geolocation_addresslinefieldname'],
+  ['geolocation_neighbourhoodfieldname', 'geolocation_neighborhoodfieldname', 'adx_location_neighorhood'],
+  ['geolocation_cityfieldname', 'geolocation_cityfieldname'],
+  ['geolocation_countyfieldname', 'geolocation_countyfieldname'],
+  ['geolocation_statefieldname', 'geolocation_statefieldname'],
+  ['geolocation_countryfieldname', 'geolocation_countryfieldname'],
+  ['geolocation_portalcodefieldname', 'geolocation_postalcodefieldname'],
+  ['geolocation_formattedlocationfieldname', 'geolocation_formattedaddressfieldname'],
+];
+// The map section is the one named section_map or ending with section_map, the name the form engine looks for (Learn,
+// add-geolocation "Form customization"); its fields need not be in it (the captured form's map section was empty). The
+// Bing Maps REST URL and key are the Bingmaps/restURL and Bingmaps/credentials site settings (Learn, same page; the
+// captured default ends with a slash).
+function geolocationFields(metadata, ids, settings = {}) {
+  if (!truthy(fieldOf(metadata, 'geolocation_enabled'))) return '';
+  const hidden = (id, value) => {
+    const valueAttribute = value == null || value === '' ? '' : ` value="${attr(value)}"`;
+    return `<input type="hidden" name="${attr(ids.names + id)}" id="${id}"${valueAttribute}>`;
+  };
+  const fields = GEOLOCATION_FIELDS.map(([id, setting, fallback]) =>
+    hidden(id, fieldOf(metadata, setting) || fallback),
+  );
+  return `<!--pp-geolocation-form--><div>${fields.join('')}${hidden('bingmapsresturl', portalField(settings ?? {}, 'Bingmaps/restURL', '') || 'https://dev.virtualearth.net/REST/v1/Locations/')}${hidden('bingmapscredentials', portalField(settings ?? {}, 'Bingmaps/credentials', ''))}</div>`;
 }
 
 function sectionLegend(showLabel, label) {
@@ -4635,15 +5836,78 @@ function renderNotesControl({
   language = {},
   bs = BOOTSTRAP_MARKUP.BootstrapV3,
   rowspan,
+  timeline = false,
+  rich = false,
+  richTextCompatibility = false,
+  controlId = 'notescontrol',
 }) {
   const info = notesInfoMarkup(bs, label);
   if (!id) return `${info}<div class="control"><div id="notescontrol"></div></div>`;
   const page = (name, fallback) => formText(settings?.[name], fallback, language);
   // Notes are read-only without a Notes metadata record.
   const addEnabled = settings.CreateEnabled === true;
+  const urls = notesServiceUrls(websiteId, timeline);
+  const editor = rich ? noteRichTextEditors(controlId, richTextCompatibility) : null;
   if (bs.v5)
-    return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs, rowspan })}</div></div>`;
-  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${legacyNotesAddLink(addEnabled, page)}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${legacyNoteDialog(bs, 'add')}${legacyNoteDialog(bs, 'edit')}${legacyNoteDialog(bs, 'delete')}</div></div></div>`;
+    return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs, rowspan, urls, editor, timeline })}</div></div>`;
+  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="${urls.get}" data-url-add="${urls.add}" data-url-edit="${urls.edit}" data-url-delete="${urls.delete}" data-url-get-attachments=""${timeline ? ' data-is-timeline="True"' : ''}${editor ? ' data-rte-enabled="True"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${legacyNotesAddLink(addEnabled, page)}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${legacyNoteDialog(bs, 'add', editor?.add)}${legacyNoteDialog(bs, 'edit', editor?.edit)}${legacyNoteDialog(bs, 'delete')}${editor?.script ?? ''}</div></div></div>`;
+}
+
+// The notes services, or the activity timeline's (the platform's default portal route, EntityActivity/GetActivities),
+// which neither adds notes nor edits them here.
+/** Whether the visitor may add a portal comment regarding the record (Create and Append on the comment, AppendTo on it). */
+export function portalCommentAllowed(store, entity, id, record, identity) {
+  if (typeof store?.allowed !== 'function' || !record) return false;
+  try {
+    store.resolveMapping(PORTAL_COMMENT_TABLE);
+  } catch {
+    return false;
+  }
+  const comment = { regardingobjectid: { id: canonicalId(id), logical_name: entity } };
+  return (
+    store.allowed(PORTAL_COMMENT_TABLE, 'create', comment, identity) &&
+    store.allowed(PORTAL_COMMENT_TABLE, 'append', comment, identity) &&
+    store.allowed(entity, 'appendTo', record, identity)
+  );
+}
+
+function notesServiceUrls(websiteId, timeline) {
+  // The timeline adds portal comments through EntityActivity/AddPortalComment and neither edits nor deletes (the
+  // open-sourced portal's NotesControlTemplate; the hosted add request was not captured).
+  if (timeline)
+    return {
+      get: `/_portal/${websiteId}/EntityActivity/GetActivities`,
+      add: `/_portal/${websiteId}/EntityActivity/AddPortalComment`,
+      edit: '',
+      delete: '',
+    };
+  return {
+    get: `/_services/entity-notes/${websiteId}`,
+    add: `/_services/entity-form-addnote/${websiteId}`,
+    edit: `/_services/entity-form-updatenote/${websiteId}`,
+    delete: `/_services/entity-form-deletenote/${websiteId}`,
+  };
+}
+
+/**
+ * Timeline/RTEEnabled: the add and edit dialogs edit the note with the rich text editor the form's rich text columns
+ * use (native CKEditor, or the compatibility editor), mounted by the same runtime. The hidden textarea named text
+ * keeps the editor's HTML for the notes client.
+ */
+function noteRichTextEditors(controlId, compatibility) {
+  const field = (kind) => {
+    const fieldId = `${controlId}_${kind}note_text`;
+    return {
+      fieldId,
+      markup: `<input type="hidden" id="${attr(fieldId)}" value="&quot;&quot;" data-sim-richtext-value><div id="PcfControl_${attr(fieldId)}" data-sim-richtext-editor data-sim-note-editor data-field="${attr(fieldId)}"><textarea id="${attr(fieldId)}_editor" name="text" aria-label="Note"></textarea><p role="alert" data-sim-richtext-error hidden></p></div>`,
+    };
+  };
+  const add = field('add'),
+    edit = field('edit');
+  const settings = Object.fromEntries(
+    [add, edit].map(({ fieldId }) => [fieldId, { configuration: {}, configUrl: null, compatibility }]),
+  );
+  return { add: add.markup, edit: edit.markup, script: `<script>${clientRichTextRuntime(settings)}</script>` };
 }
 
 function notesInfoMarkup(bs, label) {
@@ -4657,13 +5921,13 @@ function legacyNotesAddLink(addEnabled, page) {
   return `<a class="btn btn-default addnote" href="#">${escape(page('AddNoteButtonLabel', 'Add a note'))}</a>`;
 }
 
-function legacyNoteDialog(bs, kind) {
+function legacyNoteDialog(bs, kind, richField = null) {
   if (kind === 'add')
     return nativeModal({
       bs,
       className: 'modal-addnote',
       title: 'Add a note',
-      body: '<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>',
+      body: `<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9">${richField ?? '<textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea>'}</div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>`,
       footer: `<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
     });
   if (kind === 'edit')
@@ -4671,7 +5935,7 @@ function legacyNoteDialog(bs, kind) {
       bs,
       className: 'modal-editnote',
       title: 'Edit note',
-      body: '<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>',
+      body: `<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9">${richField ?? '<textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea>'}</div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>`,
       footer: `<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
     });
   return nativeModal({
@@ -4694,40 +5958,58 @@ function notesToolbarMarkup(toolbar) {
 // The Bootstrap 5 notes control pages as many notes as its form cell spans rows, whatever
 // PageSize the metadata declares. Six when the cell carries no row span.
 const NOTES_PAGE_SIZE_V5 = 6;
+/** A configured notes message as escaped text, or the platform default markup when none is configured. */
+function configuredText(page, name, fallback) {
+  const text = page(name, '');
+  return text ? escape(text) : fallback;
+}
+/** The notes control's list orders: configured orders carry a direction; the default order has none. */
+function notesListOrders(settings) {
+  if (!settings.ListOrders?.length) return [{ Attribute: 'createdon', Alias: null, Direction: null }];
+  return settings.ListOrders.map((order) => ({
+    Attribute: order.Attribute,
+    Alias: order.Alias ?? null,
+    Direction: /^desc/i.test(String(order.Direction)) || Number(order.Direction) === 1 ? 1 : 0,
+  }));
+}
 /**
  * Bootstrap 5 notes control (the platform's timeline-less notes list): plain status messages,
  * the list title, and add/edit/delete dialogs with the platform's fixed labels. The platform's
  * data-attachmentsettings is an encrypted value and is not reproduced.
  */
-function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs, rowspan }) {
+function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs, rowspan, urls, editor, timeline }) {
   const pageSize = Number(rowspan) > 0 ? Number(rowspan) : NOTES_PAGE_SIZE_V5;
-  // Configured list orders carry a direction; the default order has none.
-  const orders = settings.ListOrders?.length
-    ? settings.ListOrders.map((order) => ({
-        Attribute: order.Attribute,
-        Alias: order.Alias ?? null,
-        Direction: /^desc/i.test(String(order.Direction)) || Number(order.Direction) === 1 ? 1 : 0,
-      }))
-    : [{ Attribute: 'createdon', Alias: null, Direction: null }];
+  const orders = notesListOrders(settings);
   const regarding = { Id: canonicalId(id), LogicalName: entity, Name: null, KeyAttributes: [], RowVersion: null };
   // The dialogs carry the regarding record as indented JSON with CRLF line breaks.
   const dialogTarget = JSON.stringify({ LogicalName: entity, Id: canonicalId(id) }, null, 2);
   // A configured message renders as plain text; the platform defaults keep their alert markup.
   const message = (className, name, fallback) =>
-    `<div class="${className}" role="presentation" tabindex="0">${page(name, '') ? escape(page(name, '')) : fallback}</div>`;
-  const loading = page('LoadingMessage', '')
-    ? escape(page('LoadingMessage', ''))
-    : '<span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...';
-  const template = notesTemplateV5({
-    toolbar: settings.EditEnabled === true || settings.DeleteEnabled === true,
-    privacyLabel: page('NotePrivacyLabel', '')
-      ? escape(page('NotePrivacyLabel', ''))
-      : "<span class='fa fa-eye-slash' aria-hidden='true'></span> Private",
-  });
+    `<div class="${className}" role="presentation" tabindex="0">${configuredText(page, name, fallback)}</div>`;
+  const loading = configuredText(
+    page,
+    'LoadingMessage',
+    '<span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...',
+  );
+  // The platform's notes template; the timeline's activity template is not reproduced (the client renders activities).
+  const template = timeline
+    ? ''
+    : notesTemplateV5({
+        toolbar: settings.EditEnabled === true || settings.DeleteEnabled === true,
+        privacyLabel: configuredText(
+          page,
+          'NotePrivacyLabel',
+          "<span class='fa fa-eye-slash' aria-hidden='true'></span> Private",
+        ),
+      });
   const button = (label, primary = false) =>
     `<button aria-label="${attr(label)}" class="${primary ? 'primary btn btn-primary' : 'cancel btn btn-default'}"${primary ? '' : ' ' + bs.dismiss + '="modal"'} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
-  const noteRow = (labelHtml, textarea) =>
-    `<div class="row mb-3">${labelHtml}<div class="col-md-9"><textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea></div></div>`;
+  const noteRow = (labelHtml, textarea, richField) => {
+    const field =
+      richField ??
+      `<textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea>`;
+    return `<div class="row mb-3">${labelHtml}<div class="col-md-9">${field}</div></div>`;
+  };
   const fileRow = (wrapper, accept) =>
     `<div class="row mb-3"><label aria-label="Attach a file" class="col-form-label fw-bold col-md-3">Attach a file</label><div class="col-md-9"${wrapper}><div class="form-control-plaintext"><input${accept} aria-label="Choose File" name="file" tabindex="0" type="file"></div></div></div>`;
   const deleteTitle = "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete note";
@@ -4738,7 +6020,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
           bs,
           className: 'modal-addnote',
           title: 'Add note',
-          body: `<div class="  addnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-addnote/${websiteId}">${noteRow('<label class="col-form-label fw-bold col-md-3" id="note_label_add">Note</label>', ' maxlength="100000"')}${fileRow('', ' accept="*"')}</div>`,
+          body: `<div class="  addnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-addnote/${websiteId}">${noteRow('<label class="col-form-label fw-bold col-md-3" id="note_label_add">Note</label>', ' maxlength="100000"', editor?.add)}${fileRow('', ' accept="*"')}</div>`,
           footer: `${button(' Add note', true)}${button('Cancel')}`,
         })
       : '',
@@ -4747,7 +6029,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
           bs,
           className: 'modal-editnote',
           title: 'Edit note',
-          body: `<div class="  editnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-updatenote/${websiteId}">${noteRow('<label class="required col-form-label fw-bold col-md-3" id="note_label_edit">Note</label>', '')}${fileRow(' tabindex="0"', '')}</div>`,
+          body: `<div class="  editnote" data-bs-target="${crlfAttr(dialogTarget)}" data-url="/_services/entity-form-updatenote/${websiteId}">${noteRow('<label class="required col-form-label fw-bold col-md-3" id="note_label_edit">Note</label>', '', editor?.edit)}${fileRow(' tabindex="0"', '')}</div>`,
           footer: `${button('Update note', true)}${button('Cancel')}`,
         })
       : '',
@@ -4763,7 +6045,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
       : '',
   ].join('');
   // The accepted attachment types come with the configured add, even when this visitor may not add.
-  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ' data-attachmentsettings="' + attr(settings.attachmentToken) + '"' : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="False" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="False" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-get="/_services/entity-notes/${websiteId}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? '<div class="col-md-12 page-header mr-0"><h3>' + escape(page('ListTitle', '')) + '</h3></div>' : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don\'t have permissions to view notes.</div>')}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? '<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">' + escape(page('AddNoteButtonLabel', 'Add a note')) + '</a></div>' : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}</div>`;
+  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ' data-attachmentsettings="' + attr(settings.attachmentToken) + '"' : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="${timeline ? 'True' : 'False'}" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="${editor ? 'True' : 'False'}" data-url-add="${urls.add}" data-url-delete="${urls.delete}" data-url-edit="${urls.edit}" data-url-get="${urls.get}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? '<div class="col-md-12 page-header mr-0"><h3>' + escape(page('ListTitle', '')) + '</h3></div>' : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don\'t have permissions to view notes.</div>')}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? '<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">' + escape(page('AddNoteButtonLabel', 'Add a note')) + '</a></div>' : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}${editor?.script ?? ''}</div>`;
 }
 
 // The platform file and image controls' upload size argument (KB) as the platform controls render it.
@@ -4793,20 +6075,29 @@ export function multiSelectValues(current) {
  * The hidden value is the platform's JSON array of the selected option metadata; label
  * MetadataIds are not exported, so they are null.
  */
-function multiSelectControl(field, { current, options, off, formReadonly = '', nameAttr, hostKey, lcid }) {
+function multiSelectControl(field, { current, options, off, formReadonly = '', nameAttr, hostKey, lcid, baseLcid }) {
   const id = field.id;
   const values = multiSelectValues(current);
   const label = field.label ?? field.name;
-  const localized = (value) => ({
+  const localized = (value, code = Number(lcid) || 1033) => ({
     Label: value,
-    LanguageCode: Number(lcid) || 1033,
+    LanguageCode: code,
     IsManaged: false,
     MetadataId: null,
     HasChanged: null,
   });
+  // An option exported in several languages lists each label, the base language first (hosted F2: 1033, then 1031).
+  const localizedLabels = (option) => {
+    if (!option.labels) return [localized(option.label)];
+    const base = String(Number(baseLcid) || 1033);
+    const codes = Object.keys(option.labels).sort((a, b) => Number(a) - Number(b));
+    return [...codes.filter((code) => code === base), ...codes.filter((code) => code !== base)].map((code) =>
+      localized(option.labels[code], Number(code)),
+    );
+  };
   const optionMetadata = (option) => ({
     Value: Number(option.value),
-    Label: { LocalizedLabels: [localized(option.label)], UserLocalizedLabel: localized(option.label) },
+    Label: { LocalizedLabels: localizedLabels(option), UserLocalizedLabel: localized(option.label) },
     Description: { LocalizedLabels: [], UserLocalizedLabel: null },
     Color: null,
     IsManaged: false,
@@ -4971,6 +6262,179 @@ function rankTieValidator(field) {
 function constantSumMarkup(last, names, group) {
   if (!last) return '';
   return `<input name="${attr(names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>`;
+}
+
+function renderStateActionButton({ action, type, css, url, formLabel, index }) {
+  const bound = index === undefined ? '' : ` data-pp-form-action="${type}" data-pp-action-index="${index}"`;
+  const label = NATIVE_STATE_ACTIONS[type]?.label ?? type;
+  return `<button class="${type}-link ${css}" data-url="${escape(url)}" href="${escape(url)}" type="button"${bound}>${escape(formLabel(action.ButtonLabel, label))}</button>`;
+}
+
+/** The Resolve Case dialog of a Basic Form action: the resolution subject and description the action posts. */
+function resolveCaseDialog({ bs, action, dialog, actionIndex, formLabel }) {
+  const settings = dialog && typeof dialog === 'object' ? dialog : {};
+  const subject = escape(formLabel(action.SubjectLabel, 'Resolution'));
+  const description = escape(formLabel(action.DescriptionLabel, 'Description of resolution'));
+  const primary = escape(formLabel(settings.PrimaryButtonText, 'Resolve'));
+  const close = escape(formLabel(settings.CloseButtonText, 'Cancel'));
+  const field = `pp-resolve-${actionIndex}`;
+  return nativeModal({
+    bs,
+    className: 'modal-resolvecase',
+    title: escape(formLabel(settings.Title, 'Resolve case')),
+    size: MODAL_SIZES[Number(settings.Size)] ?? '',
+    body: `<div class="form-group"><label class="required" for="${field}-subject">${subject}</label><input id="${field}-subject" aria-required="true" class="resolution-input required form-control" type="text"></div><div class="form-group"><label class="required" for="${field}-description">${description}</label><textarea id="${field}-description" aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6"></textarea></div>`,
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+}
+
+// The legacy QualifyLeadModal (ModalExtensions.QualifyLeadModal), drawn for an action with ShowModal 1: title "Qualify
+// Lead", the action's Confirmation (else the confirmation resource), Qualify and Cancel, texts from QualifyLeadDialog.
+function qualifyLeadDialog({ bs, action, dialog, actionIndex, formLabel }) {
+  const settings = dialog && typeof dialog === 'object' ? dialog : {};
+  const confirmation = formLabel(action.Confirmation, '');
+  const primary = escape(formLabel(settings.PrimaryButtonText, 'Qualify'));
+  const close = escape(formLabel(settings.CloseButtonText, 'Cancel'));
+  return nativeModal({
+    bs,
+    className: `modal-qualify${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}`,
+    title: escape(formLabel(settings.Title, 'Qualify Lead')),
+    size: MODAL_SIZES[Number(settings.Size)] ?? '',
+    dismissText: formLabel(settings.DismissButtonSrText, 'Close'),
+    body: confirmation ? escape(confirmation) : '<p>Are you sure you want to qualify this lead as an opportunity?</p>',
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+}
+
+// A grid's qualify dialog: the legacy grid draws it for a Qualify item action with ShowModal 1 (EntityGridExtensions).
+function qualifyGridModal(bs, settings, language) {
+  const action = gridItemActions(settings).find(
+    (item) => /^(?:CrmEntityFormView-)?QualifyLeadAction$/.test(item?.Type ?? '') && Number(item.ShowModal) === 1,
+  );
+  return action
+    ? qualifyLeadDialog({
+        bs,
+        action,
+        dialog: settings?.QualifyLeadDialog,
+        actionIndex: 'grid',
+        formLabel: (value, fallback) => formText(value, fallback, language),
+      })
+    : '';
+}
+
+// The legacy UpdatePipelinePhaseModal: a required Sales Stage select (option values, labels as text) and a description.
+function pipelinePhaseDialog({ bs, action, dialog, actionIndex, formLabel, phases }) {
+  const settings = dialog && typeof dialog === 'object' ? dialog : {};
+  const phaseLabel = escape(formLabel(action.StepNameLabel, 'Pipeline Phase'));
+  const description = escape(formLabel(action.DescriptionLabel, 'Description of Update'));
+  const primary = escape(formLabel(settings.PrimaryButtonText, 'Update'));
+  const close = escape(formLabel(settings.CloseButtonText, 'Cancel'));
+  const field = `pp-pipeline-${actionIndex}`;
+  const options = phases.map(({ value, label }) => `<option value="${value}">${escape(label)}</option>`).join('');
+  return nativeModal({
+    bs,
+    className: 'modal-updatepipelinephase',
+    title: escape(formLabel(settings.Title, 'Update Pipeline Phase')),
+    size: MODAL_SIZES[Number(settings.Size)] ?? '',
+    body: `<div class="form-group"><label class="required" for="${field}-phase">${phaseLabel}</label><select id="${field}-phase" aria-required="true" class="form-control required pipelinephase-input">${options}</select></div><div class="form-group"><label class="required" for="${field}-description">${description}</label><textarea id="${field}-description" aria-required="true" class="form-control required resolution-description-input" cols="20" rows="6" maxlength="100000"></textarea></div>`,
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+}
+
+async function renderFormWorkflowAction({
+  actionIndex,
+  definition,
+  schema,
+  id,
+  mapping,
+  readProvider,
+  identity,
+  portal,
+  options,
+  bs,
+  formLabel,
+}) {
+  const action = nativeFormActions(definition?.metadata)[actionIndex];
+  const workflowId = nativeFormWorkflowId(action);
+  const unavailable = (message) =>
+    options.diagnostic?.({
+      code: 'FORM_WORKFLOW_UNRESOLVED',
+      severity: 'warning',
+      component: 'entityform',
+      form: definition?.name,
+      action: NATIVE_FORM_WORKFLOW,
+      message,
+    });
+  if (
+    !workflowId ||
+    schema.approximated ||
+    mapping.logicalName !== canonicalId(definition?.entityName) ||
+    !options.canRunFormWorkflow?.(workflowId, mapping.logicalName)
+  ) {
+    unavailable(
+      'The form workflow requires an exported, published, on-demand real-time workflow and a trusted local handler.',
+    );
+    return null;
+  }
+  try {
+    const applies = await nativeFormActionApplies(action, {
+      entity: mapping.logicalName,
+      idColumn: mapping.idColumn,
+      recordId: id,
+      readProvider,
+      identity,
+      context: { website: portal.website },
+    });
+    if (!applies) return null;
+  } catch (error) {
+    unavailable(error.message);
+    return null;
+  }
+  const settings = settingsJson(portalField(definition.metadata, 'settings') ?? '', 'form settings') ?? {};
+  const dialog = settings.WorkflowDialog ?? {};
+  const label = formLabel(action.ButtonLabel, 'Run workflow');
+  const primary = escape(formLabel(action.WorkflowDialogPrimaryButtonText, formLabel(dialog.PrimaryButtonText, 'Run')));
+  const close = escape(formLabel(action.WorkflowDialogCloseButtonText, formLabel(dialog.CloseButtonText, 'Cancel')));
+  const url = `/__sim/forms/entityform/${encodeURIComponent(definition.id)}/submit`;
+  const button = `<button class="form-workflow-link ${escape(action.ButtonCssClass || 'btn btn-default')}" data-url="${escape(url)}" type="button" title="${escape(formLabel(action.ButtonTooltip, label))}" data-pp-form-action="workflow" data-pp-action-index="${actionIndex}" data-pp-workflow-id="${workflowId}">${escape(label)}</button>`;
+  const modal = nativeModal({
+    bs,
+    className: `modal-form-workflow${dialog.CssClass ? ' ' + escape(dialog.CssClass) : ''}`,
+    size: MODAL_SIZES[Number(dialog.Size)] ?? '',
+    title: escape(formLabel(action.WorkflowDialogTitle, formLabel(dialog.Title, label))),
+    dismissText: formLabel(dialog.DismissButtonSrText, 'Close'),
+    body: escape(formLabel(action.Confirmation, 'Are you sure you want to run this workflow?')),
+    footer: `<button class="primary btn btn-primary" type="button">${primary}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">${close}</button>`,
+  }).replace(' role="dialog"', ` data-pp-action-index="${actionIndex}" role="dialog"`);
+  return { button, modal };
+}
+
+function numberBoxPrecision(field) {
+  const precision = Number(field.precision);
+  return field.control !== 'integer' &&
+    field.precision != null &&
+    Number.isInteger(precision) &&
+    precision >= 0 &&
+    precision <= 10
+    ? precision
+    : null;
+}
+
+function numberBoxValue(value, precision, locale, posted) {
+  if (value == null || value === '') return '';
+  if (precision === null || !Number.isFinite(Number(value))) return value;
+  if (!locale) return Number(value).toFixed(precision);
+  // The response retains the text submitted by the native textbox.
+  if (posted) return value;
+  return numberBoxFormatter(locale, precision).format(String(value));
+}
+
+function numberBoxFormatter(locale, precision) {
+  return new Intl.NumberFormat(locale, {
+    numberingSystem: 'latn',
+    minimumFractionDigits: precision,
+    maximumFractionDigits: precision,
+  });
 }
 
 function numberSeparatorAttribute(field, separator, attr) {
@@ -5183,7 +6647,7 @@ function cellControlLabelFor(field) {
   return noLabelFor ? '' : ` for="${attr(field.id)}"`;
 }
 
-function normalizedFormField(field, context) {
+function normalizedFormField(bound, context) {
   const {
     metadataRows,
     mode,
@@ -5199,8 +6663,9 @@ function normalizedFormField(field, context) {
   const row = metadataFor(
     metadataRows,
     100000000,
-    (candidate) => fieldOf(candidate, 'attributelogicalname') === field.name,
+    (candidate) => fieldOf(candidate, 'attributelogicalname') === bound.name,
   );
+  const field = formRichTextField(bound, row);
   // Column create/update validity applies to the mode rendered; a read-only rendering (a
   // read-only form or an inactive record) marks no column read-only by it.
   const immutable = fieldImmutable(field, mode);
@@ -5379,15 +6844,30 @@ function numericCellClass(field) {
   return `${field.control} form-control-cell`;
 }
 
-function findQuickForm(schemas, entity, controlId, params) {
+function findQuickForm(schemas, entity, controlId, params, onHost = null) {
   let quick = null;
-  for (const schema of Object.values(schemas ?? {})) {
-    for (const candidate of [schema, ...(schema?.steps ?? [])]) {
-      for (const cell of formCells(candidate)) {
-        if (isQuickFormCell(cell, entity, controlId, params)) quick = cell;
+  for (const [hostId, schema] of Object.entries(schemas ?? {})) {
+    quick = findHostedQuickForm(hostId, schema, entity, controlId, params, onHost);
+    if (quick) break;
+  }
+  return quick;
+}
+
+/** The last quick view cell of one host form (or of its steps) that matches, reporting each match's host. */
+function findHostedQuickForm(hostId, schema, entity, controlId, params, onHost) {
+  let quick = null;
+  for (const candidate of [schema, ...(schema?.steps ?? [])]) {
+    for (const cell of formCells(candidate)) {
+      if (isQuickFormCell(cell, entity, controlId, params)) {
+        quick = cell;
+        // Render provenance: the form (and its basic form or advanced form step) that hosts the quick view.
+        onHost?.({
+          hostId,
+          stepId: candidate === schema ? null : (candidate.stepId ?? null),
+          formId: candidate.formId ?? null,
+        });
       }
     }
-    if (quick) break;
   }
   return quick;
 }
@@ -5453,10 +6933,23 @@ function progressStepIcon(completed, bs) {
 }
 
 /** Native quick view form document (/_portal/quickform-template-path/{websiteId}). */
-export async function renderQuickForm({ portal, schemas, store, readProvider, identity, params, metadata }) {
+export async function renderQuickForm({
+  portal,
+  schemas,
+  store,
+  readProvider,
+  identity,
+  params,
+  metadata,
+  onComponentRendered = null,
+  diagnostic = null,
+}) {
   const entity = canonicalId(params.entityname);
   const controlId = params.controlid;
-  const quick = findQuickForm(schemas, entity, controlId, params);
+  let host = null;
+  const quick = findQuickForm(schemas, entity, controlId, params, (found) => {
+    host = found;
+  });
   if (!quick)
     throw componentError('The quick view form is not part of an exported form layout.', 404, 'QUICKFORM_NOT_FOUND');
   const record = params.entityid ? await readProvider.get(entity, params.entityid, identity) : null;
@@ -5469,6 +6962,21 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
   // The platform renders the quick view as a read-only entity form view named by the control id
   // (ContentContainer_FormPanel > #<controlid>.form-readonly.entity-form.crmEntityFormView).
   const view = String(quick.id);
+  // Render provenance (lib/component-provenance.mjs): the quick view, its form and the host form control.
+  onComponentRendered?.({
+    type: 'quick-view',
+    id: view,
+    entity,
+    formId: quick.schema.formId ? canonicalId(quick.schema.formId) : null,
+    lookup: quick.lookup ?? null,
+    host: host
+      ? {
+          id: canonicalId(host.hostId),
+          stepId: canonicalId(host.stepId) || null,
+          formId: canonicalId(host.formId) || null,
+        }
+      : null,
+  });
   const { html } = await renderForm(
     'entityform',
     view,
@@ -5497,6 +7005,8 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
         },
         className: ' crmEntityFormView',
       },
+      onComponentRendered,
+      diagnostic,
     },
   );
   return `<div id="ContentContainer_FormPanel">${html}</div>`;

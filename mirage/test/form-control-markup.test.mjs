@@ -5,6 +5,7 @@ import { renderComponent } from '../lib/platform.mjs';
 import { webFormsForm } from '../lib/platform-manifest.mjs';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A contact form exercising one control of each kind.
 const ID = 'c0000000-0000-4000-8000-000000000001';
@@ -84,7 +85,7 @@ const layout = [
     ],
   },
 ];
-async function render(mode) {
+async function render(mode, schema = { entity: 'contact', title: 'Contact', fields, layout }) {
   const store = {
     resolveMapping: (entity) =>
       entity === 'account'
@@ -98,7 +99,7 @@ async function render(mode) {
     query: async () => ({ value: [] }),
   };
   const portal = { forms: [{ id: 'form', name: 'Contact', mode }], records: [], website: { id: 'site' }, pages: [] };
-  const schemas = { form: { entity: 'contact', title: 'Contact', fields, layout } };
+  const schemas = { form: schema };
   return renderComponent(
     'entityform',
     'form',
@@ -107,10 +108,44 @@ async function render(mode) {
   );
 }
 const element = (html, pattern) => {
-  const match = html.match(pattern);
+  const match = boundedMarkup(html).match(pattern);
   assert.ok(match, `missing ${pattern}`);
   return match[0];
 };
+
+test('configured FormXml honors an authored one-row textarea while keeping its other default heights', async () => {
+  const cells = [
+    ['description', ' rowspan="1"'],
+    ['notes', ' rowspan="3"'],
+    ['extra', ''],
+  ];
+  const formXml = `<form>${cells.map(([name, attrs]) => `<cell${attrs}><control datafieldname="${name}"/></cell>`).join('')}</form>`;
+  const html = await render(100000001, {
+    entity: 'contact',
+    formXml,
+    fieldTypes: { description: { dataverseType: 'memo' }, notes: 'textarea', extra: 'textarea' },
+  });
+  assert.match(element(html, /<textarea [^>]*id="description"[^>]*>/), / rows="1"/);
+  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), / rows="4"/);
+  assert.match(element(html, /<textarea [^>]*id="extra"[^>]*>/), / rows="4"/);
+});
+
+test('an explicit layout cell supplies the one-row textarea span in a read-only Basic Form', async () => {
+  const html = await render(100000002, {
+    entity: 'contact',
+    fields: [
+      { name: 'description', format: 'TextArea' },
+      { name: 'notes', type: 'textarea', rowspan: 1 },
+    ],
+    layout: [
+      {
+        columns: [{ sections: [{ rows: [[{ name: 'description', rowspan: 1 }], [{ name: 'notes', rowspan: 3 }]] }] }],
+      },
+    ],
+  });
+  assert.match(element(html, /<textarea [^>]*id="description"[^>]*>/), / rows="1"[^>]*readonly="readonly"/);
+  assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), / rows="4"[^>]*readonly="readonly"/);
+});
 
 test('edit form: string, e-mail, phone and memo boxes carry the platform handlers and required-field labels', async () => {
   const html = await render(100000001);
@@ -124,9 +159,9 @@ test('edit form: string, e-mail, phone and memo boxes carry the platform handler
   const phone = element(html, /<input [^>]*id="telephone1"[^>]*>/);
   assert.match(phone, / type="text"/);
   assert.match(phone, / placeholder="Provide a telephone number"/);
-  // MemoControlTemplate rows: a one-row cell keeps a four-line box (rowspan * 3 - 2 from two rows), with the LimitInput/LimitPaste handlers.
+  // Bootstrap 3 memo boxes honor an authored one-row cell and keep the LimitInput/LimitPaste handlers.
   const memo = element(html, /<textarea [^>]*id="description"[^>]*>/);
-  assert.match(memo, / rows="4"/);
+  assert.match(memo, / rows="1"/);
   assert.match(
     memo,
     / onkeydown="javascript:return LimitInput\(this, event\);" oninput="javascript:return LimitInput\(this, event\);" onpaste="javascript:return LimitPaste\(this, event\);"/,

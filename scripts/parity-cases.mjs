@@ -2,12 +2,13 @@
 //   node scripts/parity-cases.mjs build --surface <s> --suite <n> --oracle-kind <k> --oracle-name <n>
 //     --oracle-version <v> --oracle-scope <text> --capture <file> --capture <file> [...] [--out <file>]
 //     [--revise-change <text> --revise-evidence <text> [--revise-drop-volatile <case-id>#<pointer> ...]]
+//     [--redact <term> ...]
 //   node scripts/parity-cases.mjs check [<dir>]
 //   node scripts/parity-cases.mjs report [<dir>] [--json]
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { buildParityCases, loadParityCases } from '../mirage/testing/parity-cases.mjs';
 
 // Report order of the oracle kinds; the library validates `oracle.kind` against the same three values.
@@ -25,14 +26,16 @@ const VALUE_OPTIONS = new Set([
   'revise-change',
   'revise-evidence',
   'revise-drop-volatile',
+  'redact',
 ]);
 // Value options that may be repeated; each collects its values in an array.
-const LIST_OPTIONS = new Set(['capture', 'revise-drop-volatile']);
+const LIST_OPTIONS = new Set(['capture', 'revise-drop-volatile', 'redact']);
 const FLAG_OPTIONS = new Set(['json']);
 const USAGE = `usage:
   parity-cases build --surface <s> --suite <n> --oracle-kind <k> --oracle-name <n> --oracle-version <v>
       --oracle-scope <text> --capture <file> --capture <file> [...] [--out <file>]
       [--revise-change <text> --revise-evidence <text> [--revise-drop-volatile <case-id>#<pointer> ...]]
+      [--redact <term> ...]
   parity-cases check [<dir>]
   parity-cases report [<dir>] [--json]
 `;
@@ -49,7 +52,7 @@ function compareCodeUnits(left, right) {
 }
 
 function parseArgs(argv) {
-  const options = { capture: [], 'revise-drop-volatile': [] };
+  const options = { capture: [], 'revise-drop-volatile': [], redact: [] };
   const positional = [];
   let index = 0;
   while (index < argv.length) {
@@ -211,6 +214,7 @@ async function runBuild(options, cwd, stdout) {
     captures: options.capture.map((file) => readCapture(file, cwd)),
     existing,
     revise: reviseFromOptions(options),
+    ...(options.redact.length ? { redact: options.redact } : {}),
   });
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, await formatJson(built, outPath));
@@ -409,6 +413,6 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   process.exitCode = await main(process.argv.slice(2));
 }

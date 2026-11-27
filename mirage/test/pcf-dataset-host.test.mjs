@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's shared PCF admission rule, the model-driven view query API and clientSources platform libraries are designed runtime behaviour, exercised with invented tables and controls
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -60,6 +61,7 @@ function host(extra = {}) {
   };
 }
 
+// @test-kind unproven: local model of the model-driven dataset host (paging, one-column sort, AND-only filters, lookup values); no native capture of the model-driven host
 test('a dataset PCF pages, sorts, filters and formats records over the view query', async () => {
   const { dataset, load, queries } = host();
   dataset.paging.setPageSize(2);
@@ -106,6 +108,7 @@ test('a dataset PCF pages, sorts, filters and formats records over the view quer
   assert.match(dataset.errorMessage, /one column/);
 });
 
+// @test-kind unproven: local model of model-driven dataset linking and openDatasetItem over imported tables; no native capture of the model-driven host
 test('a dataset PCF links an imported table and opens its records', async () => {
   const { dataset, load, queries, opened } = host();
   dataset.linking.addLinkedEntity({

@@ -14,7 +14,9 @@ const blueprintBytes = Buffer.from('{"owner":"preserve exact bytes"}\r\n');
 
 // The fixture mirrors a toolkit checkout (root) holding the example; commands run from the checkout as documented.
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-security-cli-'));
+  // The physical path: the script derives the checkout from its own location, which Node reports through links (macOS
+  // /var is a link into /private).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-security-cli-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const example = path.join(root, 'examples/company-operations');
   for (const dir of ['portal-security', 'dataverse', 'data'])

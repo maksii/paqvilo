@@ -335,3 +335,27 @@ test('preflight inventory modules follow the level and reason of their source-gr
   );
   assert.equal(modules['dashboard:Elsewhere'].reason, 'DASHBOARD_NOT_RENDERED');
 });
+
+// @test-kind contract: the uploadedAssemblies setting is reported as the source of a step's mode in preflight
+test('a step whose default the uploadedAssemblies setting chose reports it as the mode source', () => {
+  const step = {
+    key: 'plugin-step:invented-uploaded',
+    kind: 'plugin-step',
+    mode: 'placeholder',
+    defaultMode: 'placeholder',
+    defaultModeSource: 'uploadedAssemblies',
+    enabled: true,
+  };
+  const registry = createCapabilityRegistry({ runtime: { kind: 'power-pages' } });
+  const rowOf = (item) =>
+    buildPreflightReport({ runtime: { kind: 'power-pages' }, registry, operations: [item] }).requirements.find(
+      (row) => row.id === item.key,
+    );
+  assert.deepEqual(rowOf(step).resolution, { by: null, mode: 'placeholder', modeSource: 'uploadedAssemblies' });
+  assert.deepEqual(rowOf({ ...step, mode: 'clr', configuration: { mode: 'clr' } }).resolution, {
+    by: null,
+    mode: 'clr',
+    modeSource: 'runtime state',
+  });
+  assert.equal(rowOf({ ...step, defaultModeSource: undefined }).resolution.modeSource, undefined);
+});

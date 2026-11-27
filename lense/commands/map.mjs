@@ -17,7 +17,7 @@ const WHERE = {
   'list-js': 'inline <script> on every page showing the list',
   'web-template': 'HTML of every page using the template (changes vs baseline)',
   'content-snippet': 'HTML of every page using the snippet (changes vs baseline)',
-  'metadata-markup': 'literal HTML stored in supported metadata text fields (changes vs baseline)',
+  'metadata-markup': 'literal HTML stored in supported metadata text fields, and page titles (changes vs baseline)',
 };
 
 export function buildMapping(session) {

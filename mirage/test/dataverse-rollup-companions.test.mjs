@@ -163,8 +163,8 @@ test('an exported rollup column brings its _date and _state companions with the 
   }
 });
 
-// @test-kind observation: one read-only live capture (2026-11-18) in fixtures/dataverse-native-rollup-companions.json (raw sha256 4d3c3d04...) records the typed rollup read: FormulaDefinition is the exported XAML with an XML declaration and no whitespace between elements, Format "None"; the invented export is typed here, so it is not a replay case.
-test('the rollup FormulaDefinition is the exported XAML file as the platform stores it, and Format is named', async (t) => {
+// @test-kind observation: the read-only live capture (2026-11-18) in fixtures/dataverse-native-rollup-companions.json (raw sha256 4d3c3d04...) records SourceType and Format "None" of the typed rollup read; the hosted import round trip of 2026-11-26 (workbench hosted-f6 import-roundtrip-1795722792122, every imported rollup and calculated column equal to its exported Formulas file) supersedes the 2026-11-18 FormulaDefinition text, which a designer save stored with a declaration; the invented export is typed here, so it is not a replay case.
+test('the rollup FormulaDefinition is the exported XAML file as an import stores it, and Format is named', async (t) => {
   const call = await webApi(t, await solution(t));
   const typed = await call(
     `${ATTRIBUTES}(LogicalName='x_total')/Microsoft.Dynamics.CRM.IntegerAttributeMetadata?$select=FormulaDefinition,SourceType,Format`,
@@ -173,7 +173,7 @@ test('the rollup FormulaDefinition is the exported XAML file as the platform sto
   const native = EVIDENCE.pqvd_rollup_typed.body;
   assert.deepEqual(
     { FormulaDefinition: typed.body.FormulaDefinition, SourceType: typed.body.SourceType, Format: typed.body.Format },
-    { FormulaDefinition: native.FormulaDefinition, SourceType: native.SourceType, Format: native.Format },
+    { FormulaDefinition: EXPORTED_FORMULA, SourceType: native.SourceType, Format: native.Format },
   );
 });
 
@@ -193,7 +193,8 @@ test('a row without companion values reads the rollup and both companions as nul
   );
 });
 
-test('the companions are listed, selectable and stamped NotCalculated on a Mirage create', async (t) => {
+// @test-kind observation: hosted runs run-derived-A/B 2026-11-26 (paqvilo-developer hosted-f6 summary-F6 DATA-04c): on create every rollup column is Calculated (_state 1) with _date at the creation time and the value of no children (a Count reads 0)
+test('the companions are listed, selectable and stamped Calculated with the empty value on a Mirage create', async (t) => {
   const call = await webApi(t, await solution(t));
   const list = await call(`${ATTRIBUTES}?$select=LogicalName`);
   const names = list.body.value.map((a) => a.LogicalName);
@@ -207,7 +208,8 @@ test('the companions are listed, selectable and stamped NotCalculated on a Mirag
     body: JSON.stringify({ x_name: 'Created parent' }),
   });
   assert.equal(created.status, 201);
-  assert.deepEqual([created.body.x_total_state, created.body.x_total_date], [0, null]);
+  assert.deepEqual([created.body.x_total_state, created.body.x_total], [1, 0]);
+  assert.equal(created.body.x_total_date, created.body.createdon, 'the date is the creation time');
 });
 
 // @test-kind compatibility: IntegerAttributeMetadata.Format is the IntegerFormat enum (None, Duration, TimeZone, Language, Locale) in the Web API CSDL, and OData JSON writes an enum value as its member name.

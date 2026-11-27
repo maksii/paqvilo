@@ -1,0 +1,304 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-file-range",
+  "suite": "hosted-f1-20261126",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API",
+    "version": "2026-11-26",
+    "scope": "Two signed-in hosted runs (hosted session F1, API-04g) of thirteen GET requests of one synthetic 100-byte file column: full, explicit, suffix, open-ended, past-the-end, multiple, reversed and malformed ranges. Captures establish status, Content-Length, Content-Range, Accept-Ranges, ETag presence, bytes and SHA-256. Simulator fixture names are invented. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-portal-file-range-a",
+      "sha256": "1b1620c7e884055323c1d177ac81accd120287fc9f1c172f03d0d653f99580e6",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-portal-file-range-b",
+      "sha256": "dbc2fc8cb58dd2eda0f7735a24adbbcfe79c0dcd729216cb92180488e2744620",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "full",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": null
+      },
+      "output": {
+        "status": 200,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "100",
+        "hasValidator": false,
+        "bytes": 100,
+        "sha256": "95485de83daa22e8793be572b93031c3ce0d076fc8f660d8fb1a74aed3bc140e"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-0-15",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=0-15"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 0-15/100",
+        "acceptRanges": null,
+        "contentLength": "16",
+        "hasValidator": false,
+        "bytes": 16,
+        "sha256": "d011333817683bf81ad1c56aa0d1a63d67fc2880aacb3319c5b1771d6a327d03"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-10-19",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=10-19"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 10-19/100",
+        "acceptRanges": null,
+        "contentLength": "10",
+        "hasValidator": false,
+        "bytes": 10,
+        "sha256": "004228fe0d90eaf6fd7ef97d9fe27b1a98157ff9d48c0dde9271eb60f6293e41"
+      },
+      "volatile": []
+    },
+    {
+      "id": "suffix-8",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=-8"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 0-8/100",
+        "acceptRanges": null,
+        "contentLength": "9",
+        "hasValidator": false,
+        "bytes": 9,
+        "sha256": "b570650a38e4c1713d5bd6c0d5bf430f7539cd4953f8bd6e7a29872e77c98ba0"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-90-200",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=90-200"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 90-99/100",
+        "acceptRanges": null,
+        "contentLength": "10",
+        "hasValidator": false,
+        "bytes": 10,
+        "sha256": "c38e66b6ca912a7e5e485dc064328f82617fe723c9c3c5172a584cd93ca83175"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-99-99",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=99-99"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 99-99/100",
+        "acceptRanges": null,
+        "contentLength": "1",
+        "hasValidator": false,
+        "bytes": 1,
+        "sha256": "36a9e7f1c95b82ffb99743e0c5c4ce95d83c9a430aac59f84ef3cbfab6145068"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-100-100",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=100-100"
+      },
+      "output": {
+        "status": 416,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "100",
+        "hasValidator": false,
+        "bytes": 100,
+        "sha256": "9df49619043e5688ce23392d2989bd649e57da43e6f638d07a980ff67b31f47d"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-1000-1015",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=1000-1015"
+      },
+      "output": {
+        "status": 416,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "100",
+        "hasValidator": false,
+        "bytes": 100,
+        "sha256": "9df49619043e5688ce23392d2989bd649e57da43e6f638d07a980ff67b31f47d"
+      },
+      "volatile": []
+    },
+    {
+      "id": "range-0-0",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=0-0"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 0-0/100",
+        "acceptRanges": null,
+        "contentLength": "1",
+        "hasValidator": false,
+        "bytes": 1,
+        "sha256": "148de9c5a7a44d19e56cd9ae1a554bf67847afb0c58f6e12fa29ac7ddfca9940"
+      },
+      "volatile": []
+    },
+    {
+      "id": "open-ended-95",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=95-"
+      },
+      "output": {
+        "status": 206,
+        "contentRange": "bytes 95-99/100",
+        "acceptRanges": null,
+        "contentLength": "5",
+        "hasValidator": false,
+        "bytes": 5,
+        "sha256": "0fc5fa4b794131392583fd02cf127e33d9dfbfcbf7e99a9a2c987ce81b82aa70"
+      },
+      "volatile": []
+    },
+    {
+      "id": "multi-range",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=0-1,4-5"
+      },
+      "output": {
+        "status": 416,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "100",
+        "hasValidator": false,
+        "bytes": 100,
+        "sha256": "9df49619043e5688ce23392d2989bd649e57da43e6f638d07a980ff67b31f47d"
+      },
+      "volatile": []
+    },
+    {
+      "id": "invalid-syntax",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=abc"
+      },
+      "output": {
+        "status": 400,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "339",
+        "hasValidator": false,
+        "bytes": 339,
+        "sha256": "eb6c05dc68d92a5c9b07f26a337fd5a295aa5c6c7fb148a5b29dcda8627e8f7d"
+      },
+      "volatile": []
+    },
+    {
+      "id": "reverse",
+      "input": {
+        "fileBase64": "cHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIGZpbGUgcGF5bG9hZCAjcHFmMSBmaWxlIHBheWxvYWQgI3BxZjEgZmlsZSBwYXlsb2FkICNwcWYxIA==",
+        "observed": {
+          "webApiFileDownload": "portal-range",
+          "evidence": "Hosted F1 signed-in Power Pages reads of a synthetic 100-byte file column (<redacted>, two runs)."
+        },
+        "range": "bytes=20-10"
+      },
+      "output": {
+        "status": 500,
+        "contentRange": null,
+        "acceptRanges": null,
+        "contentLength": "99",
+        "hasValidator": false,
+        "bytes": 99,
+        "sha256": "e2ab84051b80eff723e7fc8e3449e29921d50486f22667b3cd2ea798879bfa34"
+      },
+      "volatile": []
+    }
+  ],
+  "history": [],
+  "redaction": {
+    "placeholder": "<redacted>",
+    "terms": 1,
+    "occurrences": 26
+  }
+}

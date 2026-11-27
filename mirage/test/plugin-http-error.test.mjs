@@ -113,8 +113,14 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
       assert.equal(response.status, 400);
       assert.equal(response.headers.get('x-sim-error-code'), 'PluginValidation');
       const body = await response.json();
+      // The hosted text and cdscode (hosted session F1, paqvilo-developer hosted-f1 summary-F1 API-02c, two runs).
       assert.deepEqual(body, {
-        error: { code: '9004010D', message: 'CDS error occurred.', innererror: { code: expectedCode, message } },
+        error: {
+          code: '9004010D',
+          message: 'Common Data Service error occurred.',
+          cdscode: expectedCode,
+          innererror: { code: expectedCode, message },
+        },
       });
       assert.deepEqual(app.store.snapshot(), before);
     }

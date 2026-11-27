@@ -1,0 +1,193 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-webapi",
+  "suite": "hosted-f1-nav-followup-marked",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal Web API (/_api)",
+    "version": "hosted Power Pages trial site, 2026-11-27",
+    "scope": "Reads of the follow-up site that carry a phase marker in $filter, so the platform's read cache cannot answer them, and the keyed read of a virtual row, with the provider healthy. Runs a and b."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-a-hosted-f1-nav-followup-marked",
+      "sha256": "724567c99bf9367ac575abeccfe8aad24c27214f8d49f6465da928e376c706d5",
+      "capturedAt": "2026-11-27"
+    },
+    {
+      "id": "hosted-f1-b-hosted-f1-nav-followup-marked",
+      "sha256": "f504640dcad5a24a499f690878af37d3c6b4332122e78fbb8151f6548eb13829",
+      "capturedAt": "2026-11-27"
+    }
+  ],
+  "cases": [
+    {
+      "id": "nav1:vrows-phase-marked",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "healthy",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_vrows?$select=pqf1_name,pqf1_code,pqf1_query&$filter=pqf1_name%20ne%20'mk-provider-healthy'"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_vrows(pqf1_name,pqf1_code,pqf1_query)",
+          "total": 0,
+          "nextLink": false,
+          "rows": [
+            {
+              "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006001",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+              "pqf1_amount": 1,
+              "pqf1_amount@OData.Community.Display.V1.FormattedValue": "1",
+              "pqf1_code": "x",
+              "pqf1_name": "virtual one",
+              "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003001"
+            },
+            {
+              "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006001",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+              "pqf1_amount": 2,
+              "pqf1_amount@OData.Community.Display.V1.FormattedValue": "2",
+              "pqf1_code": "y",
+              "pqf1_name": "virtual two",
+              "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003002"
+            },
+            {
+              "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006002",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+              "pqf1_amount": 3,
+              "pqf1_amount@OData.Community.Display.V1.FormattedValue": "3",
+              "pqf1_code": "x",
+              "pqf1_name": "virtual three",
+              "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003003"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:expand-collection-phase-marked",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "healthy",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_roots?$select=pqf1_name&$expand=pqf1_root_pqf1_root_pqf1_vrow($select=pqf1_code,pqf1_query;$filter=pqf1_name%20ne%20'mk-provider-healthy')"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_roots(pqf1_name,pqf1_root_pqf1_root_pqf1_vrow(pqf1_code,pqf1_query))",
+          "total": -1,
+          "nextLink": false,
+          "rows": [
+            {
+              "pqf1_name": "R1",
+              "pqf1_root_pqf1_root_pqf1_vrow": [
+                {
+                  "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006001",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+                  "_pqf1_root_value@OData.Community.Display.V1.FormattedValue": "R1",
+                  "pqf1_amount": 1,
+                  "pqf1_amount@OData.Community.Display.V1.FormattedValue": "1",
+                  "pqf1_code": "x",
+                  "pqf1_name": "virtual one",
+                  "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003001"
+                },
+                {
+                  "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006001",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+                  "_pqf1_root_value@OData.Community.Display.V1.FormattedValue": "R1",
+                  "pqf1_amount": 2,
+                  "pqf1_amount@OData.Community.Display.V1.FormattedValue": "2",
+                  "pqf1_code": "y",
+                  "pqf1_name": "virtual two",
+                  "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003002"
+                }
+              ],
+              "pqf1_root_pqf1_root_pqf1_vrow@odata.nextLink": true,
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006001"
+            },
+            {
+              "pqf1_name": "R2",
+              "pqf1_root_pqf1_root_pqf1_vrow": [
+                {
+                  "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006002",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+                  "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+                  "_pqf1_root_value@OData.Community.Display.V1.FormattedValue": "R2",
+                  "pqf1_amount": 3,
+                  "pqf1_amount@OData.Community.Display.V1.FormattedValue": "3",
+                  "pqf1_code": "x",
+                  "pqf1_name": "virtual three",
+                  "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003003"
+                }
+              ],
+              "pqf1_root_pqf1_root_pqf1_vrow@odata.nextLink": true,
+              "pqf1_rootid": "f1f1f1f1-0000-4000-8000-000000006002"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "nav1:keyed-vrow",
+      "input": {
+        "method": "GET",
+        "site": "nav",
+        "provider": "healthy",
+        "settings": {},
+        "headers": {},
+        "path": "/_api/pqf1_vrows(f1f1f1f1-0000-4000-8000-000000003001)?$select=pqf1_name,pqf1_code,pqf1_query"
+      },
+      "output": {
+        "status": 200,
+        "wire": {
+          "odataVersion": null,
+          "requestId": true,
+          "serverTiming": "response-code; desc=200, correlationId; desc=<id>"
+        },
+        "body": {
+          "context": "/_api/$metadata#pqf1_vrows(pqf1_name,pqf1_code,pqf1_query)/$entity",
+          "rows": [
+            {
+              "_pqf1_root_value": "f1f1f1f1-0000-4000-8000-000000006001",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.associatednavigationproperty": "pqf1_root",
+              "_pqf1_root_value@Microsoft.Dynamics.CRM.lookuplogicalname": "pqf1_root",
+              "_pqf1_root_value@OData.Community.Display.V1.FormattedValue": "R1",
+              "pqf1_amount": 1,
+              "pqf1_amount@OData.Community.Display.V1.FormattedValue": "1",
+              "pqf1_code": "x",
+              "pqf1_name": "virtual one",
+              "pqf1_vrowid": "f1f1f1f1-0000-4000-8000-000000003001"
+            }
+          ]
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -1,0 +1,274 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-cascade",
+  "suite": "hosted-20261126",
+  "oracle": {
+    "kind": "native",
+    "name": "Dataverse Web API",
+    "version": "2026-11-26",
+    "scope": "Two hosted runs (A, B) of exported 1:N cascades (parental, referential, restrict-delete and a custom Assign ActiveOnly / Delete RemoveLink / Share UserOwned mix) and an N:N: assigning the parent to a second user, deleting it while a restrict link holds it, clearing that link and deleting it. Owners are compared by role, record ids by key and object type codes not at all. Schema names are invented equivalents. The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "run-cascade-A2",
+      "sha256": "4e95992e3d9192ad9c3ea3ae9b8bd9f580053f7202419af4ed3ec0a9a130741a",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "run-cascade-B2",
+      "sha256": "a39b70a2f622224db4919701043b520492fb35902a8662c1e47d32f8bdb9b41f",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "seeded",
+      "input": {
+        "op": "setup",
+        "schema": {
+          "tables": ["inv_parent", "inv_child", "inv_link", "inv_custom", "inv_tag"],
+          "relationships": [
+            {
+              "schemaName": "inv_parent_child",
+              "type": "OneToMany",
+              "referencing": "inv_child",
+              "referenced": "inv_parent",
+              "lookup": "inv_parentid",
+              "first": "",
+              "second": "",
+              "intersect": "",
+              "cascade": {
+                "Assign": "Cascade",
+                "Delete": "Cascade",
+                "Archive": "RemoveLink",
+                "Reparent": "Cascade",
+                "Share": "Cascade",
+                "Unshare": "Cascade",
+                "RollupView": "NoCascade"
+              }
+            },
+            {
+              "schemaName": "inv_parent_linkref",
+              "type": "OneToMany",
+              "referencing": "inv_link",
+              "referenced": "inv_parent",
+              "lookup": "inv_refparentid",
+              "first": "",
+              "second": "",
+              "intersect": "",
+              "cascade": {
+                "Assign": "NoCascade",
+                "Delete": "RemoveLink",
+                "Archive": "RemoveLink",
+                "Reparent": "NoCascade",
+                "Share": "NoCascade",
+                "Unshare": "NoCascade",
+                "RollupView": "NoCascade"
+              }
+            },
+            {
+              "schemaName": "inv_parent_linkrestrict",
+              "type": "OneToMany",
+              "referencing": "inv_link",
+              "referenced": "inv_parent",
+              "lookup": "inv_restrictparentid",
+              "first": "",
+              "second": "",
+              "intersect": "",
+              "cascade": {
+                "Assign": "NoCascade",
+                "Delete": "Restrict",
+                "Archive": "RemoveLink",
+                "Reparent": "NoCascade",
+                "Share": "NoCascade",
+                "Unshare": "NoCascade",
+                "RollupView": "NoCascade"
+              }
+            },
+            {
+              "schemaName": "inv_parent_custom",
+              "type": "OneToMany",
+              "referencing": "inv_custom",
+              "referenced": "inv_parent",
+              "lookup": "inv_parentid",
+              "first": "",
+              "second": "",
+              "intersect": "",
+              "cascade": {
+                "Assign": "ActiveOnly",
+                "Delete": "RemoveLink",
+                "Archive": "RemoveLink",
+                "Reparent": "NoCascade",
+                "Share": "UserOwned",
+                "Unshare": "UserOwned",
+                "RollupView": "NoCascade"
+              }
+            },
+            {
+              "schemaName": "inv_parent_tag",
+              "type": "ManyToMany",
+              "referencing": "",
+              "referenced": "",
+              "lookup": "",
+              "first": "inv_parent",
+              "second": "inv_tag",
+              "intersect": "inv_parent_tag",
+              "cascade": {}
+            }
+          ]
+        }
+      },
+      "output": {
+        "state": {
+          "parent": "caller",
+          "child": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": "parent"
+          },
+          "link": {
+            "_ownerid_value": "caller",
+            "_inv_refparentid_value": "parent",
+            "_inv_restrictparentid_value": "parent"
+          },
+          "customActive": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": "parent",
+            "statecode": 0
+          },
+          "customInactive": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": "parent",
+            "statecode": 1
+          },
+          "tag": "caller",
+          "tagLinks": 1
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "assign-parent",
+      "input": {
+        "op": "assign",
+        "to": "assignee"
+      },
+      "output": {
+        "status": 204,
+        "error": null,
+        "state": {
+          "parent": "assignee",
+          "child": {
+            "_ownerid_value": "assignee",
+            "_inv_parentid_value": "parent"
+          },
+          "link": {
+            "_ownerid_value": "caller",
+            "_inv_refparentid_value": "parent",
+            "_inv_restrictparentid_value": "parent"
+          },
+          "customActive": {
+            "_ownerid_value": "assignee",
+            "_inv_parentid_value": "parent",
+            "statecode": 0
+          },
+          "customInactive": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": "parent",
+            "statecode": 1
+          },
+          "tag": "caller",
+          "tagLinks": 1
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "delete-restricted",
+      "input": {
+        "op": "delete"
+      },
+      "output": {
+        "status": 405,
+        "error": {
+          "code": "0x80040227",
+          "message": "The object you tried to delete is associated with another object and cannot be deleted. Deleting records from inv_parent (ObjectTypeCode: <code>)\r\nfor Id(s) : {parent}\r\nException : Cascade Delete failed due to cascade restrict relation. Details below : \r\nRestricting entity inv_link (ObjectTypeCode: <code>) has Id: {link} and is collected by Relationship with name: inv_parent_linkrestrict.\r\n"
+        },
+        "state": {
+          "parent": "assignee",
+          "child": {
+            "_ownerid_value": "assignee",
+            "_inv_parentid_value": "parent"
+          },
+          "link": {
+            "_ownerid_value": "caller",
+            "_inv_refparentid_value": "parent",
+            "_inv_restrictparentid_value": "parent"
+          },
+          "customActive": {
+            "_ownerid_value": "assignee",
+            "_inv_parentid_value": "parent",
+            "statecode": 0
+          },
+          "customInactive": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": "parent",
+            "statecode": 1
+          },
+          "tag": "caller",
+          "tagLinks": 1
+        }
+      },
+      "volatile": []
+    },
+    {
+      "id": "clear-restrict",
+      "input": {
+        "op": "clear",
+        "row": "link",
+        "lookup": "inv_restrictparentid"
+      },
+      "output": {
+        "status": 204
+      },
+      "volatile": []
+    },
+    {
+      "id": "delete-parent",
+      "input": {
+        "op": "delete"
+      },
+      "output": {
+        "status": 204,
+        "error": null,
+        "state": {
+          "parent": "gone",
+          "child": {
+            "error": {
+              "code": "0x80040217",
+              "message": "Entity 'inv_child' With Id = {child} Does Not Exist"
+            }
+          },
+          "link": {
+            "_ownerid_value": "caller",
+            "_inv_refparentid_value": null,
+            "_inv_restrictparentid_value": null
+          },
+          "customActive": {
+            "_ownerid_value": "assignee",
+            "_inv_parentid_value": null,
+            "statecode": 0
+          },
+          "customInactive": {
+            "_ownerid_value": "caller",
+            "_inv_parentid_value": null,
+            "statecode": 1
+          },
+          "tag": "caller",
+          "tagLinks": 0
+        }
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of dataset trackContainerResize/allocated sizes and update batching in the model-driven host; no native capture of resize behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

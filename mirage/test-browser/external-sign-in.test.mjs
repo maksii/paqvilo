@@ -320,3 +320,52 @@ test("the authorization code flow runs end to end in the browser: the provider's
   assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
   assert.deepEqual(errors, []);
 });
+
+// @test-kind unproven: the local SAML 2.0 and WS-Federation providers modeled from the Microsoft Learn setup pages; the browser runs their auto-posted answers across origins
+test('SAML 2.0 and WS-Federation providers sign in and out from the platform sign-in page in the browser', async (t) => {
+  const header =
+    '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
+  const settings = [
+    ['Authentication/Registration/ExternalLoginEnabled', 'true'],
+    ['Authentication/Registration/LocalLoginEnabled', 'false'],
+    ['Authentication/SAML2/Partner/AuthenticationType', 'urn:invented:partner-idp'],
+    ['Authentication/SAML2/Partner/ServiceProviderRealm', 'urn:invented:portal'],
+    ['Authentication/SAML2/Partner/AssertionConsumerServiceUrl', 'https://portal.example.test/signin-saml2'],
+    ['Authentication/SAML2/Partner/ExternalLogoutCertThumbprint', '0123456789ABCDEF0123456789ABCDEF01234567'],
+    ['Authentication/SAML2/Partner/Caption', 'Partner SAML'],
+    ['Authentication/WsFederation/Sts/AuthenticationType', 'urn:invented:sts'],
+    ['Authentication/WsFederation/Sts/Wtrealm', 'urn:invented:portal'],
+    ['Authentication/WsFederation/Sts/Wreply', 'https://portal.example.test/signin-wsfed'],
+    ['Authentication/WsFederation/Sts/Caption', 'Partner STS'],
+  ];
+  const { app, idp, tab, errors } = await portal(t, settings, header);
+  const signIn = async (caption, path) => {
+    await tab.goto(app.url + '/');
+    await Promise.all([tab.waitForURL((url) => url.pathname === '/SignIn'), tab.locator('#sign-in').click()]);
+    const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]", { hasText: caption });
+    await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+    assert.equal(new URL(tab.url()).pathname, path);
+    await Promise.all([
+      tab.waitForURL(app.url + '/'),
+      tab.getByRole('button', { name: 'Continue as Alex Local' }).click(),
+    ]);
+    assert.equal(await tab.locator('#who').innerText(), 'Alex Local');
+  };
+  await signIn('Partner SAML', '/saml2-partner/saml2');
+  const visited = [];
+  tab.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame()) visited.push(new URL(request.url()));
+  });
+  // Sign out sends the signed LogoutRequest and comes back through the signed LogoutResponse.
+  await Promise.all([
+    tab.waitForRequest((request) => new URL(request.url()).pathname === '/signin-saml2'),
+    tab.locator('#sign-out').click(),
+  ]);
+  await tab.waitForURL(app.url + '/');
+  await tab.locator('#sign-in').waitFor();
+  assert.ok(visited.some((url) => url.origin === idp && url.pathname === '/saml2-partner/saml2/logout'));
+  assert.ok(visited.some((url) => url.pathname === '/signin-saml2' && url.searchParams.has('SAMLResponse')));
+  assert.equal(await tab.locator('#sign-in').count(), 1);
+  await signIn('Partner STS', '/wsfederation-sts/wsfed');
+  assert.deepEqual(errors, []);
+});

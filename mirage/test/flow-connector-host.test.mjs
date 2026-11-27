@@ -1,3 +1,4 @@
+// @test-kind contract: the host connector runtime (lib/organization-host.mjs) routes an exported flow's Http action through the project connection with effective environment variable values; Paqvilo design
 // Connector runtime in the host (lib/organization-host.mjs): an exported flow's Http action reaches a loopback fixture through
 // the project `connections` entry, from the portal cloud-flow route and from a Dataverse row trigger; flow parameters bound to
 // an environment variable use its effective value.
@@ -97,7 +98,7 @@ async function fixture(t) {
     'environmentvariabledefinitions/x_apikey/environmentvariabledefinition.xml':
       '<environmentvariabledefinition schemaname="x_apikey"><displayname default="Api key"/><type>100000005</type></environmentvariabledefinition>',
     'Workflows/portal.json': JSON.stringify(portalFlow),
-    'Workflows/portal.json.data.xml': `<Workflow WorkflowId="${PORTAL_FLOW}" Name="Invented portal flow"/>`,
+    'Workflows/portal.json.data.xml': `<Workflow WorkflowId="${PORTAL_FLOW}" Name="Invented portal flow"><StateCode>1</StateCode></Workflow>`,
     'Workflows/row.json': JSON.stringify(rowFlow),
     'Workflows/row.json.data.xml': `<Workflow WorkflowId="${ROW_FLOW}" Name="Invented row flow"><StateCode>1</StateCode></Workflow>`,
   };
@@ -158,9 +159,10 @@ test('the portal cloud-flow route runs an Http action through the project connec
     headers: {
       'content-type': 'application/json',
       __RequestVerificationToken: app.csrf,
+      'x-requested-with': 'XMLHttpRequest',
       'x-ms-correlation-request-id': CORRELATION,
     },
-    body: JSON.stringify({ name: 'echo' }),
+    body: JSON.stringify({ eventData: JSON.stringify({ name: 'echo' }) }),
   });
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { path: '/api/echo' });
@@ -186,6 +188,7 @@ test('a row trigger runs the same connection from committed work and writes the 
   assert.ok(completed, JSON.stringify(app.state().diagnostics.filter((entry) => /FLOW|CONNECTOR/.test(entry.code))));
 });
 
+// @test-kind contract+security: a Secret environment variable takes only a Key Vault reference, never a plain value
 test('the _sim environment PUT takes a Key Vault reference for a Secret definition and refuses a plain value', async (t) => {
   const { app } = await fixture(t);
   const put = (value) =>

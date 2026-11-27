@@ -1,4 +1,5 @@
 // Audit the distributable file list without creating an archive or contacting a registry.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import { packedPackage } from './npm-pack.mjs';
 import path from 'node:path';
@@ -263,6 +264,7 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/company-operations/portal-harness/compile.mjs',
   'examples/company-operations/portal-harness/runtime.mjs',
   'examples/company-operations/portal-harness/deploy.mjs',
+  'examples/company-operations/portal-harness/shell-source.mjs',
   'examples/company-operations/plugins/registration.mjs',
   'examples/company-operations/plugins/deploy.mjs',
   'examples/company-operations/plugins/Shared/Lab.cs',
@@ -447,7 +449,7 @@ export function validateReleaseFiles(files) {
     /^examples\/company-operations\/portal-security\/(?:README\.md|blueprint\.json|(?:blueprint|deploy|model-audit|role-variant|deep-variant)\.mjs)$/,
     /^examples\/company-operations\/portal-security\/(?:reference-projections|package|bind-tester|tester-overlay)\.mjs$/,
     /^examples\/company-operations\/portal-harness\/(?:README\.md|(?:browser|parity)\.test\.mjs)$/,
-    /^examples\/company-operations\/portal-harness\/(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs$/,
+    /^examples\/company-operations\/portal-harness\/(?:compile|core|deploy|shell-source|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs$/,
     /^examples\/company-operations\/plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json)$/,
     /^examples\/company-operations\/plugins\/test\/(?:collector|registration|deploy-plan|plugin-build)\.test\.mjs$/,
     /^examples\/company-operations\/(?:cli|paths)\.mjs$/,
@@ -686,7 +688,7 @@ function checkLockConsistency(root) {
   if (packageLock !== shrinkwrap) throw new Error('paqvilo-lock.json must match package-lock.json');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const [arg] = process.argv.slice(2);
   if (arg === '--help' || arg === '-h') {
     console.log(`Usage: npm run release:check   (node scripts/release-check.mjs under npm)

@@ -299,6 +299,9 @@ export function createLocalDiskStorage({
       return exclusive(async () => {
         const current = index.get(key);
         checkConditions(current, { ifMatch });
+        // Deleting a key also discards its uncommitted blocks, with or without a committed object (as the memory provider
+        // does), so an abandoned or failed block upload leaves nothing under staging/.
+        await fs.rm(stagingDir(key), { recursive: true, force: true });
         if (!current) return false;
         index.delete(key);
         await persist();

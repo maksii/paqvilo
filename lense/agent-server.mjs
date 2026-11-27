@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { refreshUrl } from './navigation.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { discoveryOwner, sweepStaleDiscovery, writeOwnedDiscovery } from './agent-discovery.mjs';
+import { piercedSnapshot, SNAPSHOT_ATTRIBUTES, SNAPSHOT_PANEL_IDS, SNAPSHOT_TEXT_BLOCKED } from './dom-pierce.mjs';
 
 const MAX_EVENTS = 500;
 const MAX_BODY = 32 * 1024;
@@ -17,6 +18,13 @@ const DEFAULT_STYLES = ['display', 'visibility', 'position', 'color', 'backgroun
 const SUSPENDED_MESSAGE = 'The owned tab is outside the target origin; it resumes when the tab returns';
 // Hang guard for one page operation when the caller sends no timeoutMs: a page paused in the debugger never answers.
 const BROWSER_OPERATION_TIMEOUT_MS = 60_000;
+// The page snapshot's selectors, from the lists the pierced snapshot shares (lense/dom-pierce.mjs).
+const PANEL_SELECTOR = SNAPSHOT_PANEL_IDS.map((id) => `#${id}`).join(',');
+const TEXT_BLOCKED_SELECTOR = [
+  ...SNAPSHOT_TEXT_BLOCKED,
+  PANEL_SELECTOR,
+  '[contenteditable]:not([contenteditable="false"])',
+].join(',');
 
 export function redactUrl(value) {
   try {
@@ -34,6 +42,27 @@ export function redactUrl(value) {
   } catch {
     return '[invalid URL]';
   }
+}
+
+/**
+ * Redacts one snapshot element in place (agent snapshot, Inspect's pierced read): its text, attributes, styles and frame
+ * URL; links resolve against `pageBase` and keep no query values.
+ */
+export function redactSnapshotElement(element, pageBase) {
+  if (element.scope?.frame) element.scope.frame.url = redactUrl(element.scope.frame.url);
+  element.text = redactText(element.text);
+  for (const [name, value] of Object.entries(element.attributes)) {
+    if (!['href', 'src'].includes(name)) element.attributes[name] = redactText(value, 500);
+    else {
+      try {
+        element.attributes[name] = redactUrl(new URL(value, pageBase).href);
+      } catch {
+        element.attributes[name] = '[invalid URL]';
+      }
+    }
+  }
+  for (const [name, value] of Object.entries(element.style)) element.style[name] = redactText(value, 500);
+  return element;
 }
 
 /** Best-effort secret redaction; arbitrary application text can still contain business data. */
@@ -116,7 +145,7 @@ async function readBody(request) {
 }
 
 // Runs only this fixed inspection program. The client supplies CSS selectors and property names.
-function inspectDom({ origin, selector, limit, textLimit, styles }) {
+function inspectDom({ origin, selector, limit, textLimit, styles, names, blocked, panels }) {
   if (location.origin !== origin) return { denied: true };
   let nodes;
   try {
@@ -126,8 +155,6 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   }
   const elements = [];
   let total = 0;
-  const blocked =
-    'script,style,template,noscript,input,textarea,select,option,#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector,[contenteditable]:not([contenteditable="false"])';
   const textOf = (node) => {
     if (node.matches(blocked)) return '';
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -142,27 +169,13 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   };
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index];
-    if (node.closest('#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector')) continue;
+    if (node.closest(panels)) continue;
     total++;
     if (elements.length >= limit) continue;
     const rect = node.getBoundingClientRect();
     const computed = getComputedStyle(node);
     const attributes = {};
-    for (const name of [
-      'id',
-      'class',
-      'style',
-      'role',
-      'aria-label',
-      'aria-hidden',
-      'title',
-      'type',
-      'name',
-      'href',
-      'src',
-      'disabled',
-      'checked',
-    ]) {
+    for (const name of names) {
       const value = node.getAttribute(name);
       if (value !== null) attributes[name] = value.slice(0, 500);
     }
@@ -479,6 +492,8 @@ export async function startAgentServer({
   };
   context.pages().forEach(listenPage);
   on(context, 'page', listenPage);
+  // The page ledgers (session.requestSummary) also hold requests interception never pauses.
+  if (typeof session.observeRequests === 'function') removers.add(session.observeRequests(context));
   // Playwright emits a popup's first request/response before its Page exists. Its public
   // Request.frame() remains unavailable; never guess a page from its URL (popups can share it).
   on(context, 'request', (request) => {
@@ -573,6 +588,36 @@ export async function startAgentServer({
     const state = inspector.sessionState();
     return { ...header(), ...state, inspection: { ...state.inspection, suspended: false }, pages: pageList() };
   };
+  const servedVersion = () => {
+    // `suppressed`: in front of the site's own local Mirage, which renders the working copy (set by the panel).
+    if (cfg.mirage || !session.served || session.served.suppressed) return null;
+    const snapshot = session.served.snapshot();
+    return {
+      baseline: snapshot.baseline,
+      differs: snapshot.differs,
+      deployed: snapshot.deployed,
+      search: snapshot.search ?? null,
+      files: snapshot.files.map((file) => ({
+        rel: file.rel,
+        kind: file.kind,
+        name: file.name,
+        state: file.state,
+        changed: file.changed,
+        places: file.places,
+        versions: file.versions ?? null,
+        pages: file.pages.map((page) => ({
+          url: page.url,
+          count: page.count,
+          places: page.places.map((place) => ({
+            ...place,
+            local: redactText(place.local),
+            served: redactText(place.served),
+          })),
+        })),
+      })),
+    };
+  };
+
   const portalState = () => ({
     ...header(),
     browserScope: {
@@ -598,6 +643,9 @@ export async function startAgentServer({
           headMoved: Boolean(session.baseline.available && session.head.commit !== session.baseline.commit),
         }
       : null,
+    // Files the pages opened show in another version than the baseline holds (the checkout is ahead of the portal
+    // or behind it), the places, and the Git refs whose versions explain those pages.
+    served: servedVersion(),
     overlay: {
       scope: cfg.site.scope,
       bypass: session.bypass,
@@ -657,6 +705,12 @@ export async function startAgentServer({
     const state = panel?.stateFor(page);
     const hits = session.pageHits?.get(page) ?? [];
     const documentId = currentDocuments.get(page)?.id;
+    // The panel's lists (overridden, same as deployed, differs but not applied, paused), or the recorded sources.
+    const resourceRows = state
+      ? [...(state.items ?? []), ...(state.insync ?? []), ...(state.notApplied ?? []), ...(state.paused ?? [])]
+      : hits.flatMap((hit) => hit.sources ?? []);
+    const hitsTrimmed = session.pageHitsTrimmed?.get(page) ?? 0;
+    const ledger = session.requestSummary?.(page, { limit: MAX_ITEMS }) ?? null;
     const runtimeEvents = events.filter(
       (event) =>
         event.pageId === pageId &&
@@ -672,17 +726,33 @@ export async function startAgentServer({
         documentMethod: documents.get(page)?.method ?? null,
       },
       overlay: { online: session.bypass, live: session.liveReload, scope: cfg.site.scope },
-      resources: textRows(state?.items ?? hits.flatMap((hit) => hit.sources ?? []), [
+      resources: textRows(resourceRows, [
         'rel',
         'kind',
         'group',
         'url',
         'action',
+        'note',
         'edited',
         'count',
         'differs',
         'isNew',
+        'paused',
+        'state',
+        'reason',
       ]),
+      pageFiles: textRows(state?.page?.sources, ['rel', 'kind', 'label', 'empty']),
+      // Every request of the current document and where it came from (request-classes.mjs).
+      requests: ledger && {
+        total: ledger.total,
+        truncated: ledger.truncated,
+        counts: ledger.counts,
+        items: ledger.items.map((item) => ({
+          ...item,
+          url: item.class === 'external' ? item.url : location(item.url),
+          ...(item.note ? { note: redactText(item.note) } : {}),
+        })),
+      },
       diagnostics: {
         problems: textRows(state?.problems, ['type', 'text', 'rel', 'where', 'line', 'col', 'count']),
         notes: textRows(state?.notes, ['rel', 'reason']),
@@ -700,8 +770,11 @@ export async function startAgentServer({
       },
       limits: {
         maxItems: MAX_ITEMS,
-        resourcesTruncated:
-          (state?.items?.length ?? hits.reduce((n, hit) => n + (hit.sources?.length ?? 0), 0)) > MAX_ITEMS,
+        resourcesTruncated: resourceRows.length > MAX_ITEMS || hitsTrimmed > 0,
+        // Hits of this document dropped by the session's 500-hit bound: their rows are missing above.
+        hitsTrimmed,
+        pageFilesTruncated: (state?.page?.sources?.length ?? 0) > MAX_ITEMS,
+        requestsTruncated: Boolean(ledger?.truncated),
         problemsTruncated: (state?.problems?.length ?? 0) > MAX_ITEMS,
         notesTruncated: (state?.notes?.length ?? 0) > MAX_ITEMS,
         needsDeployTruncated: (state?.needsDeploy ?? session.rewriter.unsupported).length > MAX_ITEMS,
@@ -779,7 +852,7 @@ export async function startAgentServer({
         setImmediate(stop);
         return;
       }
-      const match = /^\/v1\/pages\/(\d+)\/(state|dom|screenshot|navigate|reload|viewport)$/.exec(url.pathname);
+      const match = /^\/v1\/pages\/(\d+)\/(state|dom|screenshot|navigate|reload|viewport|coverage)$/.exec(url.pathname);
       const requestedPage = /^\/v1\/pages\/([^/]+)\//.exec(url.pathname)?.[1];
       if (requestedPage !== undefined) integer(requestedPage, undefined, Number.MAX_SAFE_INTEGER);
       if (!match) throw fault(404, 'not_found', 'Unknown agent API endpoint');
@@ -793,6 +866,22 @@ export async function startAgentServer({
       if (request.method !== 'POST' || action === 'state')
         throw fault(405, 'method_not_allowed', 'Unsupported HTTP method');
       const body = await readBody(request);
+      if (action === 'coverage') {
+        fields(body, ['limit', 'samples', 'timeoutMs']);
+        if (typeof panel?.coverageFor !== 'function')
+          throw fault(409, 'coverage_unavailable', 'Identification coverage needs the dev panel of a portal session');
+        const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        const coverage = await withPage(page, timeout, () =>
+          panel.coverageFor(page, {
+            limit: integer(body.limit, 20_000, 50_000, 1),
+            samples: integer(body.samples, 40, MAX_ITEMS, 0),
+          }),
+        );
+        if (!coverage.available) throw fault(409, 'coverage_unavailable', coverage.reason);
+        const result = { ...coverage };
+        delete result.available;
+        return json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, coverage: result });
+      }
       if (action === 'viewport') {
         fields(body, ['width', 'height', 'timeoutMs']);
         if (body.width == null || body.height == null)
@@ -806,7 +895,9 @@ export async function startAgentServer({
         return json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, viewport });
       }
       if (action === 'dom') {
-        fields(body, ['selector', 'limit', 'textLimit', 'styles', 'timeoutMs']);
+        fields(body, ['selector', 'limit', 'textLimit', 'styles', 'pierce', 'timeoutMs']);
+        if (body.pierce !== undefined && typeof body.pierce !== 'boolean')
+          throw fault(400, 'invalid_argument', 'pierce must be true or false');
         const selector = body.selector ?? 'body *';
         if (typeof selector !== 'string' || selector.length > 1000 || !selector.trim())
           throw fault(400, 'invalid_argument', 'selector must be a non-empty CSS selector of at most 1000 characters');
@@ -818,34 +909,30 @@ export async function startAgentServer({
         )
           throw fault(400, 'invalid_argument', 'styles must contain at most 20 CSS property names');
         const timeout = integer(body.timeoutMs, BROWSER_OPERATION_TIMEOUT_MS, 120_000);
+        const read = {
+          origin: scope.origin,
+          selector,
+          limit: integer(body.limit, 100, MAX_ITEMS),
+          textLimit: integer(body.textLimit, 500, 2000, 0),
+          styles,
+        };
+        // pierce reads closed shadow roots and cross-origin frames through the DevTools protocol (lense/dom-pierce.mjs).
         const result = await withPage(page, timeout, () =>
-          page.evaluate(inspectDom, {
-            origin: scope.origin,
-            selector,
-            limit: integer(body.limit, 100, MAX_ITEMS),
-            textLimit: integer(body.textLimit, 500, 2000, 0),
-            styles,
-          }),
+          body.pierce
+            ? piercedSnapshot({ context, page, ...read })
+            : page.evaluate(inspectDom, {
+                ...read,
+                names: SNAPSHOT_ATTRIBUTES,
+                blocked: TEXT_BLOCKED_SELECTOR,
+                panels: PANEL_SELECTOR,
+              }),
         );
         if (result.invalidSelector) throw fault(400, 'invalid_selector', 'Invalid CSS selector');
         if (result.denied) throw fault(403, 'origin_changed', 'The page left the configured portal origin');
         const pageBase = result.url;
         result.url = redactUrl(result.url);
         result.title = redactText(result.title, 500);
-        for (const element of result.elements) {
-          element.text = redactText(element.text);
-          for (const [name, value] of Object.entries(element.attributes)) {
-            if (!['href', 'src'].includes(name)) element.attributes[name] = redactText(value, 500);
-            else {
-              try {
-                element.attributes[name] = redactUrl(new URL(value, pageBase).href);
-              } catch {
-                element.attributes[name] = '[invalid URL]';
-              }
-            }
-          }
-          for (const [name, value] of Object.entries(element.style)) element.style[name] = redactText(value, 500);
-        }
+        for (const element of result.elements) redactSnapshotElement(element, pageBase);
         return json(response, 200, result);
       }
       if (action === 'screenshot') {

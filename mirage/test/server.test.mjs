@@ -307,7 +307,8 @@ test(
           await app.reload();
         }
         phase('prepared');
-        const baseline = await fetch(app.url + route).then((response) => response.text());
+        const baselineResponse = await fetch(app.url + route);
+        const baseline = await baselineResponse.text();
         phase('baseline rendered');
         const revisionOf = (html) => Number(/simulation\.revision=(\d+)/.exec(html)?.[1]);
         const initialRevision = revisionOf(baseline);
@@ -339,7 +340,7 @@ test(
           }
           return value;
         };
-        const pending = fetch(app.url + route).then((response) => response.text());
+        const pending = fetch(app.url + route);
         try {
           await Promise.race([
             arrived,
@@ -351,23 +352,90 @@ test(
               ? 'Changed source'
               : '<!doctype html><html><body><h1>Changed source</h1></body></html>',
           );
+          if (route === '/')
+            await fs.appendFile(
+              path.join(dir, 'sitesetting.yml'),
+              '\n- adx_name: HTTP/Referrer-Policy\n  adx_value: no-referrer',
+            );
           phase('render held');
           await app.reload();
           phase('reloaded while held');
         } finally {
           release();
         }
-        const stale = await pending;
+        const staleResponse = await pending;
+        const stale = await staleResponse.text();
+        if (route === '/')
+          assert.equal(staleResponse.headers.get('referrer-policy'), baselineResponse.headers.get('referrer-policy'));
         if (!route.startsWith('/_portal/'))
           assert.ok(/Visible(?:&#32;| )member/.test(stale), 'The original page read remains in the response.');
         assert.ok(!stale.includes('Changed source'), 'Nested Liquid must use the selected source renderer.');
         if (route.startsWith('/_portal/')) assert.ok(stale.includes('Original modal source'));
         assert.equal(revisionOf(stale), initialRevision, 'ready reconciliation must see the old source revision');
         phase('held render completed');
-        const current = await fetch(app.url + route).then((response) => response.text());
+        const currentResponse = await fetch(app.url + route);
+        const current = await currentResponse.text();
+        if (route === '/') assert.equal(currentResponse.headers.get('referrer-policy'), 'no-referrer');
         assert.match(current, /Changed source/);
         assert.equal(revisionOf(current), initialRevision + 1);
       });
+  },
+);
+
+// @test-kind contract: an admitted render that uses source-dependent form bindings retries on a source publication.
+test(
+  'HTTP: a source refresh during an entity form render returns a retryable conflict',
+  { timeout: SCENARIO_HANG_GUARD_MS },
+  async (t) => {
+    const { app, call, dir } = await setup(t);
+    const sourceFile = path.join(dir, 'web-templates/Main.webtemplate.source.html');
+    await fs.mkdir(path.join(dir, 'basic-forms'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'basic-forms/Reader.basicform.yml'),
+      'adx_entityformid: reader-form\nadx_name: Reader form\nadx_entityname: contact\nadx_mode: 100000001',
+    );
+    await fs.writeFile(sourceFile, `<!doctype html><html><body>{% entityform name: 'Reader form' %}</body></html>`);
+    const configured = await call('/__sim/api/config', 'PATCH', {
+      componentSchemas: { 'Reader form': { entity: 'contact', mode: 100000001, fields: [{ name: 'fullname' }] } },
+    });
+    assert.equal(configured.status, 200);
+    await app.reload();
+    const url = `${app.url}/?id=one`;
+    const initial = await fetch(url);
+    assert.equal(initial.status, 200);
+    assert.equal((await initial.text()).includes('Visible member'), true);
+
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.signal.addEventListener('abort', release.resolve, { once: true });
+    const read = app.store.readOperation.bind(app.store);
+    let held = false;
+    t.mock.method(app.store, 'readOperation', async (...args) => {
+      const value = await read(...args);
+      if (!held) {
+        held = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return value;
+    });
+    const pending = fetch(url);
+    try {
+      await Promise.race([
+        entered.promise,
+        pending.then(() => assert.fail('The form did not reach its controlled read.')),
+      ]);
+      await fs.writeFile(sourceFile, '<!doctype html><html><body>Replacement source</body></html>');
+      await app.reload();
+    } finally {
+      release.resolve();
+    }
+    const raced = await pending;
+    assert.equal(raced.status, 409);
+    assert.match(await raced.text(), /Portal sources changed while resolving this page/);
+    const current = await fetch(url);
+    assert.equal(current.status, 200);
+    assert.match(await current.text(), /Replacement source/);
   },
 );
 test('HTTP: source application-relative links redirect locally, retaining parameters and access checks', async (t) => {
@@ -567,7 +635,9 @@ test('HTTP: Liquid and API share identity/data; admin CRUD is protected and pers
   assert.equal(disk.tables.contact.find((r) => r.contactid === row.contactid).fullname, 'Updated');
   assert.equal((await call(`/__sim/api/records/contact/${row.contactid}`, 'DELETE')).status, 204);
   assert.equal((await call('/_api/contacts(missing)')).status, 404);
-  assert.equal((await call('/_api/contacts(missing)/fullname')).status, 404);
+  // /<column> is refused before the row is read (hosted session F1 summary-F1 API-02c, two runs); /$value is not.
+  assert.equal((await call('/_api/contacts(missing)/fullname')).status, 403);
+  assert.equal((await call('/_api/contacts(missing)/fullname/$value')).status, 404);
 });
 
 // @test-kind contract+unproven: server behavior is local; portal and service behaviour have no native capture.

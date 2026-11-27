@@ -1,3 +1,4 @@
+// @test-kind contract: export bootstrap keeps each explicit Append/Append To flag and grants no false or absent right
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,7 +8,8 @@ import { initialState } from '../lib/bootstrap.mjs';
 import { createSimulator } from '../server.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const G = (n) => '77777777-7777-4777-8777-' + String(n).padStart(12, '0');
-function portal(append, appendTo) {
+// native: the flags a lookup bind needs (Append To on the bound table, Append on the related table) on their tables
+function portal(append, appendTo, { native = false } = {}) {
   const grant = (entity, flags) => ({
     kind: 'tablepermission',
     id: entity,
@@ -21,8 +23,8 @@ function portal(append, appendTo) {
   return {
     records: [
       { kind: 'webrole', id: G(1), name: 'Member' },
-      grant('widget', { adx_append: append, adx_create: true }),
-      grant('label', { adx_appendto: appendTo }),
+      grant('widget', { [native ? 'adx_appendto' : 'adx_append']: native ? appendTo : append, adx_create: true }),
+      grant('label', { [native ? 'adx_append' : 'adx_appendto']: native ? append : appendTo }),
     ],
     templates: {},
     forms: [],
@@ -44,6 +46,7 @@ test('bootstrap preserves explicit relationship rights without granting false or
     assert.equal(state.permissions[1].operations.includes('append'), false);
   }
 });
+// @test-kind observation: native captures 2026-11-23 through a site's /_api (paqvilo-developer feedback-251-252-parity q5/q6): a create with a lookup bind needs Append To on the table holding the lookup and Append on the related table; either missing is 403 90040106 and nothing is created
 test('bootstrapped grants authorize real HTTP lookup creation and preserve each denial boundary', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-rights-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -64,12 +67,12 @@ test('bootstrapped grants authorize real HTTP lookup creation and preserve each 
     await fs.writeFile(
       path.join(dir, 'tablepermission.yml'),
       JSON.stringify(
-        portal(append, appendTo)
+        portal(append, appendTo, { native: true })
           .records.filter((r) => r.kind === 'tablepermission')
           .map((r) => ({ ...r, adx_entitypermissionid: r.id })),
       ),
     );
-    const initial = initialState(portal(append, appendTo));
+    const initial = initialState(portal(append, appendTo, { native: true }));
     initial.mappings.widget = {
       entitySet: 'widgets',
       idColumn: 'widgetid',

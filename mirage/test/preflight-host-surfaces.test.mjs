@@ -1,3 +1,4 @@
+// @test-kind contract: preflight requirement rows, levels and surfaces are Paqvilo's designed composition of host diagnostics; tests citing a capture override it
 // What the Power Pages and model-driven hosts detect but do not run reaches preflight as requirement rows with a level,
 // and the offline preflight shares the running host's composition.
 import test from 'node:test';
@@ -36,8 +37,8 @@ async function site(t, authorization, { gap = false } = {}) {
   return dir;
 }
 
-// powerpagesite enhancedauthorization 1-3: the local runtime runs the
-// enhanced model (portal-authorization.mjs) for every non-zero state, so the row is satisfied with the fidelity note.
+// powerpagesite enhancedauthorization 1-3: the local runtime runs the enhanced model (portal-authorization.mjs) for 3 and
+// the standard model for 1 and 2 (hosted session F1), so every row is satisfied with its fidelity note.
 test('enhanced authorization states 1, 2 and 3 are satisfied rows with a fidelity note; the legacy model adds no row', async (t) => {
   for (const state of [1, 2, 3]) {
     const report = await preflight({ sourceDir: await site(t, state), strict: true, packs: [], env: {} });
@@ -47,7 +48,10 @@ test('enhanced authorization states 1, 2 and 3 are satisfied rows with a fidelit
       ['satisfied', 'ENHANCED_AUTHORIZATION', false, { by: 'source' }],
       `state ${state}`,
     );
-    assert.match(row.message, /Fidelity: the privilege depth/);
+    assert.match(
+      row.message,
+      state === 3 ? /Fidelity: the privilege depth/ : /Fidelity: states 1 and 2 keep the standard model/,
+    );
     assert.ok(report.diagnostics.some((item) => item.code === 'ENHANCED_AUTHORIZATION' && item.fidelity));
     assert.equal(preflightExitCode(report), 0);
   }
@@ -74,11 +78,16 @@ test('a scenario scopes the portal rows', async (t) => {
   assert.equal(scoped.requirements.find((item) => item.id === 'portal:enhanced-authorization').blocking, false);
 });
 
-test('a modern list the adapter cannot serve and the document control are contract rows', () => {
+// @test-kind observation: paqvilo-developer hosted-f2 summary-F2 LIST-01f (runs a and b, modernlists.json): a calendar list included as modern renders the modern grid, so it is a served modern include with no portal:modern-list row; the document control row is the designed contract
+test('a calendar list included as modern adds no row; the document control is a contract row', () => {
   const diagnostics = platformChangeDiagnostics({
-    lists: [{ name: 'x_map', metadata: { adx_map_enabled: true } }],
-    pages: [{ url: '/', html: "{% include 'entity_list' key: 'x_map' isModern: 'true' %}" }],
+    lists: [{ name: 'x_calendar', metadata: { adx_calendar_enabled: true } }],
+    pages: [{ url: '/', html: "{% include 'entity_list' key: 'x_calendar' isModern: 'true' %}" }],
   });
+  assert.deepEqual(
+    diagnostics.map((diagnostic) => diagnostic.code),
+    ['MODERN_LIST_LOCAL_MARKUP'],
+  );
   const forms = [
     {
       id: '77777777-7777-4777-8777-777777777790',
@@ -99,7 +108,6 @@ test('a modern list the adapter cannot serve and the document control are contra
       .map((row) => [row.id, [row.status, row.reason, row.level]]),
   );
   assert.deepEqual(rows, {
-    'portal:modern-list': ['unsupported', 'MODERN_LIST_RENDERED_CLASSIC', 'contract'],
     'portal:sharepoint-documents': ['unsupported', 'PORTAL_SHAREPOINT_DOCUMENTS_LOCAL', 'contract'],
   });
   // A served modern list (local markup) is information only.

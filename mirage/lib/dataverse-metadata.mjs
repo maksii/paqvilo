@@ -24,6 +24,7 @@ import {
 import { expiredVersionStamp } from './dataverse-changes.mjs';
 import { DataError } from './data-error.mjs';
 import { relationshipsOf, standardFields, standardGlobalOptionSets, standardTableDef } from './dataverse-standard.mjs';
+import { cascadeAction } from './relationship-cascade.mjs';
 import { ENUM_MEMBERS, MANAGED_MEMBERS } from './dataverse-soap-contracts.mjs';
 import { withRollupCompanions } from './dataverse-rollup.mjs';
 import { platformCsdl } from './dataverse-operation-contracts.mjs';
@@ -1330,6 +1331,10 @@ export function createMetadataService({
   }
 
   function recordFieldsOf(src) {
+    // A table whose mapping lists every column the platform reports (mapping.metadataAttributes "declared": the captured
+    // sharepointdocument definition, sharepoint-document-table.mjs) gets no system or generated companion columns.
+    if (src.m?.metadataAttributes === 'declared')
+      return { [src.idColumn]: { dataverseType: 'primarykey' }, ...src.fields };
     const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === 'user' ? OWNER_COLUMNS : {}) };
     const targets = new Map();
     return implicitAttributes(
@@ -1525,7 +1530,7 @@ export function createMetadataService({
   }
 
   function oneToManyShape(r) {
-    const cascade = r.cascade ?? {};
+    const cascade = r.cascade;
     const behavior = Number.isInteger(r.relationshipBehavior) ? r.relationshipBehavior : 0;
     return {
       '@odata.type': '#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata',
@@ -1543,14 +1548,14 @@ export function createMetadataService({
       IsHierarchical: r.hierarchical === true,
       AssociatedMenuConfiguration: menuShape(r.associatedMenu, r.dataverseMetadata?.AssociatedMenuConfiguration?.Label),
       CascadeConfiguration: {
-        Assign: cascade.assign ?? 'NoCascade',
-        Delete: cascade.delete ?? 'RemoveLink',
-        Archive: cascade.archive ?? 'NoCascade',
-        Merge: cascade.merge ?? 'NoCascade',
-        Reparent: cascade.reparent ?? 'NoCascade',
-        Share: cascade.share ?? 'NoCascade',
-        Unshare: cascade.unshare ?? 'NoCascade',
-        RollupView: cascade.rollupView ?? 'NoCascade',
+        Assign: cascadeAction(cascade, 'assign') ?? 'NoCascade',
+        Delete: cascadeAction(cascade, 'delete') ?? 'RemoveLink',
+        Archive: cascadeAction(cascade, 'archive') ?? 'NoCascade',
+        Merge: cascadeAction(cascade, 'merge') ?? 'NoCascade',
+        Reparent: cascadeAction(cascade, 'reparent') ?? 'NoCascade',
+        Share: cascadeAction(cascade, 'share') ?? 'NoCascade',
+        Unshare: cascadeAction(cascade, 'unshare') ?? 'NoCascade',
+        RollupView: cascadeAction(cascade, 'rollupView') ?? 'NoCascade',
       },
       DenormalizedAttributeName: null, // assumed always null natively
       EntityKey: null,
@@ -2248,9 +2253,11 @@ export function createMetadataService({
 
     globalOptionSets: ({ labelLanguages } = {}) => limitLabels(globalSets(), labelLanguages),
 
-    globalOptionSet(name, { labelLanguages } = {}) {
-      const wanted = String(name).toLowerCase();
-      const hit = globalSets().find((set) => set.Name.toLowerCase() === wanted) ?? null;
+    globalOptionSet(nameOrId, { labelLanguages } = {}) {
+      const wanted = String(nameOrId).toLowerCase();
+      const hit =
+        globalSets().find((set) => set.Name.toLowerCase() === wanted || set.MetadataId.toLowerCase() === wanted) ??
+        null;
       return limitLabels(hit, labelLanguages);
     },
 

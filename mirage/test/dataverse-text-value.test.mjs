@@ -1,8 +1,10 @@
+// @test-kind unproven: local model of the Dataverse UTF-8 BOM on primitive /$value and /$count text (lib/dataverse-text-value.mjs); no native capture of the BOM bytes yet
 import { specimenApi, ID, API } from './support/specimen-api.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PNG } from 'pngjs';
 import { encodeDataverseText } from '../lib/dataverse-text-value.mjs';
+import { pngThumbnail } from '../lib/portal-png.mjs';
 test('primitive text encoding respects explicit provider MIME types and header casing', () => {
   for (const name of ['content-type', 'Content-Type', 'CONTENT-TYPE']) {
     for (const type of ['application/octet-stream', 'Application/JSON; charset=utf-8', 'application/xml']) {
@@ -21,6 +23,7 @@ test('primitive text encoding respects explicit provider MIME types and header c
     'encoding BOM does not consume an authored leading character',
   );
 });
+// @test-kind unproven+observation: the BOM on primitive text and counts is a local model without native capture; the image column reads follow hosted session F2 thumbs runs a and b (paqvilo-developer hosted-f2 summary-F2 Files, the dataverse: reads): $value answers the re-encoded thumbnail, size=full the upload byte for byte
 test('Dataverse primitive text and counts carry a BOM without changing JSON, nulls or binary streams', async (t) => {
   const { api, request } = await specimenApi(t);
   const raw = async (path, expected) => {
@@ -75,10 +78,13 @@ test('Dataverse primitive text and counts carry a BOM without changing JSON, nul
     ).status,
     204,
   );
-  for (const suffix of ['', '?size=full']) {
+  for (const [suffix, expected] of [
+    ['', pngThumbnail(png)],
+    ['?size=full', png],
+  ]) {
     const image = await request(`specimens(${ID})/photo/$value${suffix}`);
     assert.equal(image.status, 200);
-    assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), expected, suffix || 'thumbnail');
   }
   const batch = await request('$batch', {
     method: 'POST',

@@ -79,6 +79,13 @@ const row = (spec) => Object.freeze({ kind: 'map', key: exact, collide: 'error',
 export const PACK_EXPORTS = {
   serverLogics: row({ key: lower, check: mapOf(named, 'serverLogics must map exported names to functions') }),
   cloudFlows: row({ key: lower, check: mapOf(named, 'cloudFlows must map exported names to functions') }),
+  portalSearchSummary: row({
+    kind: 'value',
+    entries: (value) => [['provider', value]],
+    check: (value, packId) => {
+      if (typeof value !== 'function') fail(packId, 'portalSearchSummary must be a function');
+    },
+  }),
   // Any key (a GUID or a unique name, brace-stripped and lowercased) and a null export.
   flowIdentities: row({
     key: canonicalGuid,
@@ -118,6 +125,13 @@ export const PACK_EXPORTS = {
     ),
   }),
   dataverseMessages: row({ key: exact, check: mapOf(named, 'dataverseMessages must map message names to functions') }),
+  portalDataSummary: row({
+    kind: 'value',
+    entries: (value) => [['provider', value]],
+    check: (value, packId) => {
+      if (typeof value !== 'function') fail(packId, 'portalDataSummary must be a function');
+    },
+  }),
   expressionOperators: row({ key: exact, check: checkOperators }),
   endpoints: row({
     kind: 'value',

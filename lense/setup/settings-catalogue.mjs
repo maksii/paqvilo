@@ -59,6 +59,12 @@ const MIRAGE = {
     stage: 2,
     example: 'platform:\n  QueryLinkEntityLimit: 15\n  evidence: Invented support note\n',
   },
+  uploadedAssemblies: {
+    kind: 'choice',
+    choices: ['clr', 'placeholder'],
+    stage: 9,
+    example: 'uploadedAssemblies: placeholder\n',
+  },
   dataverse: {
     kind: 'object',
     stage: 9,
@@ -87,6 +93,11 @@ const MIRAGE = {
     stage: 8,
     example: 'environmentVariables:\n  x_InventedFeatureFlag: "true"\n',
   },
+  implicitGrant: {
+    kind: 'object',
+    stage: 8,
+    example: 'implicitGrant:\n  signingKeys:\n    - privateKeyFile: ../keys/invented-implicit-grant.pem\n',
+  },
   connections: {
     kind: 'object',
     stage: 8,
@@ -110,6 +121,11 @@ const MIRAGE = {
       'providers:\n  storage:\n    invented-disk:\n      kind: local-disk\n  routes:\n    dataverseFiles: invented-disk\n    annotations: invented-disk\n  messaging:\n    invented-bus:\n      kind: local-queue\n    endpoints:\n      x-invented-endpoint: invented-bus/x_invented_queue\n  outbox:\n    kind: local\n',
   },
   canvas: { kind: 'object', stage: 3, example: 'canvas:\n  enabled: true\n  sources:\n    - ./canvas/x_invented\n' },
+  pcf: {
+    kind: 'object',
+    stage: 3,
+    example: 'pcf:\n  sources:\n    - path: ./components/x-invented/out/controls\n      publisherPrefix: inv\n',
+  },
   codeApps: { kind: 'list', stage: 3, example: 'codeApps:\n  - name: invented-app\n    dir: ./code-apps/invented\n' },
 };
 // A secret-bearing member of a non-redacted key: the application secret is an environment variable name.
@@ -185,14 +201,14 @@ const ROOT = [
     'browser.profileDirectory',
     'string',
     10,
-    'Profile folder name inside userDataDir.',
+    'Profile folder name inside userDataDir, or the open profile to use in an attached browser (cdpUrl).',
     'browser:\n  profileDirectory: Default\n',
   ],
   [
     'browser.cdpUrl',
     'string',
     10,
-    'Attach to a running browser through its DevTools endpoint.',
+    'Attach to a running browser: its DevTools endpoint, or a channel such as msedge when its remote debugging switch is on.',
     'browser:\n  cdpUrl: http://127.0.0.1:9222\n',
   ],
   [

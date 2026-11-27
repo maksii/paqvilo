@@ -13,6 +13,7 @@
 import { LiquidDrop, LIQUID_PROPERTIES } from './liquid-engine.mjs';
 import { NetDecimal, decimalDivide, decimalMultiply, parseNetDate } from './liquid-dotnet.mjs';
 import { systemClock } from './runtime-clock.mjs';
+import { setRecordSources } from './render-provenance.mjs';
 
 const GUID_KEY = /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i;
 const IMPORTER_KEYS = new Set(['kind', 'id', 'name', 'statecode']);
@@ -65,6 +66,15 @@ function entityDrop(record, logicalName, properties) {
   return drop;
 }
 
+/** entityDrop that also names the record the drop stands for (render provenance record contexts; id -> { sourceRefId }). */
+const recordDrops =
+  (recordSource) =>
+  (...args) => {
+    const drop = entityDrop(...args);
+    if (recordSource) setRecordSources(drop, [recordSource(drop.id)]);
+    return drop;
+  };
+
 function selectBy(records, key, accept) {
   if (key == null) return null;
   const name = String(key);
@@ -88,7 +98,8 @@ class KeyedDrop extends LiquidDrop {
 }
 
 /** Build the `polls` object for a render (now is the render's UTC time). */
-export function createPollsDrop(portal, { now = new Date(systemClock.now()) } = {}) {
+export function createPollsDrop(portal, { now = new Date(systemClock.now()), recordSource = null } = {}) {
+  const entityDrop = recordDrops(recordSource);
   const records = portal.records ?? [];
   const website = guidOf(portal.website?.id);
   const polls = records.filter((record) => record.kind === 'poll');
@@ -157,7 +168,11 @@ export function createPollsDrop(portal, { now = new Date(systemClock.now()) } = 
 }
 
 /** Build the `ads` object for a render. */
-export function createAdsDrop(portal, { now = new Date(systemClock.now()), previewUnpublished = false } = {}) {
+export function createAdsDrop(
+  portal,
+  { now = new Date(systemClock.now()), previewUnpublished = false, recordSource = null } = {},
+) {
+  const entityDrop = recordDrops(recordSource);
   const records = portal.records ?? [];
   const website = guidOf(portal.website?.id);
   const ads = records.filter((record) => record.kind === 'ad');

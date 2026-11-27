@@ -6,14 +6,36 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data.mjs';
+import { collectFetchXmlPages } from './paging-validation.mjs';
 import { csvCell } from './csv.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
-import { parseDateValue } from './dataverse-values.mjs';
+import { parseDateValue, choiceFieldOptions } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from './importer.mjs';
 import { metaFilterGroups } from './metafilters.mjs';
+import { byActionIndex, gridItemActions } from './grid-item-actions.mjs';
 import { siteSetting } from './redirects.mjs';
-import { notesFilter, portalRecordWrites } from './form-service.mjs';
+import {
+  closeActivityValues,
+  notesFilter,
+  openRegardingActivities,
+  portalRecordWrites,
+  runFormMessageAction,
+} from './form-service.mjs';
+import {
+  activityTables,
+  displayAllActivitiesOnTimeline,
+  notesRichTextEnabled,
+  PORTAL_COMMENT_TABLE,
+  PORTAL_TIMELINE_VIEW_ID,
+  portalTimelineView,
+  richTextIsEmpty,
+  sanitizeActivityHtml,
+  sanitizeNoteHtml,
+  TIMELINE_DEFAULT_PAGE_SIZE,
+  TIMELINE_MAX_PAGE_SIZE,
+  timelineViewSelection,
+} from './portal-timeline.mjs';
 import {
   platformResourceHeaders,
   siteHeaders,
@@ -21,8 +43,13 @@ import {
   PAGE_HEADERS,
   contentDisposition,
 } from './response-headers.mjs';
-import { contextualViewFetchXml } from './platform.mjs';
-import { nativeActionStateValues } from './native-form-actions.mjs';
+import { contextualViewFetchXml, portalCommentAllowed } from './platform.mjs';
+import {
+  NATIVE_STATE_ACTIONS,
+  assertActionSource,
+  nativeActionStateValues,
+  nativeCloseActivity,
+} from './native-form-actions.mjs';
 import { handleImplicitGrant } from './auth-token.mjs';
 import { sameToken } from './admin-origin.mjs';
 import { handleODataFeed } from './odata-feeds.mjs';
@@ -34,6 +61,8 @@ import {
   calendarLanguageScript,
   calendarEvents,
   calendarIcs,
+  calendarRange,
+  CALENDAR_RANGE_ERRORS,
   parseCalendarPath,
 } from './list-views.mjs';
 import { CALENDAR_TEMPLATES } from './entitylist-calendar-templates.mjs';
@@ -45,6 +74,7 @@ import {
 } from './subgrid-actions.mjs';
 import { statusFromHttp } from './trace-store.mjs';
 import { decimalCell, xlsxWorkbook } from './xlsx-writer.mjs';
+import { applyPcfGridFilter, pcfGridUpdate } from './pcf-grid-query.mjs';
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
@@ -208,11 +238,37 @@ const ACTION_TYPES = {
   'CrmEntityFormView-AssociateAction': 5,
   'CrmEntityFormView-DisassociateAction': 6,
   'CrmEntityFormView-WorkflowAction': 7,
+  // The name a PAC export gives the maker's workflow action (stored as Adxstudio JsonConfiguration.WorkflowAction).
+  WorkflowAction: 7,
   'CrmEntityFormView-DownloadAction': 8,
   DeactivateAction: 17,
   ActivateAction: 18,
   'CrmEntityFormView-CreateRelatedRecordAction': 29,
 };
+// The table-specific record actions (legacy LinkActionType and EntityActionController routes): type, service route
+// and default label.
+const RECORD_ACTION_LINKS = {
+  CloseIncidentAction: [9, 'action-close-case', 'fa-check-circle', 'Close Case'],
+  QualifyLeadAction: [10, 'action-qualify-lead', 'fa-check', 'Qualify'],
+  ConvertQuoteToOrderAction: [11, 'action-convert-quote', 'fa-clipboard', 'Create Order'],
+  ConvertOrderToInvoiceAction: [12, 'action-convert-order', 'fa-clipboard', 'Create Invoice'],
+  CalculateOpportunityAction: [13, 'action-calculate-opportunity', 'fa-calculator', 'Calculate Value'],
+  ResolveCaseAction: [14, 'action-resolve-case', 'fa-check-circle', 'Resolve Case'],
+  ReopenCaseAction: [15, 'action-reopen-case', 'fa-reply', 'Reopen Case'],
+  CancelCaseAction: [16, 'action-cancel-case', 'fa-times', 'Cancel Case'],
+  ActivateQuoteAction: [19, 'action-activate-quote', 'fa-check-square-o', 'Activate Quote'],
+  SetOpportunityOnHoldAction: [20, 'action-set-opportunity-on-hold', 'fa-exclamation-circle', 'Set On Hold'],
+  WinOpportunityAction: [21, 'action-win-opportunity', 'fa-check-square-o', 'Close as Won'],
+  LoseOpportunityAction: [22, 'action-lose-opportunity', 'fa-ban', 'Close as Lost'],
+  GenerateQuoteFromOpportunityAction: [23, 'action-generate-quote', 'fa-clipboard', 'Generate Quote'],
+  // The legacy route has no "action-" prefix (PortalAreaRegistration PortalReopenOpportunity).
+  ReopenOpportunityAction: [25, 'reopen-opportunity', 'fa-reply', 'Reopen'],
+};
+for (const [name, [type]] of Object.entries(RECORD_ACTION_LINKS)) {
+  ACTION_TYPES[name] = type;
+  ACTION_TYPES[`CrmEntityFormView-${name}`] = type;
+}
+const recordActionLink = (type) => Object.values(RECORD_ACTION_LINKS).find(([candidate]) => candidate === type);
 
 export function settingsJson(value, label = 'settings') {
   if (value == null || value === '') return {};
@@ -355,19 +411,21 @@ export function buildLayout({
 
 // The platform's default action tooltips.
 const ACTION_TOOLTIPS = { 1: 'View details', 2: 'Edit', 3: 'Create', 4: 'Delete' };
+const actionWorkflowId = (action) => canonical(action.Workflow?.Id ?? action.Workflow?.id ?? action.WorkflowId);
 /** Native action link objects (subset of the managed ViewActionLink contract). */
-export function actionLinks(settings, { portal, requestUrl, website }) {
+// Labels and dialog texts are in the request language `lcid` (the legacy links localize every text with it).
+export function actionLinks(settings, { portal, requestUrl, website, lcid = 1033 }) {
   const actions = [];
   for (const [position, list] of [
     ['view', settings?.ViewActions ?? []],
-    ['item', settings?.ItemActions ?? []],
+    ['item', gridItemActions(settings)],
   ]) {
     for (const action of list) {
-      const link = actionLink(position, action, { portal, requestUrl, website });
+      const link = actionLink(position, action, { portal, requestUrl, website, lcid });
       if (link) actions.push(link);
     }
   }
-  return actions.sort((a, b) => a.ActionIndex - b.ActionIndex);
+  return actions.sort((a, b) => byActionIndex(a.source, b.source));
 }
 
 function actionTarget(action) {
@@ -388,9 +446,11 @@ function actionTarget(action) {
   );
 }
 
-function actionLink(position, action, { portal, requestUrl, website }) {
+function actionLink(position, action, { portal, requestUrl, website, lcid }) {
   const type = ACTION_TYPES[action?.Type];
-  if (!type) return null;
+  // A workflow action draws no link: hosted lists and subgrids render none in any configured shape (paqvilo-developer
+  // hosted-f2 summary-F2 LIST-01d, runs a and b); the action stays the list's own for execute-workflow.
+  if (!type || type === 7) return null;
   const target = actionTarget(action);
   let url = null;
   if ((type === 1 || type === 2 || type === 3) && target !== 0) {
@@ -403,10 +463,26 @@ function actionLink(position, action, { portal, requestUrl, website }) {
       url = null;
     }
   }
-  return makeActionLink(position, action, type, target, url, website);
+  const link = makeActionLink(position, action, type, target, url, website, lcid);
+  const record = recordActionLink(type);
+  if (record) {
+    const path = `/_services/${record[1]}/${website}`;
+    return {
+      ...link,
+      URL: { PathWithQueryString: path, Path: path },
+      // Close Case posts the link's resolution texts (legacy CloseIncidentActionLink defaults).
+      ...(type === 9
+        ? {
+            DefaultResolution: action.DefaultResolution || 'Case Closed',
+            DefaultResolutionDescription: action.DefaultResolutionDescription || 'Case Closed via Web Portal',
+          }
+        : {}),
+    };
+  }
+  return link;
 }
 
-function makeActionLink(position, action, type, target, url, website) {
+function makeActionLink(position, action, type, target, url, website, lcid = 1033) {
   const defaults = {
     1: "<span class='fa fa-info-circle' aria-hidden='true'></span> View details",
     2: "<span class='fa fa-edit' aria-hidden='true'></span> Edit",
@@ -419,13 +495,19 @@ function makeActionLink(position, action, type, target, url, website) {
     17: 'Deactivate',
     18: 'Activate',
     29: 'Create',
+    ...Object.fromEntries(
+      Object.values(RECORD_ACTION_LINKS).map(([code, , icon, label]) => [
+        code,
+        `<span class='fa ${icon} fa-fw' aria-hidden='true'></span> ${label}`,
+      ]),
+    ),
   };
   return {
     position,
     source: action,
     Type: type,
-    Label: localizedText(action.ButtonLabel ?? action.Label, defaults[type]),
-    Tooltip: localizedText(action.ButtonTooltip, ACTION_TOOLTIPS[type] ?? ''),
+    Label: localizedText(action.ButtonLabel ?? action.Label, defaults[type], lcid),
+    Tooltip: localizedText(action.ButtonTooltip, ACTION_TOOLTIPS[type] ?? '', lcid),
     Enabled: true,
     Target: target,
     EntityForm:
@@ -436,8 +518,8 @@ function makeActionLink(position, action, type, target, url, website) {
     URL: url ? { PathWithQueryString: url, Path: url.split('?')[0] } : null,
     QueryStringIdParameterName: action.RecordIdQueryStringParameterName || 'id',
     ShowModal: Number(action.ShowModal) || 0,
-    Confirmation: localizedText(action.Confirmation, ''),
-    SuccessMessage: localizedText(action.SuccessMessage, ''),
+    Confirmation: localizedText(action.Confirmation, '', lcid),
+    SuccessMessage: localizedText(action.SuccessMessage, '', lcid),
     OnComplete: Number(action.OnComplete) || 0,
     RedirectUrl: action.RedirectUrl || null,
     ActionIndex: Number(action.ActionIndex) || 0,
@@ -616,8 +698,15 @@ export function listModel({ portal: _portal, metadata, store, list, schemas = {}
 async function handleCalendarService(req, res, url, context, websiteId) {
   const route = parseCalendarPath(url.pathname);
   if (!route || route.website !== websiteId || !['GET', 'HEAD'].includes(req.method)) return false;
-  const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? 'en-US';
-  if (route.kind === 'language') return serveCalendarLanguage(req, res, context, culture);
+  if (route.kind === 'language') {
+    const languages = context.portal.websiteLanguages ?? [];
+    const requested = url.searchParams.get('culture')?.toLowerCase();
+    const culture =
+      languages.find((language) => language.code?.toLowerCase() === requested)?.code ??
+      languages.find((language) => language.isDefault)?.code ??
+      'en-US';
+    return serveCalendarLanguage(req, res, context, culture);
+  }
   const list = (context.portal.lists ?? []).find((candidate) => canonical(candidate.id) === route.list);
   if (!list) return false;
   try {
@@ -630,62 +719,81 @@ async function handleCalendarService(req, res, url, context, websiteId) {
     });
     // The platform feed answers a list without its start or end date column with this error.
     if (!model.calendar?.start || !model.calendar?.end)
-      return (sendJson(res, 200, { success: 0, error: 'Calendars require both a start and end date.' }), true);
-    const from = Date.parse(url.searchParams.get('from') ?? '');
-    const to = Date.parse(url.searchParams.get('to') ?? '');
-    const query = await executeGridQuery(
-      model,
-      {
-        viewId: route.view,
-        page: 1,
-        pageSize: 5000,
-        allowLargePages: true,
-        search: url.searchParams.get('search') ?? '',
-      },
-      context,
-    );
-    if (query.accessDenied)
-      return (sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true);
-    // The view can omit calendar columns; a permission-checked record read supplies them for each selected row.
-    const rows = [];
-    for (const row of query.rows) {
-      const id = row[model.idColumn];
-      rows.push({
-        ...row,
-        ...(id != null && (await context.readProvider.get(model.entity, id, context.identity))),
-      });
-    }
-    const details = model.detailsPage
-      ? context.portal.pages.find((page) => canonical(page.id) === model.detailsPage)?.url
-      : null;
-    const events = calendarEvents(rows, {
-      calendar: model.calendar,
-      idColumn: model.idColumn,
-      detailsUrl: details,
-      idParameter: model.idParameter,
-      from,
-      to,
-    });
+      return (sendCalendarJson(res, { success: 0, error: 'Calendars require both a start and end date.' }), true);
+    // The feed refuses a range outside its format; the download lists every event then (hosted-f2 summary-F2
+    // LIST-01f runs a-d).
+    const range = calendarRange(url.searchParams);
+    if (range.error && route.kind !== 'icalendar')
+      return (sendCalendarJson(res, { success: 0, error: CALENDAR_RANGE_ERRORS[range.error] }), true);
+    const { from, to } = range.error ? { from: Number.NaN, to: Number.NaN } : range;
+    const events = await calendarEventRows(model, route, url, context, { from, to });
+    if (!events)
+      return (sendCalendarJson(res, { success: 0, error: "You don't have permissions to view these records." }), true);
     if (route.kind === 'icalendar') {
-      const body = Buffer.from(calendarIcs(events));
+      // Captured headers: private caching, no attachment disposition, no pragma or expiry.
+      const body = Buffer.from(calendarIcs(events, { host: url.hostname }));
       res.writeHead(200, {
         'content-type': 'text/calendar; charset=utf-8',
-        'content-disposition': 'attachment; filename="calendar.ics"',
-        ...PAGE_HEADERS,
+        'cache-control': 'private',
+        vary: 'Accept-Encoding',
+        'x-frame-options': 'SAMEORIGIN',
         'content-length': body.length,
       });
       res.end(req.method === 'HEAD' ? undefined : body);
       return true;
     }
-    sendJson(res, 200, { success: 1, result: events });
+    sendCalendarJson(res, { success: 1, result: events });
   } catch (error) {
     sendError(res, error);
   }
   return true;
 }
 
+/** The events of the calendar's rows in [from, to) (up to 5,000, by start), or null when the visitor may not read them. */
+async function calendarEventRows(model, route, url, context, { from, to }) {
+  const events = [];
+  // UserLocal days follow the portal query zone, as the platform's Dataverse query does.
+  const settings = context.store?.querySettings?.({ portalRequest: true }) ?? {};
+  const queryZone = settings.userLocalTimeZone ?? Number(settings.timeZoneOffsetMinutes ?? 0);
+  const pageSize = 5000;
+  let page = 1;
+  while (events.length < pageSize) {
+    const query = await executeGridQuery(
+      model,
+      { viewId: route.view, page, pageSize, allowLargePages: true, search: url.searchParams.get('search') ?? '' },
+      { ...context, calendarWindow: { from, to } },
+    );
+    if (query.accessDenied) return null;
+    const matching = calendarEvents(query.rows, {
+      calendar: model.calendar,
+      idColumn: model.idColumn,
+      from,
+      to,
+      queryZone,
+    });
+    events.push(...matching.slice(0, pageSize - events.length));
+    if (!query.moreRecords || !query.rows.length) break;
+    page++;
+  }
+  return events.sort((a, b) => a.start - b.start);
+}
+
+// The feed indents its JSON with CRLF line breaks (captured), with the services' page headers.
+function sendCalendarJson(res, value) {
+  const body = Buffer.from(JSON.stringify(value, null, 2).replaceAll('\n', '\r\n'));
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    ...PAGE_HEADERS,
+    'x-frame-options': 'SAMEORIGIN',
+    'content-length': body.length,
+  });
+  res.end(body);
+}
+
 function serveCalendarLanguage(req, res, context, culture) {
-  const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : 'en-US'));
+  const body = Buffer.from(
+    calendarLanguageScript(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(culture) ? culture : 'en-US'),
+  );
   // A day of private caching from the render time; Vary: * on every answer.
   const now = Date.now();
   res.writeHead(200, {
@@ -730,10 +838,12 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
   const cell = formCells(schema).find((candidate) => candidate.type === 'subgrid' && candidate.id === gridId);
   if (!cell) fail('Grid is not bound to the exported form', 403, 'SubgridNotBound');
   const parentMapping = mappingFor(store, schema.entity);
-  const relationshipEntry =
-    Object.entries(parentMapping.relationships ?? {}).find(
-      ([name, relation]) => name === cell.relationship || relation.schemaName === cell.relationship,
-    ) ?? null;
+  const relationshipEntries = Object.entries(parentMapping.relationships ?? {}).filter(
+    ([name, relation]) => name === cell.relationship || relation.schemaName === cell.relationship,
+  );
+  // A self-referential relationship names two navigations of the parent table (its lookup and its collection); the
+  // subgrid lists the collection side.
+  const relationshipEntry = relationshipEntries.find(([, relation]) => relation.many) ?? relationshipEntries[0] ?? null;
   const settings = subgridSettings(portal, definition, schema, gridId);
   const mapping = mappingFor(store, cell.entity);
   const view = cell.fetchXml
@@ -753,6 +863,19 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
       }
     : null;
   if (!view) fail(`Subgrid ${gridId} view is absent in the selected solution sources`, 501, 'SYSTEMVIEW_UNRESOLVED');
+  const subgridView = (entry) => ({
+    id: canonical(entry.id),
+    entity: cell.entity,
+    name: entry.name ?? entry.id,
+    fetchXml: entry.fetchXml,
+    fields: entry.fields.map((field) => ({
+      name: field.name,
+      width: field.width,
+      label: field.label,
+      ...(field.widthless ? { widthless: true } : {}),
+      ...(field.sortDisabled ? { sortDisabled: true } : {}),
+    })),
+  });
   return {
     kind: 'subgrid',
     definition,
@@ -763,7 +886,8 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
     entity: canonical(cell.entity),
     idColumn: mapping.idColumn,
     primaryName: primaryNameColumn(store, metadata, cell.entity),
-    views: [view],
+    // The view picker's other views (solution-metadata.mjs subgridCell) follow the default view.
+    views: [view, ...(cell.pickerViews ?? []).map(subgridView)],
     settings,
     pageSize:
       Number(settings?.PageSize ?? cell.recordsPerPage ?? 0) ||
@@ -946,6 +1070,42 @@ const filterNode = (type, children) => ({
   text: '',
 });
 
+function applyCalendarWindow(root, calendar, fields, { from, to }) {
+  const names = [
+    calendar.start,
+    calendar.end,
+    calendar.summary,
+    calendar.description,
+    calendar.location,
+    calendar.organizer,
+  ];
+  if (!childNodes(root, 'all-attributes').length)
+    for (const name of new Set(names.filter(safeName)))
+      if (!childNodes(root, 'attribute').some((node) => node.attrs.name === name))
+        root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
+  const typed = (name) => safeName(name) && /^datetime$/i.test(fields[name]?.dataverseType ?? '');
+  // A superset of the feed's day predicate (list-views.mjs calendarRangePredicate) for normal and reversed ranges: the
+  // start or the end within the outer bounds widened by two days, or a start before the later bound with an end after
+  // the earlier one. The feed applies the exact predicate on every page.
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !typed(calendar.start)) return;
+  const [low, high] = [Math.min(from, to) - 2 * 86400000, Math.max(from, to) + 2 * 86400000];
+  const within = (attribute) =>
+    filterNode('and', [
+      conditionNode({ attribute, operator: 'ge', value: new Date(low).toISOString() }),
+      conditionNode({ attribute, operator: 'le', value: new Date(high).toISOString() }),
+    ]);
+  const branches = [within(calendar.start)];
+  if (typed(calendar.end))
+    branches.push(
+      within(calendar.end),
+      filterNode('and', [
+        conditionNode({ attribute: calendar.start, operator: 'le', value: new Date(high).toISOString() }),
+        conditionNode({ attribute: calendar.end, operator: 'ge', value: new Date(low).toISOString() }),
+      ]),
+    );
+  root.children.push(filterNode('or', branches));
+}
+
 function applySort(fetch, sort) {
   if (!sort.length) return;
   const entity = rootEntity(fetch);
@@ -1012,7 +1172,7 @@ function searchCondition(fetch, column, metadata, entity, masked, pattern) {
 // The metadata filter groups of a definition live in metafilters.mjs; the list grid applies them from the mf query.
 export { metaFilterGroups };
 
-function applyMetaFilter(fetch, metaFilter, definition) {
+function applyMetaFilter(fetch, metaFilter, definition, fields = {}) {
   if (!metaFilter || !definition) return;
   const params = new URLSearchParams(String(metaFilter));
   const entity = rootEntity(fetch);
@@ -1022,14 +1182,14 @@ function applyMetaFilter(fetch, metaFilter, definition) {
       .map((value) => value.trim())
       .filter(Boolean);
     if (!selected.length) continue;
-    applyMetaGroup(entity, group, selected);
+    applyMetaGroup(entity, group, selected, fields);
   }
 }
 
-function applyMetaGroup(entity, group, selected) {
+function applyMetaGroup(entity, group, selected, fields) {
   if (group.type === 'textfilter') return applyTextMetaFilter(entity, group, selected);
   if (group.kind === 'link') return applyLinkMetaFilter(entity, group, selected);
-  applyAttributeMetaFilter(entity, group, selected);
+  applyAttributeMetaFilter(entity, group, selected, fields);
 }
 
 function applyTextMetaFilter(entity, group, selected) {
@@ -1071,14 +1231,24 @@ function applyLinkMetaFilter(entity, group, selected) {
   });
 }
 
-function applyAttributeMetaFilter(entity, group, selected) {
+/** A dynamic choice filter's condition for one selected option value, or null for an unsafe attribute. */
+function dynamicChoiceCondition(group, value, fields) {
+  const attribute = group.node['adx.attribute'] ?? group.node.conditions?.[0]?.attribute;
+  if (!safeName(attribute)) return null;
+  // A choices (multi-select) column matches a row that holds the selected option among its values.
+  if (/^multiselectpicklist$/i.test(fields?.[attribute]?.dataverseType ?? '') && /^-?\d+$/.test(value))
+    return conditionNode({ attribute, operator: 'contain-values' }, [value]);
+  return conditionNode({ attribute, operator: 'eq', value });
+}
+
+function applyAttributeMetaFilter(entity, group, selected, fields) {
   // Attribute filter set / range / dynamic picklist: options are indexed
   // conditions inside the definition; each selected option index applies its condition.
   const conditions = [];
   for (const value of selected) {
     if (group.type === 'dynamicpicklistset') {
-      const attribute = group.node['adx.attribute'] ?? group.node.conditions?.[0]?.attribute;
-      if (safeName(attribute)) conditions.push(conditionNode({ attribute, operator: 'eq', value }));
+      const condition = dynamicChoiceCondition(group, value, fields);
+      if (condition) conditions.push(condition);
       continue;
     }
     const option = (group.node.conditions ?? group.node.filters ?? []).find(
@@ -1153,6 +1323,9 @@ function applyRelationship(fetch, model, parentId, store) {
       'SUBGRID_RELATIONSHIP_REQUIRED',
     );
   if (model.kind === 'associate') return;
+  // An insert-mode form's code component subgrid has no parent record: the platform binds it to the empty id
+  // (data-ref-id all zeros), so a related subgrid lists no rows.
+  parentId ||= '00000000-0000-0000-0000-000000000000';
   const entity = rootEntity(fetch);
   if (!relation.intersect) {
     entity.children.push(
@@ -1569,13 +1742,30 @@ function gridAttributes(row, model, layout, context, fetch, id) {
   return attributes;
 }
 
+function gridChoiceField(field, context) {
+  if (
+    field?.dataverseType !== 'multiselectpicklist' ||
+    field.options != null ||
+    !field.globalOptionSet ||
+    !context.globalChoices
+  )
+    return field;
+  if (context.choiceFields?.has(field)) return context.choiceFields.get(field);
+  const local = {
+    ...field,
+    options: choiceFieldOptions(field, context.globalChoices, context.secure?.choiceLabelLcid),
+  };
+  context.choiceFields?.set(field, local);
+  return local;
+}
+
 function pushGridAttribute(attributes, seen, { name, value, row, model, context, fetch, id }) {
   if (seen.has(name) || value == null || value === '') return;
   seen.add(name);
   const { table, field } = columnMetadata(context.metadata, model.entity, fetch, name);
   attributes.push(
     attributeEntry(name, value, {
-      field,
+      field: gridChoiceField(field, context),
       settings: context.portal.settings,
       entity: table,
       primaryName: model.primaryName,
@@ -1601,7 +1791,7 @@ const UNASSESSED = {
   CanAppendTo: false,
   StatusCode: 0,
 };
-const hasItemActions = (model) => (model.settings?.ItemActions ?? []).some((action) => ACTION_TYPES[action?.Type]);
+const hasItemActions = (model) => gridItemActions(model.settings).some((action) => ACTION_TYPES[action?.Type]);
 /** The transactioncurrency row of a record (read as the platform's formatter, not the persona). */
 function recordCurrency(context, entity, row, id) {
   try {
@@ -1615,7 +1805,7 @@ function recordCurrency(context, entity, row, id) {
 }
 
 /** Whether the persona has any read grant for a table (native AccessDenied result). */
-function readDenied(context, entity) {
+export function readDenied(context, entity) {
   const { store, identity } = context;
   if (context.config?.mode === 'live' || typeof store?.rules !== 'function' || identity?.admin) return false;
   let permissive;
@@ -1625,6 +1815,13 @@ function readDenied(context, entity) {
     permissive = false;
   }
   return !permissive && !store.rules(entity, 'read', identity).length;
+}
+
+function includeGridStateColumns(root, tableFields) {
+  if (childNodes(root, 'all-attributes').length) return;
+  for (const name of ['statecode', 'statuscode'])
+    if (tableFields[name] && !childNodes(root, 'attribute').some((node) => node.attrs.name === name))
+      root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
 }
 
 /**
@@ -1656,34 +1853,65 @@ export async function executeGridQuery(model, request, context) {
   // The service also reads the record state (statecode, statuscode) for the state actions.
   const root = rootEntity(fetch);
   const tableFields = entityFields(context.metadata, model.entity);
-  if (!childNodes(root, 'all-attributes').length)
-    for (const name of ['statecode', 'statuscode'])
-      if (tableFields[name] && !childNodes(root, 'attribute').some((node) => node.attrs.name === name))
-        root.children.unshift({ name: 'attribute', attrs: { name }, children: [], text: '' });
+  if (context.calendarWindow) applyCalendarWindow(root, model.calendar, tableFields, context.calendarWindow);
+  includeGridStateColumns(root, tableFields);
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
+  if (context.workflowRecordId)
+    root.children.push(
+      filterNode('and', [
+        conditionNode({ attribute: model.idColumn, operator: 'eq', value: context.workflowRecordId }),
+      ]),
+    );
   if (model.search?.enabled !== false)
     applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity, masked);
   if (model.kind === 'list' && model.filter?.enabled)
-    applyMetaFilter(fetch, request.metaFilter, model.filter.definition);
+    applyMetaFilter(fetch, request.metaFilter, model.filter.definition, tableFields);
+  // A dataset code component's grid (signed `pcf`) adds its filter, `pcfFilter` (pcf-grid-query.mjs).
+  if (context.secure?.pcf) {
+    if (Number(view.queryType) === 4)
+      // A Quick Find view as the list view: the platform's grid-data answered 500.
+      fail('The dataset view is a Quick Find view.', 500, 'PcfQuickFindView');
+    applyPcfGridFilter(fetch, request.pcfFilter, {
+      parse: parseFetchTree,
+      fields: (table) => entityFields(context.metadata, table),
+      masked: masked ?? undefined,
+      invalid: () => fail('Invalid_Request', 400, 'Invalid_Request'),
+      // The platform's own message; the dataset grid route answers it as its 500 body.
+      missing: (table, column) =>
+        fail(
+          `'${table}' entity doesn't contain attribute with Name = '${column}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive)`,
+          500,
+          'PcfMissingAttribute',
+        ),
+    });
+  }
   const allowedSort = new Set(
     layout.Columns.filter((column) => column.Type === 0 && !column.SortDisabled).map((column) => column.LogicalName),
   );
   applySort(fetch, parseGridSortExpression(request.sortExpression, allowedSort));
   const pageSize = Math.min(Math.max(Number(model.pageSize) || 10, 1), 250);
-  const requestedSize = Number(request.pageSize);
+  // Whole numbers only: a fractional size is floored, and the page stays a safe positive integer (at most 1,000,000).
+  const requestedSize = Math.floor(Number(request.pageSize));
   const effectiveSize = chooseLazily(
     () => requestedSize > 0 && requestedSize <= (request.allowLargePages ? 5000 : 50),
     () => requestedSize,
     () => pageSize,
   );
-  const page = Math.max(1, Math.floor(Number(request.page) || 1));
+  const requestedPage = Math.floor(Number(request.page));
+  const page = Number.isFinite(requestedPage) ? Math.min(Math.max(1, requestedPage), 1000000) : 1;
   delete fetch.attrs.top;
   fetch.attrs.count = String(effectiveSize);
   fetch.attrs.page = String(page);
   fetch.attrs.returntotalrecordcount = 'true';
   delete fetch.attrs['paging-cookie'];
-  const result = await readProvider.fetchXml(serializeFetchTree(fetch), identity);
+  // The server-issued layout binds the label language to this grid. Leave query language and grants unchanged.
+  const lcid = context.secure?.choiceLabelLcid;
+  const result = await readProvider.fetchXml(
+    serializeFetchTree(fetch),
+    identity,
+    lcid == null ? undefined : { language: { lcid } },
+  );
   const rows = result.entities ?? result.value ?? [];
   const total = Number(result.total_record_count);
   const itemCount = Number.isFinite(total) && total >= 0 ? Math.min(total, 5000) : -1;
@@ -1708,7 +1936,8 @@ export async function gridData(model, request, context) {
   const { identity, readProvider } = context;
   model = query.model;
   const result = { more_records: query.moreRecords };
-  const records = rows.map((row) => gridRecord(row, model, layout, context));
+  const rowContext = { ...context, choiceFields: new Map() };
+  const records = rows.map((row) => gridRecord(row, model, layout, rowContext));
   const disabled = [];
   // A download writes record values only; item actions are not evaluated per record.
   const itemActions = request.download
@@ -1717,6 +1946,7 @@ export async function gridData(model, request, context) {
         portal: context.portal,
         requestUrl: context.origin,
         website: context.portal.website?.id,
+        lcid: context.secure?.choiceLabelLcid ?? 1033,
       });
   for (const action of itemActions)
     if (action.position === 'item' && action.FilterCriteria)
@@ -1813,6 +2043,8 @@ function downloadTable(records, columns, { format, context, model }) {
 // ---- Request handling.
 
 const SERVICE = /^\/_services\/([a-z-]+(?:\.json)?)\/([0-9a-f-]{36}|[\w-]+)\/?$/i;
+// The list services a hosted grid also calls, for its chart and its AI summary.
+const GRID_INSIGHT_SERVICES = new Set(['entity-grid-chart-data.json', 'entity-grid-ai-summary-stream.json']);
 const STATIC = new Map([
   ['/__sim-static/native/entity-grid-compat.js', new URL('./entity-grid-compat.js', import.meta.url)],
   ['/__sim-static/native/webforms-compat.js', new URL('./webforms-compat.js', import.meta.url)],
@@ -1849,6 +2081,17 @@ const NATIVE_EQUIVALENTS = new Map([
   // Map lists with credentials (platform.mjs mapListControl).
   ['/xrm-adx/js/entitylist-map.js', { file: new URL('./entitylist-map-compat.js', import.meta.url), type: JAVASCRIPT }],
   ['/xrm-adx/js/json2.min.js', { body: Buffer.from('/* Mirage: JSON is native. */'), type: JAVASCRIPT }],
+  // Basic form geolocation (platform.mjs geolocationFields): the platform's script needs the Bing Maps control, which the
+  // platform's Content Security Policy blocks, so it locates nothing (hosted-f2 summary-F2 LIST-02c).
+  [
+    '/xrm-adx/js/bingmap.js',
+    {
+      body: Buffer.from(
+        '/* Mirage: basic form geolocation; the Bing Maps control is blocked, so nothing is located. */',
+      ),
+      type: JAVASCRIPT,
+    },
+  ],
   ['/xrm-adx/samples/images/loader.gif', { body: GIF_PIXEL, type: 'image/gif' }],
   [
     '/xrm-adx/js/jquery.stackranking.js',
@@ -2171,7 +2414,9 @@ function reportPlaceholder(context, placeholder, pathname) {
 }
 
 // The page token, or the admin token when the context names one (an empty or missing admin token matches nothing).
-const bodyTokenAccepted = (token, context) => sameToken(token, context.csrf) || sameToken(token, context.adminToken);
+const bodyTokenAccepted = (token, context) =>
+  sameToken(token, context.expectedBodyCsrf ? context.expectedBodyCsrf(token) : context.csrf) ||
+  sameToken(token, context.adminToken);
 
 /** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
 /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function readNoteBody(req) {
@@ -2342,9 +2587,273 @@ function modelFor(secure, context) {
   fail('Invalid_Request', 403, 'Invalid_Request');
 }
 
+const workflowUnsupported = () =>
+  fail('This portal list workflow does not have a supported local execution.', 501, 'WorkflowUnsupported');
+
+function listWorkflowRequest(body, context, websiteId) {
+  if (!body?.base64SecureConfiguration || context.config?.mode === 'live' || !context.runListWorkflow)
+    workflowUnsupported();
+  const secure = unprotectConfiguration(body.base64SecureConfiguration);
+  if (canonical(secure.w) !== websiteId || canonical(context.portal.website?.id) !== websiteId)
+    fail('Invalid_Request', 403, 'Invalid_Request');
+  if (secure.t !== 'list') workflowUnsupported();
+  const workflowId = canonical(body.workflow?.Id);
+  const recordId = canonical(body.entity?.Id);
+  const entity = canonical(body.entity?.LogicalName);
+  if (canonical(body.workflow?.LogicalName) !== 'workflow' || !GUID.test(workflowId) || !GUID.test(recordId))
+    fail('Invalid workflow or selected record.', 400, 'InvalidRequest');
+  const model = modelFor(secure, context);
+  if (
+    model.entity !== entity ||
+    !secure.view ||
+    !model.views.some((view) => canonical(view.id) === canonical(secure.view))
+  )
+    fail('Invalid_Request', 403, 'Invalid_Request');
+  if (model.approximated) workflowUnsupported();
+  if (context.store.recordPipeline?.virtualProviders?.status(entity)?.virtual) workflowUnsupported();
+  return { secure, model, workflowId, entity, recordId, filter: body.filter };
+}
+
+function assertLocalWorkflowWriteScope(store, entity, identity) {
+  const providers = store.recordPipeline?.virtualProviders;
+  if (!providers) return;
+  store.addPortalPermissionSources(identity, [[entity, 'update']], (parent) => {
+    if (providers.status(parent).virtual) workflowUnsupported();
+  });
+}
+
+async function authorizeListWorkflow(input, context) {
+  const { secure, model, workflowId, entity, recordId, filter } = input;
+  const { store, identity, readProvider } = context;
+  const actions = gridItemActions(model.settings).filter(
+    (action) => ACTION_TYPES[action?.Type] === 7 && actionWorkflowId(action) === workflowId,
+  );
+  if (!actions.length) fail('This action is not available on the list.', 403, 'AccessDenied');
+  const row = await readProvider.get(entity, recordId, identity);
+  const stored = row && store.get(entity, recordId, { admin: true });
+  if (!stored) fail('This action requires read and write access to the selected record.', 403, 'AccessDenied');
+  assertLocalWorkflowWriteScope(store, entity, identity);
+  if (!store.allowed(entity, 'update', stored, identity))
+    fail('This action requires read and write access to the selected record.', 403, 'AccessDenied');
+  const view = await executeGridQuery(
+    model,
+    { pageSize: 1, filter },
+    { ...context, secure, workflowRecordId: recordId },
+  );
+  if (!view.rows.some((record) => canonical(record[model.idColumn]) === recordId))
+    fail('The selected record is outside this list view.', 403, 'AccessDenied');
+  for (const action of actions) {
+    if (action.ViewId && canonical(action.ViewId) !== canonical(view.view.id)) continue;
+    if (
+      await subgridActionApplies(action, {
+        entity,
+        idColumn: model.idColumn,
+        recordId,
+        readProvider,
+        identity,
+        context: { website: context.portal.website },
+      })
+    )
+      return;
+  }
+  fail('This action is not available for the selected record.', 403, 'AccessDenied');
+}
+
+/** The site's observed execute-workflow access: "list-action" (the default) or "any-on-demand" (hosted). */
+const executeWorkflowAccess = (context) =>
+  (context.config?.observed ?? context.portal?.observed)?.executeWorkflowAccess ?? 'list-action';
+
+function reportExecuteWorkflowAccess(context, pathname) {
+  const record = context.recordDiagnostic;
+  if (typeof record !== 'function') return;
+  const seen = reported.get(record) ?? new Set();
+  reported.set(record, seen);
+  if (seen.has('execute-workflow-access')) return;
+  seen.add('execute-workflow-access');
+  record({
+    code: 'EXECUTE_WORKFLOW_HOSTED_ACCESS',
+    severity: 'warning',
+    path: pathname,
+    message:
+      "A hosted site runs any on-demand workflow posted to /_services/execute-workflow with an anti-forgery token, as its application user, without a list workflow action, a signed list configuration or a table permission check (paqvilo-developer hosted-f2 summary-F2 OPS-01f). Mirage runs only a list's own workflow action on a record the visitor can read and write; set observed.executeWorkflowAccess to any-on-demand, with evidence, to reproduce the hosted behaviour.",
+  });
+}
+
+/**
+ * The hosted execute-workflow service (observed.executeWorkflowAccess any-on-demand): ExecuteWorkflow of the posted
+ * workflow on the posted record as the site's application user, with no list or secure configuration (captured,
+ * paqvilo-developer hosted-f2 summary-F2 OPS-01f, background and real-time workflows).
+ */
+async function runHostedWorkflow(body, context) {
+  const workflowId = canonical(body?.workflow?.Id);
+  const recordId = canonical(body?.entity?.Id);
+  if (canonical(body?.workflow?.LogicalName) !== 'workflow' || !GUID.test(workflowId) || !GUID.test(recordId))
+    fail('Invalid workflow or selected record.', 400, 'InvalidRequest');
+  if (context.config?.mode === 'live' || !context.runRecordMessage) workflowUnsupported();
+  const answer = await context.runRecordMessage({
+    method: 'POST',
+    url: `workflows(${workflowId})/Microsoft.Dynamics.CRM.ExecuteWorkflow`,
+    payload: { EntityId: recordId },
+    // The site's application user runs it: no portal table permission applies.
+    identity: { ...context.identity, admin: true },
+  });
+  if (answer.status < 400) return;
+  const message = String(answer.body?.error?.message ?? 'Error completing request.');
+  const missing = /^(\w+) With Id = (\S+) Does Not Exist$/.exec(message);
+  if (missing) fail(`Entity '${missing[1]}' With Id = ${missing[2]} Does Not Exist`, 500, 'WorkflowRecordNotFound');
+  fail(message, answer.status, answer.body?.error?.code ?? 'WorkflowFailed');
+}
+
+/** The platform's answer to a workflow whose table holds no such record: 500 with the Dataverse message (captured). */
+function sendWorkflowRecordNotFound(res, message) {
+  // The platform's JSON writer escapes apostrophes.
+  const body = Buffer.from(
+    JSON.stringify({ InternalServerError: 500, Message: message }).replaceAll("'", String.raw`\u0027`),
+  );
+  res.writeHead(500, {
+    'content-type': 'application/json; charset=utf-8',
+    ...PAGE_HEADERS,
+    'content-length': body.length,
+  });
+  res.end(body);
+}
+
+async function runPortalListWorkflow(body, context, websiteId) {
+  const { workflowId, entity, recordId } = listWorkflowRequest(body, context, websiteId);
+  const verify = () => {
+    try {
+      context.verifyListWorkflowSource?.();
+    } catch (error) {
+      // Preserve the portal conflict through the workflow runner's Dataverse error handling.
+      fail(error.message, error.status, error.code);
+    }
+  };
+  await context.runListWorkflow({
+    workflowId,
+    entity,
+    recordId,
+    verify,
+    authorize: async () => {
+      verify();
+      const current = { ...context, ...context.workflowRequestContext() };
+      const input = listWorkflowRequest(body, current, websiteId);
+      await authorizeListWorkflow(input, current);
+      return current.identity;
+    },
+  });
+}
+
+// The table-specific record action services of the legacy portal (PortalAreaRegistration routes to EntityActionController),
+// by their route: each checks Write on the record (and Create on the new record's table) as the legacy service does.
+const RECORD_ACTION_ROUTES = Object.freeze({
+  'action-close-case': 'close-case',
+  'action-qualify-lead': 'qualify-lead',
+  'action-activate-quote': 'activate-quote',
+  'reopen-opportunity': 'reopen-opportunity',
+  'action-resolve-case': 'resolve-case',
+  'action-reopen-case': 'reopen-case',
+  'action-cancel-case': 'cancel-case',
+  'action-set-opportunity-on-hold': 'hold-opportunity',
+  'action-win-opportunity': 'win-opportunity',
+  'action-lose-opportunity': 'lose-opportunity',
+  'action-convert-quote': 'convert-quote',
+  'action-convert-order': 'convert-order',
+  'action-calculate-opportunity': 'calculate-opportunity',
+  'action-generate-quote': 'generate-quote',
+});
+const APPROPRIATE_PERMISSIONS = "You don't have the appropriate permissions.";
+
+async function runRecordActionService(key, body, context) {
+  const spec = NATIVE_STATE_ACTIONS[key];
+  if (context.config?.mode === 'live')
+    fail('Local record actions are unavailable with live data.', 501, 'RecordActionUnsupported');
+  const reference = body.entityReference ?? body;
+  const entity = canonical(reference.LogicalName ?? reference.logicalName);
+  const id = canonical(reference.Id ?? reference.id);
+  if (!safeName(entity) || !GUID.test(id) || entity !== spec.table) fail('Invalid_Request', 400, 'Invalid_Request');
+  const { store, identity } = context;
+  const row = store.get(entity, id, { admin: true });
+  if (!row) fail(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound');
+  if (!store.allowed(entity, 'update', row, identity)) fail(APPROPRIATE_PERMISSIONS, 403, 'Forbidden');
+  // The record must be in the state the action accepts (the link's state condition), before any write.
+  assertActionSource(key, row);
+  const resolution = { subject: body.resolutionSubject, description: body.resolutionDescription };
+  const mapping = mappingFor(store, entity);
+  const writes = { transaction: (work) => portalWrite(context, work) };
+  if (spec.messages)
+    return runFormMessageAction({
+      action: key,
+      spec,
+      configured: { Type: spec.type },
+      schema: { entity },
+      mapping,
+      recordId: id,
+      current: row,
+      store,
+      identity,
+      readProvider: context.readProvider,
+      available: true,
+      website: context.portal.website,
+      runFormMessage: context.runRecordMessage,
+      writeProvider: writes,
+      hostChange: context.change,
+      now: new Date(),
+    });
+  const stateValues = nativeActionStateValues(entity, key, { metadata: context.metadata, store, row });
+  if (!stateValues)
+    fail('Record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
+  const closeActivity = nativeCloseActivity(key, { configured: {}, resolution, now: new Date() });
+  await context.change(() =>
+    portalWrite(context, async (operations) => {
+      assertActionSource(key, store.get(entity, id, { admin: true }));
+      const service = { ...identity, admin: true };
+      if (closeActivity)
+        await operations.create(
+          closeActivity.table,
+          closeActivityValues(store, closeActivity, entity, mapping, id),
+          service,
+        );
+      if (spec.cancelActivities)
+        for (const activity of openRegardingActivities(store, entity, id, context.metadata))
+          await operations.update(activity.table, activity.id, activity.values, service);
+      await operations.update(entity, id, stateValues, service);
+    }),
+  );
+}
+
 // A local portal write through the one portal write path (form-service.mjs portalRecordWrites) in its own store transaction.
 const portalWrite = (context, fn) =>
   context.store.transact(() => fn(portalRecordWrites(context.store)), { incremental: true });
+/**
+ * A dataset record save: the portal update path with the Web API's value coercion against the column metadata
+ * (MaxLength, precision, types) and the organization's own authorization of the write (no internal bypass).
+ */
+async function pcfRecordUpdate(context, entity, id, values) {
+  if (context.config?.mode === 'live') return writeOperation(context, 'update', entity, id, values);
+  const { store, identity } = context;
+  const writeOptions = {
+    coerce: true,
+    portalRequest: true,
+    metadata: (logical) => entityFields(context.metadata, logical),
+    dataverseWebApi: false,
+  };
+  const caller = {
+    identity,
+    portal: true,
+    caller: null,
+    method: 'POST',
+    headers: {},
+    ...store.portalAuthorization?.principal(identity),
+  };
+  return store.transact(
+    () =>
+      store.recordPipeline
+        ? store.recordPipeline.updateInternal(caller, entity, id, { ...values }, { writeOptions })
+        : store.updateRecordAsync(entity, id, values, identity, writeOptions),
+    { incremental: true },
+  );
+}
+
 async function writeOperation(context, operation, entity, id, values) {
   if (context.config?.mode !== 'live') {
     return portalWrite(context, (writes) =>
@@ -2394,39 +2903,130 @@ function defaultStatus(metadata, entity, state) {
   );
 }
 
-/** Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author. */
-export function portalNotes(rows, identity, prefix = '*WEB*') {
-  const contact = canonical(identity?.contactId ?? identity?.id);
-  return rows.filter((row) => {
-    const text = String(row.notetext ?? '');
-    const subject = String(row.subject ?? '');
-    const isPrivate = subject.includes('*PRIVATE*');
-    return (
-      (text.startsWith(prefix) && !isPrivate) ||
-      (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`))
-    );
-  });
+// Undefined means an ordinary annotation. A private note is visible only to its marked author.
+function privateNoteVisibility(row, contact) {
+  const subject = String(row.subject ?? '');
+  if (!subject.includes('*PRIVATE*')) return undefined;
+  return Boolean(contact) && subject.toLowerCase().includes(`[contact:${contact}]`);
 }
+
+// Evaluate the stored marker only for rows already admitted by the portal read. Pass on just the visibility decision.
+function annotationNoteVisibility(context, row, stored, contact, id) {
+  if (context.config?.mode === 'live') return privateNoteVisibility(row, contact);
+  if (stored) return privateNoteVisibility(stored, contact);
+  if (context.store?.portalAuthorization?.canReadRawColumn?.(context.identity, 'annotation', 'subject', id) === false)
+    return false;
+  return privateNoteVisibility(row, contact);
+}
+
+function canDownloadAnnotation(context, row, id) {
+  const stored =
+    context.config?.mode === 'live'
+      ? null
+      : context.store?.tableRows?.('annotation').find((item) => canonical(item.annotationid) === canonical(id));
+  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+  return annotationNoteVisibility(context, row, stored, contact, id) !== false;
+}
+
+/**
+ * Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author.
+ * Hosted session F2 (notes runs a and b, entity-notes): a note without the prefix is not listed, its author's own
+ * included, and a `*PRIVATE*` subject without the reader's contact marker is hidden even with the prefix.
+ */
+export function portalNotes(rows, identity, prefix = '*WEB*', visibility = privateNoteVisibility) {
+  const contact = canonical(identity?.contactId ?? identity?.id);
+  return rows.filter((row) => String(row.notetext ?? '').startsWith(prefix) && visibility(row, contact) !== false);
+}
+
+// Note and timeline totals are calculated after portal visibility rules, so a provider total is insufficient: every
+// provider page is read, following its paging cookies (or the page number alone when a page carries none, Dataverse's
+// simple paging). A provider answer that cannot be continued (a repeated cookie or key, an empty page reporting more
+// records, a page without keys) is a provider fault, answered 502 with `invalid` ({ message, code }) and no partial total.
+// The rows of one record are held in memory to order and count them, so at most PROVIDER_ROW_LIMIT rows are read: a
+// record with more answers 503 (`invalid.limitCode`) and a diagnostic, never a truncated list or total.
+const PROVIDER_ROW_LIMIT = 50_000;
+async function readProviderPages(context, query, idColumn, invalid) {
+  let read = 0;
+  try {
+    const { records } = await collectFetchXmlPages({
+      idColumn,
+      maxPages: Infinity,
+      simplePaging: true,
+      readPage: async ({ page, cookie, pageSize }) => {
+        const continuation = cookie ? ` paging-cookie="${xmlEscape(cookie)}"` : '';
+        const result = await context.readProvider.fetchXml(
+          `<fetch count="${pageSize}" page="${page}"${continuation}>${query}</fetch>`,
+          context.identity,
+        );
+        const entities = result.entities ?? result.value;
+        read += Array.isArray(entities) ? entities.length : 0;
+        if (read > PROVIDER_ROW_LIMIT) providerRowLimitExceeded(context, invalid);
+        return { ...result, entities };
+      },
+    });
+    return records;
+  } catch (error) {
+    if (error.status ?? error.statusCode) throw error;
+    fail(`${invalid.message} ${error.message}`, 502, invalid.code);
+  }
+}
+
+function providerRowLimitExceeded(context, { rows, limitCode }) {
+  const message = `The record has more than ${PROVIDER_ROW_LIMIT.toLocaleString('en-US')} ${rows}: Mirage reads at most ${PROVIDER_ROW_LIMIT.toLocaleString('en-US')} per record to order and count them, so this list is not served.`;
+  const record = context.recordDiagnostic;
+  if (typeof record === 'function') {
+    const seen = reported.get(record) ?? new Set();
+    reported.set(record, seen);
+    if (!seen.has(limitCode)) {
+      seen.add(limitCode);
+      record({ code: limitCode, severity: 'warning', component: rows, message });
+    }
+  }
+  fail(message, 503, limitCode);
+}
+
+const NOTES_PAGING_INVALID = {
+  message: 'The notes provider answered a page that cannot be continued:',
+  code: 'NotesProviderPagingInvalid',
+  rows: 'notes',
+  limitCode: 'NotesRowLimitExceeded',
+};
+const TIMELINE_PAGING_INVALID = {
+  message: 'The activity provider answered a page that cannot be continued:',
+  code: 'TimelineProviderPagingInvalid',
+  rows: 'activities',
+  limitCode: 'TimelineRowLimitExceeded',
+};
 
 // The notes service orders by createdon as the request's orders say (Direction 1 descending, null
 // ascending); notes of the same instant keep creation order ascending and its reverse descending.
-async function annotationRows(context, entity, id, descending = true) {
+async function annotationRows(context, entity, id, prefix, descending) {
   const mapping = mappingFor(context.store, 'annotation');
-  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/></entity></fetch>`;
-  const result = await context.readProvider.fetchXml(xml, context.identity);
+  // The paging cursor needs an explicit primary key when permission expansion adds DISTINCT.
+  const key = xmlEscape(mapping.idColumn);
+  // Only the columns the records, attributes and visibility rules use (NOTE_COLUMNS), never documentbody: a page of
+  // notes carries no attachment bodies (a missing filesize reads the body by id afterwards).
+  const columns = NOTE_COLUMNS.filter(([name]) => name !== mapping.idColumn)
+    .map(([name]) => `<attribute name="${name}"/>`)
+    .join('');
+  const query = `<entity name="annotation"><attribute name="${key}"/>${columns}<filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/><order attribute="${key}"/></entity>`;
+  const records = await readProviderPages(context, query, mapping.idColumn, NOTES_PAGING_INVALID);
   // Notes of the same instant (seeded together) keep the order they were created in, as sequential
   // creates do natively; the query's own tie-break is the table's key order.
   let created = new Map();
   try {
     created = new Map(
-      (context.store?.tableRows?.('annotation') ?? []).map((row, index) => [canonical(row[mapping.idColumn]), index]),
+      (context.store?.tableRows?.('annotation') ?? []).map((row, index) => [
+        canonical(row[mapping.idColumn]),
+        { row, index },
+      ]),
     );
   } catch {
     created = new Map();
   }
   const time = (row) => Date.parse(row.createdon ?? '') || 0;
-  const rows = [...(result.entities ?? result.value ?? [])]
-    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn])) ?? Infinity }))
+  const rows = records
+    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn]))?.index ?? Infinity }))
     .sort((a, b) => {
       const byTime = time(a.row) - time(b.row);
       if (byTime) return byTime;
@@ -2435,14 +3035,16 @@ async function annotationRows(context, entity, id, descending = true) {
     })
     .map((entry) => entry.row);
   if (descending) rows.reverse();
-  return rows
-    .filter(
-      (row) =>
-        !row.objecttypecode ||
-        canonical(scalar(row.objecttypecode)) === canonical(entity) ||
-        canonical(row.objectid?.logical_name) === canonical(entity),
-    )
-    .map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
+  const associated = rows.filter(
+    (row) =>
+      !row.objecttypecode ||
+      canonical(scalar(row.objecttypecode)) === canonical(entity) ||
+      canonical(row.objectid?.logical_name) === canonical(entity),
+  );
+  return portalNotes(associated, context.identity, prefix, (row, contact) => {
+    const id = row[mapping.idColumn];
+    return annotationNoteVisibility(context, row, created.get(canonical(id))?.row, contact, id);
+  }).map((row) => ({ ...row }));
 }
 
 // The notes service's record Attributes: the note row's columns in the platform's order, as grid
@@ -2477,7 +3079,7 @@ function noteAttributes(row, context, zone, regarding) {
 function noteAttribute({ name, dataverseType, row, context, zone, regarding, fields, regardingFields }) {
   let value = row[name];
   if (name === 'isdocument') value ??= Boolean(row.filename);
-  if (name === 'filesize') value ??= 0; // noteSize filled it before the page was built
+  if (name === 'filesize') value ??= 0; // The notes page resolves any missing size before projecting its attributes.
   if (name === 'objecttypecode') value ??= row.objectid?.logical_name ?? regarding;
   if (value == null || value === '') return null;
   const field = fields[name] ?? {
@@ -2508,11 +3110,23 @@ function noteAttribute({ name, dataverseType, row, context, zone, regarding, fie
 // provider; a context without it (unit callers) reads the row's own column.
 const noteBody = (context, row) =>
   context.attachmentBody ? context.attachmentBody('annotation', row) : (row.documentbody ?? null);
-// The byte size of a note: its filesize column, else the length of its body.
-async function noteSize(context, row) {
-  if (Number(row.filesize)) return Number(row.filesize);
-  const body = await noteBody(context, row);
+const captureNoteBody = (context, row) =>
+  context.captureAttachmentBody ? context.captureAttachmentBody('annotation', row) : () => noteBody(context, row);
+
+async function attachmentSize(load) {
+  const body = await load?.();
   return body ? Buffer.from(String(body), 'base64').length : 0;
+}
+
+async function captureNotesPage(context, { regarding, page, pageSize, prefix, descending }) {
+  if (!(await context.readProvider.get(regarding.LogicalName, regarding.Id, context.identity)))
+    fail('The regarding record was not found', 404, 'NotFound');
+  const rows = await annotationRows(context, regarding.LogicalName, regarding.Id, prefix, descending);
+  const notes = rows.slice((page - 1) * pageSize, page * pageSize).map((row) => {
+    const size = Number(row.filesize);
+    return { row, size, load: size ? null : captureNoteBody(context, row) };
+  });
+  return { notes, count: rows.length };
 }
 
 const fileSizeDisplay = (bytes) =>
@@ -2538,8 +3152,6 @@ const fileSizeDisplay = (bytes) =>
     const regarding = body.regarding ?? {};
     if (!safeName(regarding.LogicalName) || !GUID.test(String(regarding.Id ?? '')))
       fail('Notes require a regarding record');
-    if (!(await context.readProvider.get(regarding.LogicalName, regarding.Id, context.identity)))
-      fail('The regarding record was not found', 404, 'NotFound');
     const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
     const page = Math.max(1, Number(body.page) || 1);
     const prefix = notesFilter(context.portal);
@@ -2555,15 +3167,14 @@ const fileSizeDisplay = (bytes) =>
       ? body.orders.find((entry) => String(entry?.Attribute ?? '').toLowerCase() === 'createdon')
       : null;
     const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
-    const rows = portalNotes(
-      await annotationRows(context, regarding.LogicalName, regarding.Id, descending),
-      context.identity,
-      prefix,
-    );
+    const capture = () => captureNotesPage(context, { regarding, page, pageSize, prefix, descending });
+    const { notes, count } = await (context.readAttachment ? context.readAttachment(capture) : capture());
+    for (const { row, size, load } of notes) row.filesize = size || (await attachmentSize(load));
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
-    const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
-    for (const row of pageRows) row.filesize = await noteSize(context, row);
-    const records = pageRows.map((row) => {
+    // Timeline/RTEEnabled: the note text is HTML. It is sanitized on every read, whoever stored it (another user, the
+    // model-driven app, an import), so no record carries unsanitized markup to the page.
+    const rich = notesRichTextEnabled(context.portal);
+    const records = notes.map(({ row }) => {
       const id = canonical(row.annotationid);
       const size = Number(row.filesize) || 0;
       const mine =
@@ -2572,7 +3183,8 @@ const fileSizeDisplay = (bytes) =>
           .toLowerCase()
           .includes(`[contact:${contact}]`);
       const raw = String(row.notetext ?? '');
-      const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      const stored = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      const text = rich ? sanitizeNoteHtml(stored) : stored;
       // Native entity-notes records: attachment fields first, AttachmentSize serialised as an empty
       // object, CreatedOn as a WCF date, append rights granted.
       return {
@@ -2586,8 +3198,10 @@ const fileSizeDisplay = (bytes) =>
         CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
         HasAttachment: Boolean(row.filename),
         Subject: row.subject ?? '',
-        // The platform wraps the note text in a paragraph.
-        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replaceAll('\n', '<br />')}</p>`,
+        // The platform wraps the note text in a paragraph; rich text keeps its own (sanitized) markup.
+        Text: rich
+          ? text
+          : `<p>${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replaceAll('\n', '<br />')}</p>`,
         UnformattedText: text,
         IsPostedByCurrentUser: mine,
         PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? '')?.[1] ?? row.createdby?.name ?? '',
@@ -2606,10 +3220,10 @@ const fileSizeDisplay = (bytes) =>
       };
     });
     return sendJson(res, 200, {
-      MoreRecords: rows.length > page * pageSize,
+      MoreRecords: count > page * pageSize,
       Records: records,
-      ItemCount: rows.length,
-      PageCount: Math.ceil(rows.length / pageSize),
+      ItemCount: count,
+      PageCount: Math.ceil(count / pageSize),
       PageNumber: page,
       PageSize: pageSize,
       NextPagePagingCookie: null,
@@ -2634,8 +3248,7 @@ const fileSizeDisplay = (bytes) =>
     const entity = body.regardingEntityLogicalName;
     const id = body.regardingEntityId;
     if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Notes require a regarding record');
-    const text = String(body.text ?? '').trim();
-    if (!text) fail('Note is a required field.', 417, 'NoteRequired');
+    const text = submittedNoteText(body, context);
     const fullname = context.identity?.fullname ?? context.identity?.name ?? '';
     const parentMapping = mappingFor(context.store, entity);
     const regarding = await context.readProvider.get(entity, id, context.identity);
@@ -2688,8 +3301,7 @@ const fileSizeDisplay = (bytes) =>
   )
     fail('Only the author can change this note.', 403, 'NoteAuthorRequired');
   if (action === 'entity-form-updatenote') {
-    const text = String(body.text ?? '').trim();
-    if (!text) fail('Note is a required field.', 417, 'NoteRequired');
+    const text = submittedNoteText(body, context);
     const values = { notetext: `${notesFilter(context.portal)}${text}` };
     if (body.file?.name) {
       values.filename = String(body.file.name).slice(0, 255);
@@ -2705,6 +3317,280 @@ const fileSizeDisplay = (bytes) =>
   }
   await context.change(() => portalWrite(context, (writes) => writes.remove('annotation', id, context.identity)));
   return sendJson(res, 200, { Id: canonical(id) });
+}
+
+// ---- portal comments from the activity timeline (EntityActivity/AddPortalComment)
+
+// Portal comment direction Incoming (adx_portalcommentdirectioncode 1) and the Completed state with its Received status,
+// as hosted F3 (runs a/b) reads the comment back: statecode 1, statuscode 3. Labelled options in the table's metadata
+// take precedence.
+const COMMENT_INCOMING = 1,
+  COMMENT_COMPLETED = 1,
+  COMMENT_RECEIVED = 3;
+
+function commentColumn(context, column) {
+  try {
+    return context.store.fieldDefinition?.(PORTAL_COMMENT_TABLE, column) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function optionValue(context, column, label, fallback, state = null) {
+  const option = (commentColumn(context, column)?.options ?? []).find(
+    (candidate) =>
+      String(candidate.label ?? candidate.invariantName ?? '').toLowerCase() === label &&
+      (state == null || candidate.state == null || Number(candidate.state) === state),
+  );
+  return option ? Number(option.value) : fallback;
+}
+
+/** A lookup value for one column of the portal comment: its declared navigation binding, else an entity reference. */
+function commentLookup(context, column, target, id) {
+  const comment = mappingFor(context.store, PORTAL_COMMENT_TABLE);
+  const navigation = Object.entries(comment.relationships ?? {}).find(
+    ([, relation]) =>
+      relation.many !== true &&
+      canonical(relation.from) === column &&
+      canonical(relation.entity) === canonical(target.logicalName),
+  )?.[0];
+  return navigation
+    ? { [`${navigation}@odata.bind`]: `/${target.entitySet}(${canonical(id)})` }
+    : { [column]: { id: canonical(id), logical_name: target.logicalName } };
+}
+
+/**
+ * Adds a portal comment to the regarding record's timeline, as the open-sourced portal's EntityActivityController
+ * AddPortalComment and ActivityDataAdapter.CreatePortalComment do (the hosted request was not captured; hosted F3 runs a/b
+ * record its result): the visitor needs Create and Append on the portal comment and AppendTo on the record; the comment
+ * is created regarding the record with the text in its description, direction Incoming, the record's owner as owner,
+ * the contact as Sender and the owner (unless a team) as To recipient, then updated to Completed / Received. Both writes
+ * are portal calls of the contact. A chosen file becomes a note regarding the comment.
+ */
+async function handleAddPortalComment(req, res, context) {
+  if (req.method !== 'POST') fail('AddPortalComment accepts POST only', 405, 'MethodNotAllowed');
+  const { body, native } = await readNoteBody(req);
+  if (
+    native &&
+    req.headers.__requestverificationtoken === undefined &&
+    !bodyTokenAccepted(body.__RequestVerificationToken, context)
+  )
+    fail('The anti-forgery token is missing or invalid.', 403, 'MissingPortalRequestVerificationToken');
+  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+  if (!contact) fail('Portal comments require a signed-in contact', 401, 'SignInRequired');
+  const entity = body.regardingEntityLogicalName;
+  const id = body.regardingEntityId;
+  if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Portal comments require a regarding record');
+  const text = String(body.text ?? '').trim();
+  if (!text || !stripMarkupTags(text).trim()) fail('Comment is a required field.', 417, 'CommentRequired');
+  const target = mappingFor(context.store, entity);
+  const regarding = await context.readProvider.get(target.logicalName, id, context.identity);
+  if (!regarding) fail('The regarding record was not found', 404, 'NotFound');
+  if (!portalCommentAllowed(context.store, target.logicalName, id, regarding, context.identity))
+    fail("You don't have the appropriate permissions.", 403, 'PermissionDenied');
+  const ownerId = canonical(regarding.ownerid?.id ?? regarding.ownerid);
+  const ownerTable = regarding.ownerid?.logical_name ?? regarding.owneridtype ?? (ownerId ? 'systemuser' : null);
+  const owner = ownerId && ownerTable ? { id: ownerId, logical_name: ownerTable } : null;
+  const values = {
+    description: text,
+    ...commentLookup(context, 'regardingobjectid', target, id),
+    regardingobjecttypecode: target.logicalName,
+    adx_portalcommentdirectioncode: optionValue(
+      context,
+      'adx_portalcommentdirectioncode',
+      'incoming',
+      COMMENT_INCOMING,
+    ),
+    ...(owner ? { ownerid: owner } : {}),
+  };
+  const parties = [
+    { column: 'from', mask: 1, partyid: { id: contact, logical_name: 'contact' } },
+    ...(owner && canonical(owner.logical_name) !== 'team' ? [{ column: 'to', mask: 2, partyid: owner }] : []),
+  ];
+  const statecode = optionValue(context, 'statecode', 'completed', COMMENT_COMPLETED);
+  // The permission checks above are the service's; it writes as the platform does, still the contact's portal call.
+  const writer = { ...context.identity, admin: true, portalPlatformWrite: true };
+  const statuscode = optionValue(context, 'statuscode', 'received', COMMENT_RECEIVED, statecode);
+  const created = await context.change(() =>
+    context.store.transact(
+      async () => {
+        const comment = mappingFor(context.store, PORTAL_COMMENT_TABLE);
+        const row = await portalRecordWrites(context.store, { portalRequest: true, activityParties: parties }).create(
+          PORTAL_COMMENT_TABLE,
+          values,
+          writer,
+        );
+        const commentId = canonical(row[comment.idColumn]);
+        // The state changes only after the create (ActivityDataAdapter): an Update with the same values and the state.
+        await portalRecordWrites(context.store, { portalRequest: true }).update(
+          PORTAL_COMMENT_TABLE,
+          commentId,
+          { ...values, statecode, statuscode },
+          writer,
+        );
+        if (body.file?.name) {
+          const note = {
+            subject: '',
+            notetext: '',
+            objecttypecode: PORTAL_COMMENT_TABLE,
+            objectid: { id: commentId, logical_name: PORTAL_COMMENT_TABLE },
+            filename: String(body.file.name).slice(0, 255),
+            mimetype: noteMediaType(body.file.type).slice(0, 255),
+            documentbody: String(body.file.content ?? ''),
+          };
+          note.filesize = Buffer.from(note.documentbody, 'base64').length;
+          noteFileTrace(context, note, 'upload');
+          await portalRecordWrites(context.store, { portalRequest: true }).create('annotation', note, writer);
+        }
+        return commentId;
+      },
+      { incremental: true },
+    ),
+  );
+  if (native) return sendEmpty(res, 201);
+  return sendJson(res, 201, { Id: created });
+}
+
+// ---- activity timeline (Learn: view-all-activities-in-portal-timeline)
+
+// One diagnostic per runtime and timeline condition.
+function reportTimeline(context, code, severity, message) {
+  const record = context.recordDiagnostic;
+  if (typeof record !== 'function') return;
+  const seen = reported.get(record) ?? new Set();
+  reported.set(record, seen);
+  if (seen.has(`timeline:${code}`)) return;
+  seen.add(`timeline:${code}`);
+  record({ code, severity, component: 'timeline', message });
+}
+
+// The record's activities in the Portal Timeline View: each admitted activity table is read through the visitor's
+// table permissions on that table (a table without Read contributes no rows), regarding this record only.
+async function timelineRows(context, entity, id) {
+  const all = activityTables(context.store);
+  const view = portalTimelineView(context.metadata);
+  let selection = { tables: all, order: null, unapplied: [], linked: false };
+  if (view?.fetchXml) selection = timelineViewSelection(parseFetchTree(view.fetchXml), all, context.metadata);
+  else
+    reportTimeline(
+      context,
+      'PORTAL_TIMELINE_VIEW_ABSENT',
+      'info',
+      `The Portal Timeline View (activitypointer view ${PORTAL_TIMELINE_VIEW_ID}) is not in the configured Solutions: the timeline admits every activity table. Add the view to the Solutions to apply its activity type filter.`,
+    );
+  if (selection.unapplied.length || selection.linked)
+    reportTimeline(
+      context,
+      'PORTAL_TIMELINE_VIEW_FILTER_PARTIAL',
+      'warning',
+      `The Portal Timeline View also filters on ${[...new Set(selection.unapplied)].join(', ') || 'linked tables'}; the local timeline applies only its activity type conditions and its order.`,
+    );
+  let tables = selection.tables;
+  // Unless every activity is displayed, a case timeline shows only portal comments (ViewDataAdapter).
+  if (!displayAllActivitiesOnTimeline(context.portal) && entity === 'incident') {
+    tables = tables.filter((table) => canonical(table.logicalName) === PORTAL_COMMENT_TABLE);
+    reportTimeline(
+      context,
+      'PORTAL_TIMELINE_PORTAL_COMMENTS_ONLY',
+      'info',
+      'CustomerSupport/DisplayAllUserActivitiesOnTimeline is not true: the case timeline shows only portal comments. Set it to true to show every activity of the Portal Timeline View.',
+    );
+  }
+  const rows = [];
+  for (const table of tables) {
+    const key = xmlEscape(table.idColumn);
+    const query = `<entity name="${xmlEscape(table.logicalName)}"><all-attributes/><attribute name="${key}"/><filter type="and"><condition attribute="regardingobjectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="${key}"/></entity>`;
+    for (const row of await readProviderPages(context, query, table.idColumn, TIMELINE_PAGING_INVALID))
+      rows.push({ row, table });
+  }
+  const { attribute, descending } = selection.order ?? { attribute: 'createdon', descending: true };
+  const value = (row) => {
+    const raw = scalar(row[attribute]);
+    const time = Date.parse(raw ?? '');
+    return Number.isNaN(time) ? String(raw ?? '') : time;
+  };
+  rows.sort((a, b) => {
+    const [x, y] = [value(a.row), value(b.row)];
+    const order = x < y ? -1 : Number(x > y);
+    return (
+      (descending ? -order : order) || String(a.row[a.table.idColumn]).localeCompare(String(b.row[b.table.idColumn]))
+    );
+  });
+  return rows;
+}
+
+const TIMELINE_TEMPLATES = new Set(['email', 'phonecall', 'appointment', PORTAL_COMMENT_TABLE]);
+
+function timelineRecord({ row, table }) {
+  const id = canonical(row[table.idColumn]);
+  const party = Array.isArray(row.from) ? (row.from[0]?.partyid ?? row.from[0]) : row.from;
+  const labels = table.labels ?? {};
+  // A plain-text description keeps its line breaks, as the platform's formatter renders them.
+  const raw = String(row.description ?? '');
+  const description = /<[a-z!/]/i.test(raw)
+    ? sanitizeActivityHtml(raw)
+    : sanitizeActivityHtml(raw).replaceAll(/\r\n?|\n/g, '<br />');
+  return {
+    Id: id,
+    EntityName: table.logicalName,
+    ActivityTypeDisplay: labels[1033] ?? Object.values(labels)[0] ?? table.logicalName,
+    Subject: String(row.subject ?? ''),
+    Description: description,
+    ViewFields: {
+      activityid: id,
+      activitytypecode: table.logicalName,
+      subject: row.subject ?? null,
+      description,
+      createdon: row.createdon ?? null,
+      modifiedon: row.modifiedon ?? null,
+    },
+    CreatedOn: row.createdon ? `/Date(${Date.parse(row.createdon)})/` : null,
+    CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+    PostedByName: String(party?.name ?? row.createdby?.name ?? ''),
+    DisplayToolbar: false,
+    IsCustomActivity: !TIMELINE_TEMPLATES.has(canonical(table.logicalName)),
+    CanRead: true,
+    CanWrite: false,
+    CanDelete: false,
+  };
+}
+
+/** The timeline's activity page (EntityActivity/GetActivities): the regarding record's activities in view order. */
+async function handleTimelineActivities(req, res, context) {
+  if (req.method !== 'POST') fail('Native portal services require POST.', 405, 'MethodNotAllowed');
+  verifyToken(req, context.csrf);
+  const body = await readJson(req);
+  const regarding = body.regarding ?? {};
+  if (!safeName(regarding.LogicalName) || !GUID.test(String(regarding.Id ?? '')))
+    fail('Activities require a regarding record');
+  const requested = Math.floor(Number(body.pageSize));
+  const pageSize = Math.min(requested > 0 ? requested : TIMELINE_DEFAULT_PAGE_SIZE, TIMELINE_MAX_PAGE_SIZE);
+  const page = Math.max(1, Math.floor(Number(body.page)) || 1);
+  const entity = canonical(regarding.LogicalName);
+  // The regarding check is the platform's own: a hosted case timeline sends only its activities' RetrieveMultiple
+  // (hosted F3 Customer Self-Service runs a/b, Edit Case load), so the check runs no read steps.
+  if (!(await context.readProvider.get(entity, regarding.Id, context.identity, { skipPluginRead: true })))
+    fail('The regarding record was not found', 404, 'NotFound');
+  const rows = await timelineRows(context, entity, canonical(regarding.Id));
+  const count = rows.length;
+  return sendJson(res, 200, {
+    MoreRecords: count > page * pageSize,
+    Records: rows.slice((page - 1) * pageSize, page * pageSize).map(timelineRecord),
+    ItemCount: count,
+    PageCount: Math.ceil(count / pageSize),
+    PageNumber: page,
+    PageSize: pageSize,
+  });
+}
+
+// The submitted note text: trimmed plain text, or with Timeline/RTEEnabled the editor's HTML, sanitized before it is
+// stored. Rich text without visible text is empty (the platform strips markup for its required check on comments).
+function submittedNoteText(body, context) {
+  const submitted = String(body.text ?? '').trim();
+  const rich = notesRichTextEnabled(context.portal);
+  const text = rich ? sanitizeNoteHtml(submitted).trim() : submitted;
+  if (!text || (rich && richTextIsEmpty(text))) fail('Note is a required field.', 417, 'NoteRequired');
+  return text;
 }
 
 /** A note attachment transfer on the current span (D-R3-10): the file column, name, size and type, never the bytes. */
@@ -2730,19 +3616,27 @@ function noteMediaType(value) {
   return MEDIA_TYPE.test(text) && !/\p{Cc}/u.test(text) ? text : 'application/octet-stream';
 }
 
-async function handleAnnotation(req, res, id, context) {
-  if (!['GET', 'HEAD'].includes(req.method)) fail('Annotation downloads require GET or HEAD.', 405);
+async function captureAnnotation(context, id) {
   let note = null;
   try {
     note = GUID.test(id) ? await context.readProvider.get('annotation', id, context.identity) : null;
   } catch (error) {
     if (![403, 404].includes(error.status)) throw error;
   }
-  if (!note) {
+  if (!note || !canDownloadAnnotation(context, note, id)) return null;
+  return { note, load: captureNoteBody(context, note) };
+}
+
+async function handleAnnotation(req, res, id, context) {
+  if (!['GET', 'HEAD'].includes(req.method)) fail('Annotation downloads require GET or HEAD.', 405);
+  const capture = () => captureAnnotation(context, id);
+  const download = await (context.readAttachment ? context.readAttachment(capture) : capture());
+  if (!download) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(req.method === 'HEAD' ? undefined : 'Not Found');
   }
-  const bytes = Buffer.from(String((await noteBody(context, note)) ?? ''), 'base64');
+  const { note, load } = download;
+  const bytes = Buffer.from(String((await load?.()) ?? ''), 'base64');
   if (!bytes.length) {
     res.writeHead(204, { 'cache-control': 'private' });
     return res.end();
@@ -2751,11 +3645,18 @@ async function handleAnnotation(req, res, id, context) {
   const type = noteMediaType(note.mimetype);
   const inline = /^image\/(gif|jpeg|png|tiff|bmp|x-icon)$/i.test(type);
   const name = encodeURIComponent(note.filename || 'attachment').replaceAll('%20', '+');
+  // Hosted session F2 (notes runs a and b, download-file-note, signed in): the name as an RFC 5987 extended value
+  // (attachment;filename*=UTF-8''<name>), cached privately for an hour, last modified when the note was.
+  const signedIn = Boolean(context.identity?.contactId || context.identity?.id);
+  const modified = Date.parse(note.modifiedon ?? '');
+  const now = context.store?.clock?.now?.() ?? Date.now();
   res.writeHead(200, {
     'content-type': type,
     'content-length': bytes.length,
-    'content-disposition': `${inline ? 'inline' : 'attachment'};filename="${name}"`,
-    'cache-control': context.identity?.contactId || context.identity?.id ? 'private' : 'public',
+    'content-disposition': `${inline ? 'inline' : 'attachment'};filename*=UTF-8''${name}`,
+    'cache-control': signedIn ? 'private, max-age=3600' : 'public',
+    ...(signedIn ? { expires: new Date(Number(now) + 3600000).toUTCString() } : {}),
+    ...(Number.isFinite(modified) ? { 'last-modified': new Date(modified).toUTCString() } : {}),
     'x-content-type-options': 'nosniff',
   });
   res.end(req.method === 'HEAD' ? undefined : bytes);
@@ -2884,7 +3785,7 @@ export function antiForgeryCookie(csrf) {
   const value = createHmac('sha256', String(csrf ?? ''))
     .update('__RequestVerificationToken')
     .digest('base64url');
-  return `__RequestVerificationToken=${value}; path=/; secure; HttpOnly; SameSite=None`;
+  return `__RequestVerificationToken=${value}; path=/; secure; HttpOnly; SameSite=Lax`;
 }
 
 /**
@@ -2931,6 +3832,8 @@ export function antiForgeryCookie(csrf) {
       identity: context.identity,
       contact: contactRow(context),
       origin: context.origin,
+      signingKeys: context.implicitGrant?.signingKeys,
+      onKeyError: context.recordDiagnostic,
       ...(context.store?.clock ? { clock: () => context.store.clock.now() } : {}),
     })
   )
@@ -2940,12 +3843,51 @@ export function antiForgeryCookie(csrf) {
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
   if (token) {
     if (canonical(token[1]) !== websiteId) return false;
+    const tokenValue = context.issueCsrf ? context.issueCsrf() : context.csrf;
+    if (context.pairedTokenCookie && tokenValue) res.appendHeader('set-cookie', antiForgeryCookie(tokenValue));
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
-      'set-cookie': antiForgeryCookie(context.csrf),
+      ...(context.pairedTokenCookie ? {} : { 'set-cookie': antiForgeryCookie(tokenValue) }),
     });
-    res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(context.csrf)}" />`);
+    res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(tokenValue)}" />`);
+    return true;
+  }
+  // The activity timeline service, on the platform's default portal route (_portal/{website}/{controller}/{action}).
+  const activities = /^\/_portal\/([^/]+)\/EntityActivity\/GetActivities\/?$/i.exec(url.pathname);
+  if (activities) {
+    if (canonical(activities[1]) !== websiteId) return false;
+    const traces = context.store?.traces;
+    const span = traces?.start({
+      kind: 'native-service',
+      name: `${req.method} EntityActivity/GetActivities`,
+      module: 'native',
+      operation: 'entity-activity-getactivities',
+    });
+    const call = () => handleTimelineActivities(req, res, context).catch((error) => sendError(res, error));
+    try {
+      await (span ? traces.run(span, call) : call());
+    } finally {
+      span?.end({ status: statusFromHttp(res.statusCode), attributes: { statusCode: res.statusCode } });
+    }
+    return true;
+  }
+  const comment = /^\/_portal\/([^/]+)\/EntityActivity\/AddPortalComment\/?$/i.exec(url.pathname);
+  if (comment) {
+    if (canonical(comment[1]) !== websiteId) return false;
+    const traces = context.store?.traces;
+    const span = traces?.start({
+      kind: 'native-service',
+      name: `${req.method} EntityActivity/AddPortalComment`,
+      module: 'native',
+      operation: 'entity-activity-addportalcomment',
+    });
+    const call = () => handleAddPortalComment(req, res, context).catch((error) => sendError(res, error));
+    try {
+      await (span ? traces.run(span, call) : call());
+    } finally {
+      span?.end({ status: statusFromHttp(res.statusCode), attributes: { statusCode: res.statusCode } });
+    }
     return true;
   }
   const match = SERVICE.exec(url.pathname);
@@ -2954,13 +3896,16 @@ export function antiForgeryCookie(csrf) {
   if (canonical(scope) !== websiteId) return false;
   const handled = new Set([
     'entity-grid-data.json',
+    ...GRID_INSIGHT_SERVICES,
     'entity-subgrid-data.json',
     'entity-lookup-grid-data.json',
+    'entity-grid-update-entity',
     'entity-grid-delete',
     'entity-lookup-associate',
     'entity-grid-disassociate',
     'action-deactivate',
     'action-activate',
+    ...Object.keys(RECORD_ACTION_ROUTES),
     'download-as-csv',
     'download-as-excel',
     'execute-workflow',
@@ -3021,9 +3966,25 @@ export function antiForgeryCookie(csrf) {
       await handleNotes(normalized, req, res, context);
       return true;
     }
+    if (normalized === 'execute-workflow' && req.headers.__requestverificationtoken === undefined) {
+      // Without an anti-forgery token the service runs nothing and answers 200 with an empty body (captured,
+      // paqvilo-developer hosted-f2 summary-F2 OPS-01f, runs a and b).
+      res.writeHead(200, { ...PAGE_HEADERS, 'content-length': 0 });
+      res.end();
+      return true;
+    }
     verifyToken(req, context.csrf);
+    if (GRID_INSIGHT_SERVICES.has(normalized)) {
+      // A list's chart data and AI summary stream answer 400 for a list without a chart or an AI summary (hosted F3
+      // Customer Self-Service runs a/b, the case list page); the response body was not recorded, so it is empty here.
+      res.writeHead(400, { ...PAGE_HEADERS, 'content-length': 0 });
+      res.end();
+      return true;
+    }
     const body = await readJson(req);
     if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
+      // Large pages are for server-side callers (downloads), never a request body's choice.
+      delete body.allowLargePages;
       const secure = unprotectConfiguration(body.base64SecureConfiguration);
       if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
       const expected = {
@@ -3049,15 +4010,34 @@ export function antiForgeryCookie(csrf) {
         pageSize: Number(body.pageSize) || null,
       });
       if (model.kind === 'subgrid' && model.definition && secure.parent) {
-        if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
+        // The parent check is the platform's own: a hosted subgrid data request sends only the related table's
+        // RetrieveMultiple (hosted F2 runs a/b subgrid, form-read-messages.mjs), so the check runs no read steps.
+        if (
+          !(await context.readProvider.get(model.schema.entity, secure.parent, context.identity, {
+            skipPluginRead: true,
+          }))
+        )
           return (sendSubgridAccessDenied(res), true);
       }
-      const data = await gridData(model, body, {
-        ...context,
-        secure,
-        timezoneOffset: Number(body.timezoneOffset) || 0,
-        timeZone: requestTimeZone(req, body.timezoneOffset),
-      });
+      const query = () =>
+        gridData(model, body, {
+          ...context,
+          secure,
+          timezoneOffset: Number(body.timezoneOffset) || 0,
+          timeZone: requestTimeZone(req, body.timezoneOffset),
+        });
+      let data;
+      if (secure.pcf)
+        try {
+          data = await query();
+        } catch (error) {
+          // A dataset grid's query failure (a Quick Find view, a value the column cannot take) answers the platform's
+          // 500 body; Mirage's own request refusals keep their answers.
+          if (error?.code === 'Invalid_Request' || error?.code === 'MissingPortalRequestVerificationToken') throw error;
+          sendJson(res, 500, { InternalServerError: 500, Message: String(error?.message ?? 'Internal server error') });
+          return true;
+        }
+      else data = await query();
       if (data.AccessDenied) {
         span?.event('permission', {
           message: `Table permission denies read on ${model.entity}`,
@@ -3068,6 +4048,62 @@ export function antiForgeryCookie(csrf) {
         span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
         sendJson(res, 200, data);
       }
+      return true;
+    }
+    if (normalized === 'entity-grid-update-entity') {
+      // A list dataset code component's record save, the captured body { Id, EntityName, Attributes }.
+      // The platform scopes it by its own session state; Mirage's dataset host also sends the list's signed
+      // configuration, and only a grid signed for the dataset host is accepted.
+      const secure = unprotectConfiguration(body.base64SecureConfiguration);
+      if (canonical(secure.w) !== websiteId || secure.t !== 'list' || !secure.pcf)
+        fail('Invalid_Request', 403, 'Invalid_Request');
+      const model = modelFor(secure, context);
+      const view =
+        model.views.find((candidate) => canonical(candidate.id) === canonical(secure.view)) ?? model.views[0];
+      // Only the bound view's own layout columns (not link-entity columns) are written (pcf-grid-query.mjs).
+      const columns = new Set(
+        (view?.fields ?? []).map((cell) => cell.name).filter((name) => !String(name).includes('.')),
+      );
+      const { id, values } = pcfGridUpdate(body, {
+        entity: model.entity,
+        fields: entityFields(context.metadata, model.entity),
+        columns,
+        idColumn: model.idColumn,
+        invalid: () => fail('Invalid_Request', 400, 'Invalid_Request'),
+      });
+      // The record must be one the visitor's bound view lists (its filters, the list's record filters and the read
+      // grant), re-read through the grid query itself.
+      const visible = await executeGridQuery(
+        model,
+        {
+          page: 1,
+          pageSize: 1,
+          pcfFilter: `<filter><condition attribute="${model.idColumn}" operator="eq" value="${id}"/></filter>`,
+        },
+        { ...context, secure },
+      );
+      if (visible.accessDenied || visible.rows.length !== 1) fail('Invalid_Request', 403, 'Invalid_Request');
+      await context.change(() => pcfRecordUpdate(context, model.entity, id, values));
+      // The answer is the serialized Entity of the update: the written columns and the key.
+      sendJson(res, 200, {
+        LogicalName: model.entity,
+        Id: id,
+        Attributes: [
+          ...Object.entries(values).map(([Key, Value]) => ({ Key, Value })),
+          { Key: model.idColumn, Value: id },
+        ],
+        EntityState: 0,
+        FormattedValues: [],
+        RelatedEntities: [],
+        RowVersion: null,
+        KeyAttributes: [],
+        HasLazyFileAttribute: false,
+        LazyFileAttributeKey: null,
+        LazyFileAttributeValue: null,
+        LazyFileSizeAttributeKey: null,
+        LazyFileSizeAttributeValue: 0,
+        ExtensionData: null,
+      });
       return true;
     }
     if (normalized === 'entity-grid-delete') {
@@ -3104,6 +4140,12 @@ export function antiForgeryCookie(csrf) {
         }
       }
       await context.change(() => writeOperation(context, 'delete', entity, id));
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
+    if (Object.hasOwn(RECORD_ACTION_ROUTES, normalized)) {
+      await runRecordActionService(RECORD_ACTION_ROUTES[normalized], body, context);
       res.writeHead(204);
       res.end();
       return true;
@@ -3208,12 +4250,22 @@ export function antiForgeryCookie(csrf) {
       sendJson(res, 200, { success: true, sessionKey: key });
       return true;
     }
-    if (normalized === 'execute-workflow')
-      fail(
-        'Classic workflows are not executed by the local runtime. Model the backend effect with a declarative plugin.',
-        501,
-        'WorkflowUnsupported',
-      );
+    if (normalized === 'execute-workflow') {
+      try {
+        if (executeWorkflowAccess(context) === 'any-on-demand') await runHostedWorkflow(body, context);
+        else {
+          reportExecuteWorkflowAccess(context, url.pathname);
+          await runPortalListWorkflow(body, context, websiteId);
+        }
+      } catch (error) {
+        if (error?.code !== 'WorkflowRecordNotFound') throw error;
+        sendWorkflowRecordNotFound(res, error.message);
+        return true;
+      }
+      res.writeHead(204, PAGE_HEADERS);
+      res.end();
+      return true;
+    }
     return false;
   } catch (error) {
     span?.fail(error);

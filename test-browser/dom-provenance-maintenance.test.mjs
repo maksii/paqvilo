@@ -95,7 +95,14 @@ test('portal provenance mutation records do not invoke a page override of the ar
     } finally {
       Array.prototype[Symbol.iterator] = original;
     }
-    return { calls, id: evidence.node.id };
+    // The answer never carries the mark: that the node was read shows as its mark taken off and an identity that
+    // only waits for a proof.
+    return {
+      calls,
+      reason: evidence.availability[0]?.reason,
+      marked: node.hasAttribute('data-paqvilo-source'),
+      id: Object.hasOwn(evidence.node, 'id'),
+    };
   });
-  assert.deepEqual(result, { calls: 0, id: 'invented-node' });
+  assert.deepEqual(result, { calls: 0, reason: 'response-proof-not-published', marked: false, id: false });
 });

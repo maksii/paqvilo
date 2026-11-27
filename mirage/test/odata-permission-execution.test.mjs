@@ -1,3 +1,4 @@
+// @test-kind contract: an invented fixture exercises the local opted-in native-classic OData adapter
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -109,9 +110,18 @@ test('native scalar OData expanded execution budgets fail after admitted pre-ope
 });
 test('separate native OData profile does not silently qualify unsupported navigation and options', () => {
   const store = fixture();
+  // $expand runs the modeled pipeline, as the hosted portal serves it (hosted session F1 summary-F1 API-02b): an
+  // unknown navigation is that pipeline's refusal, not the native lane's 501. Navigation filters stay native-refused.
   assert.throws(
     () =>
       store.query('companies', { $select: 'companyid', $expand: 'grant' }, identity, undefined, {
+        portalRequest: true,
+      }),
+    (error) => error.code !== 'ODataPermissionQueryUnsupported',
+  );
+  assert.throws(
+    () =>
+      store.query('companies', { $select: 'companyid', $filter: "parent/name eq 'x'" }, identity, undefined, {
         portalRequest: true,
       }),
     (error) => error.code === 'ODataPermissionQueryUnsupported',
@@ -187,6 +197,36 @@ test('native conversion faults happen before observers and retain the CDS status
     assert.deepEqual(stages, []);
   }
 });
+async function companyRead(store, params, { fields = 'companyid', resource = 'companies', headers = {} } = {}) {
+  let status, body, responseHeaders;
+  const response = {
+    headersSent: false,
+    writeHead(code, values) {
+      status = code;
+      responseHeaders = values;
+      this.headersSent = true;
+    },
+    end(value) {
+      body = value === undefined ? undefined : JSON.parse(value);
+    },
+  };
+  const url = new URL('http://127.0.0.1/_api/' + resource);
+  url.search = new URLSearchParams(params).toString();
+  await handleWebApi({ method: 'GET', headers }, response, url, {
+    store,
+    identity,
+    portal: { settings: { 'Webapi/company/enabled': 'true', 'Webapi/company/fields': fields } },
+    origin: url.origin,
+    origins: [url.origin],
+    csrf: 'owned-test-cursor',
+    json(res, code, value, headers) {
+      res.writeHead(code, headers);
+      res.end(JSON.stringify(value));
+    },
+  });
+  return { status, body, headers: responseHeaders };
+}
+
 test('actual Web API collection handler executes the qualified initial OData page rather than falling back to QueryExpression', async () => {
   const store = fixture(),
     queries = [];
@@ -194,29 +234,10 @@ test('actual Web API collection handler executes the qualified initial OData pag
     (event) => queries.push(event.query.$type),
     () => true,
   );
-  let status, body;
-  const response = {
-    headersSent: false,
-    writeHead(code) {
-      status = code;
-      this.headersSent = true;
-    },
-    end(value) {
-      body = JSON.parse(value);
-    },
-  };
-  const url = new URL('http://127.0.0.1/_api/companies?$select=companyid&$orderby=companyid&$count=true');
-  await handleWebApi({ method: 'GET', headers: {} }, response, url, {
-    store,
-    identity,
-    portal: { settings: { 'Webapi/company/enabled': 'true', 'Webapi/company/fields': 'companyid' } },
-    origin: url.origin,
-    origins: [url.origin],
-    csrf: 'owned-test-cursor',
-    json(res, code, value) {
-      res.writeHead(code);
-      res.end(JSON.stringify(value));
-    },
+  const { status, body } = await companyRead(store, {
+    $select: 'companyid',
+    $orderby: 'companyid',
+    $count: 'true',
   });
   assert.equal(status, 200);
   assert.deepEqual(
@@ -225,4 +246,71 @@ test('actual Web API collection handler executes the qualified initial OData pag
   );
   assert.equal(body['@odata.count'], 1);
   assert.deepEqual(queries, ['FetchExpression', 'FetchExpression', 'FetchExpression']);
+});
+
+// @test-kind compatibility+contract: Microsoft Learn Power Pages read operations document scalar equality and table permissions, and the local profile limits navigation
+test('native scalar OData handles slashes in quoted filter values while refusing navigation paths', async () => {
+  const store = fixture();
+  store.state.tables.company[0].name = "North/West & Partners' Studio";
+  store.state.tables.company[1].name = store.state.tables.company[0].name;
+  const { status, body } = await companyRead(
+    store,
+    {
+      $select: 'companyid',
+      $filter: "name eq 'North/West & Partners'' Studio'",
+      $count: 'true',
+    },
+    { fields: 'companyid,name' },
+  );
+  assert.equal(status, 200);
+  assert.deepEqual(
+    body.value.map((row) => row.companyid),
+    [id(10)],
+  );
+  assert.equal(body['@odata.count'], 1);
+  assert.throws(
+    () =>
+      store.query('companies', { $select: 'companyid', $filter: "parent/name eq 'North/West'" }, identity, undefined, {
+        portalRequest: true,
+      }),
+    (error) => error.code === 'ODataPermissionQueryUnsupported',
+  );
+});
+
+// @test-kind compatibility+observation: Microsoft Learn Power Pages OData reads document GUID-keyed data with $select and ETag; the select-less and $top keyed answers are hosted session F1 captures (paqvilo-developer hosted-f1 summary-F1 API-02b/c, two runs)
+test('native-classic GUID-keyed scalar GET returns the authorized entity, projection and ETag', async () => {
+  const store = fixture();
+  store.state.tables.company[0].notes = 'Invented private value';
+  const reads = [];
+  store.setPluginPipeline(
+    ({ operation, stage }) => reads.push([operation, stage]),
+    () => true,
+  );
+  const read = (key, params = { $select: 'name' }, headers = {}) =>
+    companyRead(store, params, { resource: `companies(${key})`, fields: 'companyid,name', headers });
+  const entity = await read(id(10));
+  assert.equal(entity.status, 200);
+  assert.deepEqual(Object.keys(entity.body).sort(), ['@odata.context', '@odata.etag', 'companyid', 'name']);
+  assert.match(entity.body['@odata.context'], /#companies\(name\)\/\$entity$/);
+  assert.equal(entity.body.name, 'Own');
+  assert.equal(entity.body.companyid, id(10));
+  assert.match(entity.body['@odata.etag'], /^W\/".+"$/);
+  assert.deepEqual(reads, [
+    ['retrieve', 10],
+    ['retrieve', 20],
+    ['retrieve', 40],
+  ]);
+  const cached = await read(id(10), { $select: 'name' }, { 'if-none-match': entity.body['@odata.etag'] });
+  assert.deepEqual([cached.status, cached.body, cached.headers.ETag], [304, undefined, entity.body['@odata.etag']]);
+  assert.equal((await read(id(10), { $select: 'notes' })).status, 403);
+  assert.equal((await read(id(11))).status, 403);
+  assert.equal((await read(id(99))).status, 404);
+  // Hosted session F1 (summary-F1 API-02b/c, two runs): a select-less keyed read of a list that enables every listed
+  // column and a keyed read with $top are served, so the native lane hands them to the modeled pipeline; /<column> is
+  // refused before any read (runs/a and runs/b odata-shapes property).
+  assert.equal((await read(id(10), {})).status, 200);
+  assert.equal((await read(id(10), { $select: 'name', $top: '1' })).status, 200);
+  const property = await companyRead(store, {}, { resource: `companies(${id(10)})/name`, fields: 'companyid,name' });
+  assert.equal(property.status, 403);
+  assert.equal(property.body.error.message, 'Attribute All Columns in table company is not enabled for Web Api.');
 });

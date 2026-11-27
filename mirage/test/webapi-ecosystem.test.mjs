@@ -363,9 +363,11 @@ test("Contains answers Dataverse's full-text error and EqualRoleBusinessId is re
     `/_api/accounts?$select=name&$filter=${encodeURIComponent("Microsoft.Dynamics.CRM.Contains(PropertyName='name',PropertyValue='Q')")}`,
   );
   assert.equal(contains.status, 400);
+  // The hosted text and cdscode (hosted session F1 summary-F1 API-02c).
   assert.deepEqual(contains.body.error, {
     code: '9004010D',
-    message: 'CDS error occurred.',
+    message: 'Common Data Service error occurred.',
+    cdscode: '0x80041120',
     innererror: { code: '0x80041120', message: 'Unknown Condition Operator: Contains. FetchXml does not support it' },
   });
   assert.equal(contains.headers.get('x-sim-error-code'), 'FullTextConditionUnsupported');
@@ -388,7 +390,8 @@ test("Contains answers Dataverse's full-text error and EqualRoleBusinessId is re
 });
 
 // Token failures and 90040109.
-test('token failures: no token 401, a wrong token 403, both 90040107; reads ignore tokens and bearer headers', async (t) => {
+// @test-kind observation+unproven: hosted session F4 (paqvilo-developer hosted-f4 swap runs a and b) answered a missing and a garbage token 401 90040107 "Request validation failed : …" and ignored the token on reads; 90040109 stays a local model.
+test('token failures: no token and a wrong token answer 401 90040107; reads ignore tokens and bearer headers', async (t) => {
   const { json } = await start(t);
   const missing = await json('/_api/accounts', { method: 'POST', body: { name: 'No token' }, token: false });
   assert.deepEqual([missing.status, missing.body.error.code], [401, '90040107']);
@@ -400,10 +403,10 @@ test('token failures: no token 401, a wrong token 403, both 90040107; reads igno
     headers: { __RequestVerificationToken: 'stale' },
   });
   assert.deepEqual(
-    [wrong.status, wrong.body.error.code, wrong.body.error.message],
-    [403, '90040107', 'The anti-forgery cookie token and form field token do not match.'],
+    [wrong.status, wrong.body.error.code, wrong.body.error.message.slice(0, 74)],
+    [401, '90040107', 'Request validation failed : The anti-forgery token could not be decrypted.'],
   );
-  // Microsoft's clients refresh the token on 403 + 90040107 and retry; the retry succeeds.
+  // A retry with the current token succeeds.
   const retried = await json('/_api/accounts', { method: 'POST', body: { name: 'Wrong token' } });
   assert.equal(retried.status, 204);
   // GETs need no token: a stale token or an invalid bearer header doesn't change a read locally.
@@ -599,7 +602,8 @@ test('platform change diagnostics name enhanced authorization, list feeds, unsec
     'basic form Open form',
     'advanced form step Open step',
   ]);
-  // The modern list adapter serves a plain list (local markup); a map list falls back to the classic list.
+  // The modern list adapter serves a plain, map, calendar and dataset code component list (its view's grid, as hosted:
+  // hosted-f2 summary-F2 LIST-01d and LIST-01f).
   assert.equal(byCode.MODERN_LIST_LOCAL_MARKUP.count, 1);
   const mapped = platformChangeDiagnostics({
     lists: [list('Places', { adx_map_enabled: true })],
@@ -607,7 +611,20 @@ test('platform change diagnostics name enhanced authorization, list feeds, unsec
   });
   assert.deepEqual(
     mapped.map((diagnostic) => diagnostic.code),
-    ['MODERN_LIST_RENDERED_CLASSIC'],
+    ['MODERN_LIST_LOCAL_MARKUP'],
+  );
+  const calendar = platformChangeDiagnostics({
+    lists: [list('Dates', { adx_calendar_enabled: true }), list('Grid', { adx_iscodecomponent: true })],
+    pages: [
+      {
+        url: '/dates/',
+        html: "{% include 'entity_list' key: 'Dates' isModern: 'true' %}{% include 'entity_list' key: 'Grid' isModern: 'true' %}",
+      },
+    ],
+  });
+  assert.deepEqual(
+    calendar.map((diagnostic) => [diagnostic.code, diagnostic.count]),
+    [['MODERN_LIST_LOCAL_MARKUP', 2]],
   );
   // Disabled enhanced authorization (0) and a site without the column report nothing.
   assert.deepEqual(platformChangeDiagnostics({ website: { enhancedauthorization: 0 } }), []);

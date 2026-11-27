@@ -17,8 +17,16 @@ import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs'
 //      FORMULA_CIRCULAR_REFERENCE);
 //   3. else the value is null and FORMULA_NOT_EVALUATED is reported once per column. A value is never guessed.
 // A formula that answers a Power Fx error value reads null with FORMULA_ERROR (its ErrorKind) once per column. A decimal
-// result keeps the column's precision (default 2). An async-only engine is refused by evaluateSync (PowerFxAsyncAdapter),
-// so the column reads null with the diagnostic; the explicitly disabled engine answers 501 and reads null the same way.
+// result keeps the column's precision (default 2); a decimal result outside the documented decimal formula column range
+// (-100000000000 to 100000000000, Learn "Work with formula columns") reads null with FORMULA_OUT_OF_RANGE.
+// The formula column dialect (power-fx-formula-columns.mjs): before it is evaluated, a formula that breaks a documented
+// formula column restriction (Text() of a single number, a number, date or choice as text, the StartOfWeek argument, a
+// direct or related currency column, mixed date time behaviours, more than 1,000 characters, ...) reads null with
+// FORMULA_UNSUPPORTED naming the restriction; the native designer refuses to save such a formula. The engine runs with
+// host.formulaColumn, so a numeric function is typed by its first argument (Learn "Create formula columns with decimal,
+// whole number, float, and choice data types") and Decimal() outside the decimal range makes the formula read null.
+// An async-only engine is refused by evaluateSync (PowerFxAsyncAdapter), so the column reads null with the diagnostic;
+// the explicitly disabled engine answers 501 and reads null the same way.
 // solution-schema resolves a referenced FormulaDefinitions YAML column mapping to its expression;
 // metadata containing an inline FormulaDefinition supplies the expression directly.
 // ponytail: a formula is evaluated once per row per query (the read copy keeps it) with no cross-query cache. Upgrade path:
@@ -31,6 +39,8 @@ import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
 import { parse } from './power-fx.mjs';
+import { checkFormulaColumn } from './power-fx-formula-columns.mjs';
+import { FORMULA_COLUMN_DECIMAL_LIMIT } from './power-fx-functions.mjs';
 
 const FORMULA = 3;
 const OPERATIONS = ['FormulaColumn', 'FormulaWriteRefused'];
@@ -41,7 +51,8 @@ const isThenable = (value) => value !== null && typeof value === 'object' && typ
 // Per-API state: one WeakMap entry per installed API. Never module-global mutable state.
 const states = new WeakMap();
 function stateOf(api) {
-  if (!states.has(api)) states.set(api, { api, overrides: {}, evaluator: null, reporter: onceReporter(), depth: 0 });
+  if (!states.has(api))
+    states.set(api, { api, overrides: {}, evaluator: null, reporter: onceReporter(), depth: 0, checks: new Map() });
   return states.get(api);
 }
 
@@ -128,6 +139,33 @@ function scopeOf(state, host, mapping, row, column, thread) {
   return record;
 }
 
+// The inputs of a computation: the row without the table's formula columns. The store's read copy holds every computed
+// column as a lazy getter that starts its own computation, so copying the read copy would compute each other formula
+// column nested inside this one (and a table of more than ten formula columns would exceed the chain depth). The other
+// formula columns are read through the computation's thread instead (scopeOf, overrideRow).
+function inputsOf(row, formulas) {
+  const inputs = {};
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(row)))
+    if (descriptor.enumerable && !Object.hasOwn(formulas, key))
+      inputs[key] = Object.hasOwn(descriptor, 'value') ? descriptor.value : row[key];
+  return inputs;
+}
+
+// The row a pack formulaColumns function receives: the inputs with each other formula column computed on this thread and
+// the column itself null.
+function overrideRow(state, thread, mapping, row, column) {
+  const record = { ...row };
+  for (const [other, text] of Object.entries(formulaColumnsOf(state.api, mapping.logicalName)))
+    if (other === column) record[other] = null;
+    else
+      Object.defineProperty(record, other, {
+        enumerable: true,
+        configurable: true,
+        get: () => readFormula(state, thread, mapping, row, column, other, text),
+      });
+  return record;
+}
+
 // A read of another formula column: the reading column joins a circular reference when the value it reads is on one.
 function readFormula(state, thread, mapping, row, reader, other, text) {
   const value = computeColumn(state, {}, mapping, row, other, text, thread);
@@ -141,6 +179,15 @@ function columnValue(state, mapping, column, value) {
   if (typeof value !== 'number' && !isExactNumeric(value)) return value ?? null;
   const definition = facts(state.api.store.fieldDefinitions(mapping.logicalName, state.api.metadataFields)?.[column]);
   if (String(definition.dataverseType ?? definition.type ?? '').toLowerCase() !== 'decimal') return value;
+  if (Math.abs(Number(isExactNumeric(value) ? value.value : value)) > FORMULA_COLUMN_DECIMAL_LIMIT) {
+    report(state, {
+      code: 'FORMULA_OUT_OF_RANGE',
+      table: mapping.logicalName,
+      column,
+      message: `Formula column ${mapping.logicalName}.${column} computed a value outside the decimal formula column range (-${FORMULA_COLUMN_DECIMAL_LIMIT} to ${FORMULA_COLUMN_DECIMAL_LIMIT}); it reads null.`,
+    });
+    return null;
+  }
   const places = Number(definition.precision ?? definition.Precision ?? 2);
   return roundNumeric(value, Math.min(10, Math.max(0, places)), 'Decimal');
 }
@@ -160,6 +207,17 @@ function evaluateFormula(state, c, mapping, row, column, formula, thread) {
     .trim()
     .replace(/^=/, '');
   if (!expression) return unevaluated(state, table, column, 'The column has no formula text.');
+  const restriction = restrictionOf(state, table, column, expression);
+  if (restriction) {
+    report(state, {
+      code: 'FORMULA_UNSUPPORTED',
+      table,
+      column,
+      construct: restriction.construct,
+      message: `Formula column ${table}.${column}: ${restriction.message} Formula columns don't support it (Learn "Work with formula columns"); the column reads as null.`,
+    });
+    return null;
+  }
   // Formula columns may chain through other formula columns at most 10 deep.
   if (state.depth >= 10)
     return unevaluated(state, table, column, 'The column is computed through more than 10 chained formula columns.');
@@ -171,7 +229,7 @@ function evaluateFormula(state, c, mapping, row, column, formula, thread) {
       symbols: { table, columns: Object.keys(mapping.fields ?? {}) },
       values: cloneStateData(row),
       principal: null, // computed as the system user, not as the caller
-      host: { ...host, scope: scopeOf(state, host, mapping, row, column, thread) },
+      host: { ...host, formulaColumn: true, scope: scopeOf(state, host, mapping, row, column, thread) },
     });
     if (isThenable(result)) {
       Promise.resolve(result).catch(() => {}); // the rejection is answered by this diagnostic, not an unhandled rejection
@@ -203,11 +261,35 @@ function evaluateFormula(state, c, mapping, row, column, formula, thread) {
   }
 }
 
+// The documented restriction a column's formula breaks, checked once per formula text (null when it breaks none).
+function restrictionOf(state, table, column, expression) {
+  const key = `${table}\u0000${column}\u0000${expression}`;
+  if (!state.checks.has(key))
+    state.checks.set(
+      key,
+      checkFormulaColumn(expression, {
+        table,
+        column,
+        columnsOf: (logical) =>
+          Object.fromEntries(
+            Object.entries(state.api.store.fieldDefinitions(logical, state.api.metadataFields) ?? {}).map(
+              ([name, definition]) => [name.toLowerCase(), facts(definition)],
+            ),
+          ),
+      }),
+    );
+  return state.checks.get(key);
+}
+
 function computeValue(state, c, mapping, row, column, formula, thread) {
   const table = mapping.logicalName;
   const override = state.overrides[`${table}.${column}`];
   if (override) {
-    const value = override(cloneStateData(row), { table, column, user: c.user ?? null });
+    const value = override(cloneStateData(overrideRow(state, thread, mapping, row, column)), {
+      table,
+      column,
+      user: c.user ?? null,
+    });
     if (!isThenable(value)) return value ?? null;
     return unevaluated(
       state,
@@ -256,8 +338,17 @@ function install(api, options = {}) {
   // route and every row projection read the computed value. The platform computes the column, so the pack ctx.user is null.
   state.provider = {
     columnsOf: (logical) => Object.keys(formulaColumnsOf(api, logical)),
-    compute: (logical, column, { row }) =>
-      computeColumn(state, {}, api.store.resolveMapping(logical), row, column, formulaColumnsOf(api, logical)[column]),
+    compute: (logical, column, { row }) => {
+      const formulas = formulaColumnsOf(api, logical);
+      return computeColumn(
+        state,
+        {},
+        api.store.resolveMapping(logical),
+        inputsOf(row, formulas),
+        column,
+        formulas[column],
+      );
+    },
   };
   api.store.setComputedColumns('dataverse-formula', state.provider);
   (api.readMetadata ?? ((fn) => fn()))(() => reportSecuredInputs(api, state));
@@ -323,6 +414,7 @@ function reportSecuredInputs(api, state) {
 function reset(api) {
   const state = stateOf(api);
   state.reporter.clear();
+  state.checks.clear();
   if (state.provider) api.store.setComputedColumns('dataverse-formula', state.provider);
   reportSecuredInputs(api, state);
 }

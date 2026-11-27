@@ -370,6 +370,12 @@ export class StateTracker {
 
 export { partContainer, partEquals };
 
+/** One member of a tracked container without handing it out (no open backup copies it); a plain read otherwise. */
+export function untrackedMember(container, name) {
+  const tracked = installed ? trackedContainers.get(container) : undefined;
+  return tracked ? tracked.current(name) : container?.[name];
+}
+
 /** The members of a tracked container as [name, value] pairs, without handing any out; plain entries otherwise. */
 export function untrackedEntries(container) {
   const tracked = installed ? trackedContainers.get(container) : undefined;

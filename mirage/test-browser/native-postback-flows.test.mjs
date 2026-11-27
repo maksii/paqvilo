@@ -1,5 +1,6 @@
 // Browser flows over the default WebForms postback: state actions, the attach-file control's
 // multipart post, rich text and auto-generated steps ("sample" table).
+// @test-kind contract: the local WebForms postback flows (state actions, auto-generated steps, the attach-file control) in a browser, as the Paqvilo runtime designs them
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -228,6 +229,34 @@ test('the attach-file control uploads through the file API and posts the annotat
   assert.equal(note.filename, 'note.txt');
   // The body is read through the portal's note read path: storage routing may hold it outside the row (__blobkey).
   assert.equal(await (await fetch(`${app.url}/_entity/annotation/${note.annotationid}`)).text(), 'attached text');
+  assert.deepEqual(errors, []);
+});
+
+// @test-kind observation: hosted session F2 attach runs b/e, i/j and k/l (max2-admin:two-files): two files offered to a control whose MaxFile is 1 upload none ("None of the files could be uploaded. You can upload a maximum of 1 files.", no InitializeFileUpload) and the page posts without annotation ids
+test('a selection over the remaining file count uploads none of its files', async (t) => {
+  const { app, page, errors } = await fixture(t);
+  const fileApi = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/_api/file/')) fileApi.push(request.method());
+  });
+  await page.goto(`${app.url}/attach/`);
+  assert.equal(await page.locator('#AttachFile_HiddenField_MaxFile').getAttribute('value'), '1');
+  // The two-file selection of the capture; the local control takes several files the way a multiple input does.
+  await page.locator('#AttachFile').evaluate((input) => {
+    input.multiple = true;
+  });
+  await page.locator('#AttachFile').setInputFiles([
+    { name: 'one.txt', mimeType: 'text/plain', buffer: Buffer.from('one') },
+    { name: 'two.txt', mimeType: 'text/plain', buffer: Buffer.from('two') },
+  ]);
+  await page.locator('#ModalToShowErrorForFileLimit').waitFor({ state: 'visible' });
+  assert.equal(
+    (await page.locator('#file-limit').textContent()).trim(),
+    'None of the files could be uploaded. You can upload a maximum of 1 files.',
+  );
+  assert.equal(await page.locator('#AttachFile_HiddenField_AnnotationIds').inputValue(), '');
+  assert.deepEqual(fileApi, []);
+  assert.equal((app.store.snapshot().tables.annotation ?? []).length, 0);
   assert.deepEqual(errors, []);
 });
 

@@ -299,9 +299,10 @@ async function calculateRollupField(api, ctx) {
         : api.store.updateRecordAsync(mapping.logicalName, row[mapping.idColumn], values, ctx.identity, kept),
     );
   }
+  // A null result (MIN, MAX or a date over no children) is absent from the response, as hosted runs answer it.
   const payload = maskRow(api, ctx, mapping.logicalName, {
     [mapping.idColumn]: row[mapping.idColumn],
-    [name]: result.value,
+    ...(result.value === null ? {} : { [name]: result.value }),
     [`${name}_date`]: result.date,
     [`${name}_state`]: result.state,
   });

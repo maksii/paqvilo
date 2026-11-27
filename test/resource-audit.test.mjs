@@ -64,6 +64,35 @@ test('blocked, inactive and disabled are explicit instead of disappearing from t
   });
 });
 
+test('inactive page and web-file sidecars keep their status with either YAML extension', (t) => {
+  const fx = fixture(t);
+  fx.write('website.yml', 'mspp_name: Enhanced test\nmspp_websiteid: mspp-audit-test\n');
+  const inactiveFiles = [];
+  for (const extension of ['yml', 'yaml']) {
+    const page = `web-pages/inactive-${extension}/Old.webpage`;
+    const css = `web-files/old-${extension}.css`;
+    fx.write(
+      `${page}.${extension}`,
+      `mspp_statecode: 1\nmspp_webpageid: inactive-${extension}\nmspp_partialurl: inactive-${extension}\n`,
+    );
+    fx.write(`${page}.custom_javascript.js`, 'void 0;');
+    fx.write(
+      `${css}.webfile.${extension}`,
+      `mspp_statecode: 1\nmspp_name: Old script styles\nmspp_partialurl: old-${extension}.css\nmspp_parentpageid: ${HOME_ID}\n`,
+    );
+    fx.write(css, '.old {}');
+    inactiveFiles.push(`${page}.custom_javascript.js`, css);
+  }
+  const report = audit(fx);
+  const status = (file) => report.resources.find((item) => item.id === file)?.status;
+  assert.deepEqual(
+    inactiveFiles.map((file) => [file, status(file)]),
+    inactiveFiles.map((file) => [file, 'inactive']),
+  );
+  assert.equal(status('web-files/app.js'), 'mapped');
+  assert.equal(report.totals.gaps, 0);
+});
+
 test('configured file and directory routes account for otherwise unregistered sources', (t) => {
   const fx = fixture(t);
   fx.write('custom/widget.js', 'console.log("widget");');
@@ -192,7 +221,7 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
   const fx = fixture(t);
   fx.write(
     'catalogue.yml',
-    'sites:\n  first:\n    source: .\n    environments:\n      local: https://portal.invalid\n  second:\n    source: .\n    environments:\n      local: https://another.invalid\n',
+    'sites:\n  first:\n    source: .\n    environments:\n      local: https://portal.invalid\n      staging: https://staging.invalid\n  second:\n    source: .\n    environments:\n      local: https://another.invalid\n',
   );
   const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PAQVILO_|GIT_)/.test(key)));
@@ -209,8 +238,12 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
   assert.equal(report.offline, true);
   assert.equal(report.complete, false);
   assert.deepEqual(
-    report.reports.map((item) => item.site),
-    ['first', 'second'],
+    report.reports.map((item) => [item.site, item.environment]),
+    [
+      ['first', 'local'],
+      ['first', 'staging'],
+      ['second', 'local'],
+    ],
   );
   // Exit code 1 is also what a crash returns; the JSON error names the actual refusal.
   const refusal = (result) => [result.status, JSON.parse(result.stdout).errors.map((error) => error.code)];
@@ -248,7 +281,7 @@ test('the audit summary line spells every count with its label and a space after
     human.stdout
       .split('\n')
       .includes(
-        `first: ${totals.mapped}/${totals.resources} mapped, ${totals.blocked} blocked, ${plural(totals.gaps, 'gap')}, ${totals.inactive} inactive, ${totals.deployment} deployment metadata, ${totals.disabled} disabled`,
+        `first (local): ${totals.mapped}/${totals.resources} mapped, ${totals.blocked} blocked, ${plural(totals.gaps, 'gap')}, ${totals.inactive} inactive, ${totals.deployment} deployment metadata, ${totals.disabled} disabled`,
       ),
     human.stdout,
   );
@@ -301,4 +334,28 @@ test('duplicate active page URLs warn once and inactive single-extension web fil
     report = JSON.parse(result.stdout);
   assert.equal(result.status, 0, JSON.stringify(report));
   assert.equal(report.reports[0].resources.find((row) => row.relativePath === 'web-files/a.css').status, 'inactive');
+});
+
+test('strict mapping coverage is incomplete for duplicate routes or disabled mapped files', (t) => {
+  const fx = fixture(t);
+  fs.unlinkSync(fx.file('web-files/orphan.png'));
+  fs.unlinkSync(fx.file('web-files/orphan.png.webfile.yml'));
+  assert.equal(audit(fx).coverage.complete, true);
+
+  const site = structuredClone(SITE);
+  site.webFiles.exclude = ['/scripts/**'];
+  const disabled = audit(fx, site);
+  assert.equal(disabled.totals.disabled, 1);
+  assert.equal(disabled.coverage.mappedPercent, 100);
+  assert.equal(disabled.coverage.complete, false);
+
+  fx.write(
+    'web-pages/duplicate/Other.webpage.yml',
+    `adx_webpageid: duplicate\nadx_name: Other\nadx_partialurl: about-us\nadx_parentpageid: ${HOME_ID}`,
+  );
+  const duplicate = audit(fx);
+  assert.match(duplicate.warnings.join('\n'), /duplicate page URL \/about-us:/);
+  assert.equal(duplicate.coverage.inventoryComplete, true);
+  assert.equal(duplicate.coverage.mappedPercent, 100);
+  assert.equal(duplicate.coverage.complete, false);
 });

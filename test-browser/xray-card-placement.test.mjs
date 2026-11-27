@@ -282,6 +282,8 @@ test('outlines leave the Lense pill uncovered, and stop doing so when it is gone
   });
   // The selected field lies under the stand-in pill.
   await pick('#left');
+  // The outlines repaint in an animation frame after the pick opens its card.
+  await painted(page);
   // The window, less the pill's box (the browser serializes the path with its own spacing).
   const clip = () =>
     page.evaluate(() =>

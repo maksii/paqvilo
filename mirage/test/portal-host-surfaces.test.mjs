@@ -113,19 +113,21 @@ const token = async (sim, headers) =>
   /value="([^"]+)"/.exec(await (await fetch(sim.url + '/_layout/tokenhtml', { headers })).text())?.[1];
 const upload = async (sim, name) => {
   const member = signInHeaders(sim, 'alex', { roles: ['Member'] });
-  return fetch(`${sim.url}/_apps/portal-documents/x_case/${CASE}?name=${name}`, {
-    method: 'POST',
-    body: 'MZ',
-    headers: { ...member, __RequestVerificationToken: await token(sim, member) },
-  });
+  const form = new FormData();
+  form.append('regardingEntityLogicalName', 'x_case');
+  form.append('regardingEntityId', CASE);
+  form.append('files', new Blob(['MZ']), name);
+  form.append('overwrite', 'true');
+  form.append('__RequestVerificationToken', await token(sim, member));
+  return fetch(`${sim.url}/_services/sharepoint-addfiles/${CASE}`, { method: 'POST', body: form, headers: member });
 };
 
 test('a document upload of payload.exe is refused by the Dataverse default blocked extensions; the setting stays overridable', async (t) => {
   const blocked = await upload(await host(t, {}), 'payload.exe');
   assert.equal(blocked.status, 400);
-  assert.equal((await blocked.json()).error.code, 'AttachmentTypeBlocked');
+  assert.equal((await blocked.json()).Message, 'Attachment extension is blocked by the organization.');
   const overridden = await host(t, { initial: { simulator: { platformOverrides: { BlockedAttachments: 'bat' } } } });
-  assert.equal((await upload(overridden, 'payload.exe')).status, 201);
+  assert.equal((await upload(overridden, 'payload.exe')).status, 204);
   assert.equal((await upload(overridden, 'payload.bat')).status, 400);
 });
 
@@ -322,7 +324,7 @@ test('a modern list with actions the local list does not serve is a blocking mod
       id: 'l1',
       metadata: {
         adx_settings: JSON.stringify({
-          ItemActions: [{ Type: 'CrmEntityFormView-DeleteAction' }, { Type: 'CrmEntityFormView-WorkflowAction' }],
+          ItemActions: [{ Type: 'CrmEntityFormView-DeleteAction' }, { Type: 'CrmEntityFormView-AssociateAction' }],
         }),
       },
     },
@@ -332,5 +334,5 @@ test('a modern list with actions the local list does not serve is a blocking mod
     (entry) => entry.code === 'MODERN_LIST_FEATURES_UNSERVED',
   );
   assert.deepEqual(unserved.requirement, { id: 'portal:modern-list/Items', status: 'unsupported', level: 'contract' });
-  assert.deepEqual(unserved.items, ['CrmEntityFormView-WorkflowAction']);
+  assert.deepEqual(unserved.items, ['CrmEntityFormView-AssociateAction']);
 });

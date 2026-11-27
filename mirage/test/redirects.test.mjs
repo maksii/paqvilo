@@ -1,3 +1,4 @@
+// @test-kind unproven: routing, redirect and response-header tests written before test kinds; they encode the local model of the platform's routing unless a test names its evidence
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -111,6 +112,7 @@ async function simulator(t, overrides = {}) {
   return { app, dir, get, signInAs, signOut, settings };
 }
 
+// @test-kind contract: an evidenced observation (observed.redirect301) changes only the record redirect responses
 test('an evidenced 301 redirect observation changes record responses, preserving source and canonical redirects', async (t) => {
   const dir = await exportDir(t);
   const portal = await importPortal(dir);
@@ -139,6 +141,7 @@ test('an evidenced 301 redirect observation changes record responses, preserving
   assert.equal(resolveUnmatchedRoute(app.portal, new URL('/unobserved-status', app.url)).status, 307);
 });
 
+// @test-kind contract: an evidenced observation (observed.siteMarkerRedirect) applies only to marker-only redirects
 test('observed marker-only redirect failure preserves higher-priority URL and page targets', async (t) => {
   const dir = await exportDir(t);
   const app = await createSimulator({
@@ -215,6 +218,7 @@ test('unresolved paths follow redirects and the canonical slash before Page Not 
   assert.equal(servicePages(portal).notFound, null);
 });
 
+// @test-kind security: a page the visitor may not read answers the sign-in redirect or the Access Denied page, never the page
 test('denied pages redirect anonymous visitors to the absolute language sign-in URL with the Access Denied page', async (t) => {
   const portal = await importPortal(await exportDir(t));
   assert.equal(portal.language.code, 'en-US');
@@ -355,6 +359,7 @@ test('a configured LoginPath is the sign-in path: its casing in both hops, its p
   assert.ok((await posted.text()).includes('Choose an active local persona to sign in.'));
 });
 
+// @test-kind contract: an evidenced observation (observed.loginPath) applies only when the export sets no LoginPath
 test('an observed sign-in path applies when the export sets no LoginPath; an exported LoginPath wins', async (t) => {
   const observed = { loginPath: '/SignIn', evidence: 'docs/runtime-evidence.md' };
   const dir = await exportDir(t);
@@ -424,6 +429,7 @@ test('an observed sign-in path applies when the export sets no LoginPath; an exp
   );
 });
 
+// @test-kind unproven+security: the local model of the error pages and routing redirects; a page the visitor may not read is never rendered
 test('the runtime renders Page Not Found (404), Access Denied (403), sign-in redirects and routing redirects', async (t) => {
   const { app, get, signInAs, signOut, settings } = await simulator(t);
   const missing = await get('/no-such-route/');
@@ -516,6 +522,7 @@ test('language prefixes, the Knowledge Article route and repeated slashes resolv
   assert.equal(collapsed.headers.get('location'), '/new-name/child/?id=7');
 });
 
+// @test-kind unproven+observation: the local model of page and web file headers; the HTTP/Access-Control-* settings are sent verbatim as hosted session F5 sent them on every response (captures cors-private-a and cors-private-b)
 test('portal responses carry only HTTP/* site-setting headers; web files use the record disposition and platform caching', async (t) => {
   const css = 'body { color: teal; }';
   const { get, signInAs, settings } = await simulator(t, {
@@ -523,7 +530,7 @@ test('portal responses carry only HTTP/* site-setting headers; web files use the
       '- adx_sitesettingid: s1\n  adx_name: HTTP/X-Frame-Options\n  adx_value: DENY',
       "- adx_sitesettingid: s2\n  adx_name: HTTP/Content-Security-Policy\n  adx_value: \"default-src 'self'; object-src 'none'; connect-src 'self' https://*.powerappsportals.com\"",
       '- adx_sitesettingid: s3\n  adx_name: HTTP/Content-Security-Policy/Enabled\n  adx_value: "true"',
-      // Second: Referrer-Policy from its site setting; CORS settings are not echoed on loopback.
+      // Second: Referrer-Policy from its site setting; CORS settings are sent verbatim (hosted session F5).
       '- adx_sitesettingid: s4\n  adx_name: HTTP/Referrer-Policy\n  adx_value: strict-origin-when-cross-origin',
       '- adx_sitesettingid: s5\n  adx_name: HTTP/Access-Control-Allow-Origin\n  adx_value: "*"',
       '- adx_sitesettingid: s6\n  adx_name: HTTP/SameSite/Default\n  adx_value: lax',
@@ -545,8 +552,8 @@ test('portal responses carry only HTTP/* site-setting headers; web files use the
     home.headers.get('content-security-policy'),
     "default-src 'self'; object-src 'none'; connect-src 'self' https://*.powerappsportals.com",
   );
-  for (const absent of ['x-content-type-options', 'access-control-allow-origin', 'samesite'])
-    assert.equal(home.headers.get(absent), null, absent);
+  assert.equal(home.headers.get('access-control-allow-origin'), '*');
+  for (const absent of ['x-content-type-options', 'samesite']) assert.equal(home.headers.get(absent), null, absent);
   // Web files: charset on every type, the record's disposition (none = inline), the
   // attachment file name, unquoted base64 SHA-256 ETag, Vary, no Last-Modified, and 304.
   const file = await get('/site.css');
@@ -743,6 +750,7 @@ test('headers follow the response kind: pages, web files and the token fragment,
   );
 });
 
+// @test-kind unproven+observation: the local model of the site header settings; HTTP/Access-Control-* values are echoed as hosted session F5 sent them (captures cors-private-a and cors-private-b)
 test('site header settings: one header per HTTP/* setting, nonce policies and conditional requests', () => {
   const portal = (settings) => ({ settings });
   assert.deepEqual(siteHeaders(portal({})), { 'x-frame-options': 'SAMEORIGIN' });
@@ -768,6 +776,7 @@ test('site header settings: one header per HTTP/* setting, nonce policies and co
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'strict-origin-when-cross-origin',
       'permissions-policy': 'camera=()',
+      'access-control-allow-credentials': 'true',
       'x-frame-options': 'SAMEORIGIN',
     },
   );

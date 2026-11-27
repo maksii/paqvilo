@@ -1,3 +1,4 @@
+// @test-kind contract: selectable observed Web API response contracts on a synthetic loopback probe site; no recorded case is replayed
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -66,7 +67,7 @@ test('observed API errors retain rejection and atomicity without contacting boun
   );
   await fs.writeFile(
     path.join(source, 'sitesetting.yml'),
-    '- adx_name: Webapi/probe/enabled\n  adx_value: "true"\n- adx_name: Webapi/probe/fields\n  adx_value: "probeid,title,category,parentid"\n- adx_name: Webapi/error/innererror\n  adx_value: "true"\n',
+    '- adx_name: Webapi/probe/enabled\n  adx_value: "true"\n- adx_name: Webapi/probe/fields\n  adx_value: "probeid,title,category,parentid,_parentid_value"\n- adx_name: Webapi/error/innererror\n  adx_value: "true"\n',
   );
   const app = await createSimulator({
     sourceDir: source,

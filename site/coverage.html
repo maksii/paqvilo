@@ -130,7 +130,7 @@
               <tr>
                 <th scope="row">PCF code components</th>
                 <td><span class="mode m-local">Runs locally</span><span class="mode m-sim">Simulated host</span></td>
-                <td>Your built control on portal pages and forms, bound to local records.</td>
+                <td>Your built control on portal pages, forms, lists and subgrids, bound to local records.</td>
                 <td><a href="#pcf">PCF ↓</a></td>
               </tr>
               <tr>
@@ -326,8 +326,8 @@
             <p class="sub">Boundaries</p>
             <ul>
               <li>
-                Original assemblies load on Windows x64 with the .NET Framework compiler and the Dataverse SDK
-                assemblies. On other systems use handlers or mocks.
+                Original assemblies load with the Dataverse SDK assemblies: on Windows x64 with the .NET Framework
+                compiler, on macOS and Linux with the .NET 10 SDK or later. Without either, use handlers or mocks.
               </li>
               <li>The plug-in host is not a sandbox: your assembly runs with your own user's rights.</li>
               <li>
@@ -477,22 +477,29 @@
             <p class="sub">You can</p>
             <ul>
               <li>
-                Mount standard field controls on portal pages (<code>{% codecomponent %}</code>) and portal form fields.
+                Mount field and dataset controls on portal pages (<code>{% codecomponent %}</code>), basic and multistep
+                form fields, lists and subgrids, with the context the Power Pages host gives them.
               </li>
               <li>
                 Mount field controls, dataset controls on subgrids and virtual (React) controls on model-driven forms.
               </li>
               <li>Mount scalar controls in the canvas player (<code>canvas.codeComponents: true</code>).</li>
-              <li>Have <code>context.webAPI</code> read and write local records on portal pages and forms.</li>
+              <li>
+                Have <code>context.webAPI</code> read and write local records, and save form fields through the form and
+                list rows through the list.
+              </li>
             </ul>
           </div>
           <div class="no">
             <p class="sub">Boundaries</p>
             <ul>
               <li>Production bundles from your Solution; Paqvilo does not build the control.</li>
-              <li>Portal pages host no virtual controls and no PCF in native lists or subgrids.</li>
+              <li>
+                Portal pages follow the Power Pages host: unquoted control names, no lookup, file or image field
+                controls, and no data set bound by the Liquid tag unless you select the local view binding.
+              </li>
               <li>Model-driven dataset controls take one sort column and one AND filter group.</li>
-              <li>Virtual controls need the platform libraries supplied by your project.</li>
+              <li>React and virtual controls need the React, ReactDOM and Fluent UI files supplied by your project.</li>
             </ul>
           </div>
           <p class="cap-links">
@@ -717,8 +724,9 @@
             Dataverse actions use local data; for the rest you supply a provider or a mock.
           </li>
           <li>
-            <strong>Windows and Linux; C# on Windows.</strong> The toolkit needs Node.js 26.13.1 or later in the 26.x
-            line and Edge or Chrome. Original .NET Framework plug-in assemblies load on Windows x64 only.
+            <strong>Windows, macOS and Linux; C# debugging on Windows.</strong> The toolkit needs Node.js 26.13.1 or
+            later in the 26.x line and Edge or Chrome. Original .NET Framework plug-in assemblies load on Windows x64,
+            or on macOS and Linux with the .NET 10 SDK or later.
           </li>
           <li>
             <strong>Deployment and licensing are unchanged.</strong> Mirage and Lense do not deploy or host production

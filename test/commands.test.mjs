@@ -581,6 +581,9 @@ test(
     assert.equal(externalReport.inEffect.browser.userDataDir, path.resolve('test-browser-root'));
     assert.equal(externalReport.inEffect.browser.profileDirectory, 'Profile 1');
     assert.equal(externalReport.inEffect.browser.profileInfo.userDataDir, path.resolve('test-browser-root'));
+    // list reports a selection that dev could not launch, and nothing for one it could.
+    assert.match(externalReport.inEffect.browser.profileProblem, /^Existing browser user-data directory not found/);
+    assert.equal(report.inEffect.browser.profileProblem, null);
     assert.equal(attach.status, 0, attach.stderr);
     assert.equal(JSON.parse(attach.stdout).inEffect.browser.mode, 'attach');
     assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');

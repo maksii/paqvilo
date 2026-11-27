@@ -254,15 +254,15 @@ test('two forms with duplicate ids, composite controls and quick views retain th
   };
   const { identify } = await fixture(
     t,
-    `<div data-formid="A">${field}</div><div data-formid="B">${field}</div><input id="foo_name">`,
+    `<div data-form-layout="{&quot;Id&quot;:&quot;A&quot;}">${field}</div><div data-form-layout="{&quot;Id&quot;:&quot;B&quot;}">${field}</div><input id="foo_name">`,
     report,
   );
   for (const selector of ['label', 'input#name', 'input#parentid_name', 'input#date_datepicker_description']) {
-    const result = await identify(`[data-formid=B] ${selector}`);
+    const result = await identify(`[data-form-layout*=B] ${selector}`);
     assert.equal(result.forms[0].id, 'B');
     assert.equal(result.fields.length, 1);
   }
-  const quick = await identify('[data-formid=A] #Q');
+  const quick = await identify('[data-form-layout*=A] #Q');
   assert.equal(quick.native.length, 1);
   assert.equal(quick.native[0].formId, 'A');
   assert.deepEqual((await identify('#foo_name')).fields, []);
@@ -279,11 +279,11 @@ test('selected duplicate labels refresh when their locally associated control bi
   };
   const { page } = await fixture(
     t,
-    '<form data-formid="A"><label for="name">First</label><input id="name"></form><form data-formid="B"><label for="name">Second</label><input id="name"></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;A&quot;}"><table class="section"><tbody><tr><td class="cell"><label for="name">First</label><input id="name"></td></tr></tbody></table></form><form data-form-layout="{&quot;Id&quot;:&quot;B&quot;}"><table class="section"><tbody><tr><td class="cell"><label for="name">Second</label><input id="name"></td></tr></tbody></table></form>',
     report,
   );
   await page.evaluate(() =>
-    document.getElementById('paqvilo-xray').__px.select(document.querySelector('[data-formid=B] label')),
+    document.getElementById('paqvilo-xray').__px.select(document.querySelector('[data-form-layout*=B] label')),
   );
   const binding = page.locator(
     '#paqvilo-xray [data-evidence-role=owner], #paqvilo-xray [data-evidence-role=alternatives]',
@@ -291,7 +291,7 @@ test('selected duplicate labels refresh when their locally associated control bi
   await page.waitForFunction(
     () => document.getElementById('paqvilo-xray').__px.selection().evidence.owner.component?.field === 'name',
   );
-  await page.locator('[data-formid=B] input').evaluate((node) => node.setAttribute('data-field', 'other'));
+  await page.locator('[data-form-layout*=B] input').evaluate((node) => node.setAttribute('data-attribute', 'other'));
   await page.waitForFunction(
     () => document.getElementById('paqvilo-xray').__px.selection().evidence.owner.component?.field === 'other',
   );
@@ -455,7 +455,7 @@ test('composite controls require local evidence, handle WebForms names, and neve
   };
   const { identify } = await fixture(
     t,
-    '<form data-formid="A"><div class="control"><input id="parentid_name"></div><div class="cell"><span id="choice"><input id="choice_1" type="radio" name="ctl00$ContentContainer$choice"></span></div><div class="cell"><input type="hidden" id="date"><input id="date_timepicker_description"></div></form><div class="cell"><input id="parentid_name_unrelated"></div>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;A&quot;}"><div class="control"><input id="parentid_name"></div><div class="cell"><span id="choice"><input id="choice_1" type="radio" name="ctl00$ContentContainer$choice"></span></div><div class="cell"><input type="hidden" id="date"><input id="date_timepicker_description"></div></form><div class="cell"><input id="parentid_name_unrelated"></div>',
     report,
   );
   assert.deepEqual((await identify('.control input')).fields, []);
@@ -476,19 +476,19 @@ test('grid table boundaries retain the native control owner and lookup modal met
     ]),
   };
   const markup = (id) =>
-    `<div data-formid="${id}"><div id="Q"><div data-selected-view="view"><div role="dialog"><h2>Child modal</h2></div></div></div><div class="lookup-modal"><div data-lookup-datafieldname="lookup"><div role="dialog"><h3>Find record</h3></div></div></div></div>`;
+    `<div data-form-layout="{&quot;Id&quot;:&quot;${id}&quot;}"><div id="Q"><div data-selected-view="view"><div role="dialog"><h2>Child modal</h2></div></div></div><div class="lookup-modal"><div data-lookup-datafieldname="lookup"><div role="dialog"><h3>Find record</h3></div></div></div></div>`;
   const { page, identify } = await fixture(t, markup('A') + markup('B'), report);
-  const grid = await identify('[data-formid=B] h2');
+  const grid = await identify('[data-form-layout*=B] h2');
   assert.equal(grid.native.length, 1);
   assert.equal(grid.native[0].formId, 'B');
   assert.deepEqual(grid.forms, []);
-  const lookup = await identify('[data-formid=B] h3');
+  const lookup = await identify('[data-form-layout*=B] h3');
   assert.equal(lookup.fields[0].name, 'lookup');
   assert.equal(lookup.native.length, 1);
   assert.equal(lookup.native[0].formId, 'B');
-  await page.locator('[data-formid=B]').evaluate((node) => {
+  await page.locator('[data-form-layout*=B]').evaluate((node) => {
     node.id = 'layout-form';
-    node.removeAttribute('data-formid');
+    node.removeAttribute('data-form-layout');
     node.setAttribute('data-form-layout', JSON.stringify({ Id: 'B', EntityName: 'parent' }));
   });
   assert.equal((await identify('#layout-form h2')).native[0].formId, 'B');
@@ -566,6 +566,55 @@ test('a thousand indexed sources retain late snippets, expose truncation and ide
   assert.match(content, /logo.svg/);
   assert.match(content, /Search limits/);
   assert.doesNotMatch(content, /ignored=value/);
+});
+
+// @test-kind contract: an element that loads a file a code component manifest declares names the component as owner and the file as its source
+test('an element loading a declared code component file names the component and opens that file', async (t) => {
+  const guid = '0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e';
+  const manifest = {
+    id: 'ref-manifest',
+    ref: 'controls/fx_Invented.Widget/ControlManifest.xml',
+    componentKey: 'pcf:fx_invented.widget',
+    relationship: 'definition',
+    sourceRevision: 'rev-1',
+    contentRevision: 'c-1',
+  };
+  const file = { ...manifest, id: 'ref-css', ref: 'controls/fx_Invented.Widget/css/widget.css', relationship: 'file' };
+  const { identify } = await fixture(t, `<link id="sheet" rel="stylesheet" href="/_pcfwebresource/${guid}">`, {
+    portalSources: [manifest, file],
+    assets: [
+      {
+        name: 'fx_Invented.Widget/css/widget.css',
+        url: '/_pcfwebresource/' + guid,
+        kind: 'stylesheet',
+        sourceFile: 'C:\\invented\\export\\controls\\fx_Invented.Widget\\css\\widget.css',
+        evidence: 'pcf-declaration',
+        componentKey: 'pcf:fx_invented.widget',
+        schemaName: 'fx_Invented.Widget',
+        resourceKind: 'css',
+        resourcePath: 'css/widget.css',
+        manifestFile: 'C:\\invented\\export\\controls\\fx_Invented.Widget\\ControlManifest.xml',
+      },
+    ],
+  });
+  const row = await identify('#sheet');
+  assert.equal(row.evidence.owner.status, 'exact');
+  assert.deepEqual(
+    [row.evidence.owner.component.kind, row.evidence.owner.component.key, row.evidence.owner.component.name],
+    ['pcf', 'pcf:fx_invented.widget', 'fx_Invented.Widget'],
+  );
+  assert.equal(row.evidence.source.refs[0]?.ref, file.ref, 'the loaded file leads the component files');
+});
+
+// @test-kind contract: the rendered-page reader keeps its first 300 same-origin files and says it stopped there
+test('the rendered-page reader says when a page loads more than 300 of its own files', async (t) => {
+  const images = (count) => Array.from({ length: count }, (_, index) => `<img src="/image-${index}.png">`).join('');
+  const { page } = await fixture(t, '<!doctype html>' + images(300) + '<img src="http://other.invalid/foreign.png">');
+  const exact = await page.evaluate(inspectRenderedPage);
+  assert.deepEqual([exact.assets.length, exact.assetsTruncated], [300, undefined], 'a foreign file is not counted');
+  await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<img src="/image-extra.png">'));
+  const over = await page.evaluate(inspectRenderedPage);
+  assert.deepEqual([over.assets.length, over.assetsTruncated], [300, true]);
 });
 
 // @test-kind contract: Web Animations started after enabling X-ray and element resizes move the selection outline, and disabling releases the animate hook
@@ -704,7 +753,7 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   };
   const { page } = await fixture(
     t,
-    '<form data-formid="F"><div data-pcf-schema="fx.Widget"><button id="action" onclick="window.used=true" type="button">Use</button></div></form><p id="plain">Unrelated</p>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}"><div data-pcf-schema="fx.Widget"><button id="action" onclick="window.used=true" type="button">Use</button></div></form><p id="plain">Unrelated</p>',
     report,
   );
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('action')));
@@ -772,16 +821,25 @@ test('native PCF selection requires a rendered host rather than a configured col
       },
     ],
   };
-  const { page, identify } = await fixture(t, '<form data-formid="F"><input id="title"></form>', report);
+  const { page, identify } = await fixture(
+    t,
+    '<form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}"><input id="title"></form>',
+    report,
+  );
   assert.equal((await identify('#title')).evidence.owner.status, 'unavailable');
   assert.deepEqual((await identify('#title')).matches, []);
   assert.deepEqual((await identify('#title')).fields, []);
   await page.evaluate(() => {
+    // A code component host as the portal renders it: <column>_Container holding PcfControlConfig_<column>.
     const input = document.getElementById('title'),
-      host = document.createElement('div');
-    host.dataset.pcfNativeField = 'title';
+      host = document.createElement('span'),
+      config = document.createElement('span');
+    host.id = 'title_Container';
+    config.id = 'PcfControlConfig_title';
+    config.setAttribute('data-pcf-control', '{}');
+    config.setAttribute('pcf-controlcontext', JSON.stringify({ ControlId: 'title', ControlName: 'fx.Editor' }));
     input.before(host);
-    host.append(input);
+    host.append(config, input);
   });
   assert.notEqual((await identify('#title')).evidence.owner.status, 'exact');
   assert.ok((await identify('#title')).evidence.candidates.some((item) => item.component?.name === 'fx.Editor'));
@@ -880,7 +938,7 @@ for (const kind of ['template', 'snippet'])
     for (const [label, markup] of [
       ['class', '<div class="alert alert-info notification">Notice</div>'],
       ['id', '<div id="notification" class="alert alert-info">Notice</div>'],
-      ['attribute', '<div data-entityname="notification" class="alert alert-info">Notice</div>'],
+      ['attribute', '<div data-paqvilo-table="notification" class="alert alert-info">Notice</div>'],
     ]) {
       const report = {
         elementSources: [
@@ -894,10 +952,10 @@ for (const kind of ['template', 'snippet'])
           const node = document.querySelector('.alert');
           node.className = 'alert alert-info';
           node.removeAttribute('id');
-          node.removeAttribute('data-entityname');
+          node.removeAttribute('data-paqvilo-table');
           if (label === 'class') node.classList.add('notification');
           else if (label === 'id') node.id = 'notification';
-          else node.dataset.entityname = 'notification';
+          else node.dataset.paqviloTable = 'notification';
           document.getElementById('paqvilo-xray').__px.update(data, report);
         },
         { data, report, label },
@@ -1094,7 +1152,7 @@ test('snippet modifier classes on the nearest container resolve shared descendan
 test('date labels use their data-entity container even without an identified form', async (t) => {
   const { identify } = await fixture(
     t,
-    '<div data-entityname="item"><div class="cell"><div><label id="c_label" for="c">Date</label></div><input type="hidden" class="datetime" id="c"><input id="c_datepicker_description"></div></div>',
+    '<div data-paqvilo-table="item"><div class="cell"><div><label id="c_label" for="c">Date</label></div><input type="hidden" class="datetime" id="c"><input id="c_datepicker_description"></div></div>',
     {
       columns: [
         { entity: 'item', name: 'c' },
@@ -1108,7 +1166,7 @@ test('date labels use their data-entity container even without an identified for
 test('date display controls and labels resolve only with a same-cell base input and form context', async (t) => {
   const { identify } = await fixture(
     t,
-    '<form data-formid="F"><div class="cell"><label for="c_datepicker_description">Date</label><input type="text" class="datetime" id="c" style="display:none"><input id="c_datepicker_description"></div></form><input id="foo_datepicker_description">',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}"><div class="cell"><label for="c_datepicker_description">Date</label><input type="text" class="datetime" id="c" style="display:none"><input id="c_datepicker_description"></div></form><input id="foo_datepicker_description">',
     {
       forms: [{ id: 'F', name: 'Form', entity: 'item' }],
       columns: [
@@ -1138,11 +1196,12 @@ test('idless list grids retain the sole referenced list and view; shared views s
     assert.equal(row.lists[0].name, 'List');
     assert.notEqual(row.evidence.owner.component?.kind, 'list');
     assert.equal(row.views[0].id, 'V');
-    assert.ok(row.evidence.enclosing.some((item) => item.component?.name === 'List' && item.status === 'candidate'));
+    // The page references this one list and no other grid shows its view: the grid is that list's (B10).
+    assert.ok(row.evidence.enclosing.some((item) => item.component?.name === 'List' && item.status === 'exact'));
   }
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('th')));
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Contained in/);
-  await page.locator('.entitylist').evaluate((node) => node.setAttribute('data-listid', 'L'));
+  await page.locator('.entitylist').evaluate((node) => (node.id = 'EntityListControl_l'));
   assert.ok(
     (await identify('th')).evidence.enclosing.some(
       (item) => item.component?.kind === 'list' && item.component.id === 'L' && item.status === 'exact',
@@ -1155,7 +1214,7 @@ test('idless list grids retain the sole referenced list and view; shared views s
       .querySelector('[data-evidence-role=enclosing]')
       ?.textContent.includes('List'),
   );
-  await page.locator('.entitylist').evaluate((node) => node.removeAttribute('data-listid'));
+  await page.locator('.entitylist').evaluate((node) => node.removeAttribute('id'));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { ...report, components: [list, { ...list, recordId: 'L2', name: 'Second list' }] },
@@ -1203,7 +1262,7 @@ test('explicit advanced-form and list IDs use export inventory without adding pa
   };
   const { identify } = await fixture(
     t,
-    '<div id="WebFormControl_wizard"><h2>Wizard</h2></div><div data-listid="L"><label>List filter</label></div><div class="entitylist"><p>Unrelated grid</p></div>',
+    '<div id="WebFormControl_wizard"><h2>Wizard</h2></div><div id="EntityListControl_l"><label>List filter</label></div><div class="entitylist"><p>Unrelated grid</p></div>',
     { componentIndex },
   );
   assertComponentContext(await identify('h2'), 'Wizard');
@@ -1226,14 +1285,33 @@ test('viewport candidates survive early offscreen matches and limit notes appear
   await page.waitForFunction(
     () => document.getElementById('paqvilo-xray').shadowRoot.querySelectorAll('.mark').length === 20,
   );
-  assert.match(await page.locator('#paqvilo-xray .legend').innerText(), /Only the first 800 elements are outlined/);
-  await page.locator('.off').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  // Limits are said for what is in view (E16): 2,000 matches outside the view leave nothing out of this one.
+  assert.doesNotMatch(await page.locator('#paqvilo-xray .legend').innerText(), /800|250|not searched/);
+  // More than 800 in view: the legend says so, specifically.
+  await page.evaluate(() => {
+    const box = document.createElement('div');
+    box.innerHTML = '<b class="visible" style="width:6px;height:6px;margin:0"></b>'.repeat(900);
+    document.body.prepend(box);
+  });
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .shadowRoot.querySelector('.legend')
+      .textContent.includes('More than 800 elements in view: only 800 are searched for outlines'),
+  );
+  // Evidence is read for a bounded number of elements per frame: the drawing cap is reached once enough are read.
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .shadowRoot.querySelector('.legend')
+      .textContent.includes('Only 250 outlines are drawn in this view: scroll or zoom in for the rest'),
+  );
+  await page.evaluate(() => document.body.firstElementChild.remove());
   await page.waitForFunction(
     () =>
-      !document
-        .getElementById('paqvilo-xray')
-        .shadowRoot.querySelector('.legend')
-        .textContent.includes('Only the first 800 elements are outlined'),
+      !/More than 800|Only 250/.test(
+        document.getElementById('paqvilo-xray').shadowRoot.querySelector('.legend').textContent,
+      ),
   );
   assert.equal(await page.locator('#paqvilo-xray .mark').count(), 20);
 });
@@ -1414,7 +1492,7 @@ test('dynamic modal and quick-view frame identities merge complete export source
   assert.doesNotMatch(modal.html, /private/);
   assert.equal((await inspect('quick')).fieldContext, 'other.demo_code');
   await page.evaluate(() =>
-    document.getElementById('quick').contentDocument.querySelector('input').setAttribute('data-entityname', 'item'),
+    document.getElementById('quick').contentDocument.querySelector('input').setAttribute('data-paqvilo-table', 'item'),
   );
   const conflict = await page.evaluate(
     () =>
@@ -1428,7 +1506,7 @@ test('dynamic modal and quick-view frame identities merge complete export source
 test('rich-text attribute hosts preserve field and form provenance through repeated nested editor IDs', async (t) => {
   const { page, identify, data } = await fixture(
     t,
-    '<form data-formid="F"><div id="demo_notes_Container"><div id="demo_notes_ControlView"><iframe id="designer-one"></iframe></div></div><div id="demo_summary_Container"><iframe id="designer-two"></iframe></div></form><div id="demo_notes_Container"><iframe id="unbound-editor"></iframe></div>',
+    '<form id="EntityFormControl_f"><div id="demo_notes_Container"><div id="demo_notes_ControlView"><iframe id="designer-one"></iframe></div></div><div id="demo_summary_Container"><iframe id="designer-two"></iframe></div></form><div id="demo_notes_Container"><iframe id="unbound-editor"></iframe></div>',
     {
       forms: [{ id: 'F', name: 'Native form', entity: 'item', formXml: { id: 'XML', ref: 'Form.xml' } }],
       columns: [
@@ -1524,7 +1602,7 @@ test('current frame navigation supersedes stale src declarations while explicit 
     doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
   });
   assertComponentContext(await identify('#frame'), 'Second');
-  await page.locator('#frame').evaluate((node) => node.setAttribute('data-formid', 'F'));
+  await page.locator('#frame').evaluate((node) => node.setAttribute('data-form-layout', JSON.stringify({ Id: 'F' })));
   const explicitFrame = await identify('#frame');
   assert.equal(
     explicitFrame.evidence.owner.status,
@@ -1534,7 +1612,7 @@ test('current frame navigation supersedes stale src declarations while explicit 
   assert.equal(explicitFrame.evidence.owner.component.id, 'F');
   assert.ok(explicitFrame.evidence.facts.some((fact) => fact.id === 'legacy-context-conflict'));
   await page.locator('#frame').evaluate((node) => {
-    node.removeAttribute('data-formid');
+    node.removeAttribute('data-form-layout');
     node.contentDocument.defaultView.history.replaceState(null, '', '/form');
   });
   assert.deepEqual((await identify('#frame')).forms, [], 'an old src is not current form evidence after navigation');
@@ -1545,7 +1623,7 @@ test('rich-text editor internal column-like IDs cannot replace host attribution 
     t,
     '<div style="height:1px">' +
       '<i></i>'.repeat(900) +
-      '</div><form data-formid="F"><div id="demo_notes_Container"><iframe id="designer"></iframe></div></form>',
+      '</div><form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}"><div id="demo_notes_Container"><iframe id="designer"></iframe></div></form>',
     {
       forms: [{ id: 'F', name: 'Native form', entity: 'item' }],
       columns: [
@@ -1560,7 +1638,7 @@ test('rich-text editor internal column-like IDs cannot replace host attribution 
     doc.body.innerHTML = '<textarea id="editor" disabled></textarea>';
     const api = document.getElementById('paqvilo-xray').__px;
     const before = api.identify(doc.querySelector('textarea'));
-    doc.querySelector('textarea').setAttribute('data-fieldname', 'editor');
+    doc.querySelector('textarea').setAttribute('data-attribute', 'editor');
     const conflicting = api.identify(doc.querySelector('textarea'));
     return {
       fieldContext: before.b.fields.map((field) => field.entity + '.' + field.name).join(','),
@@ -1661,7 +1739,7 @@ test('contradictory frame URL declarations remain context disagreement without o
 test('an independently identified inner form prevents its outer rich-text host from taking column ownership', async (t) => {
   const { page } = await fixture(
     t,
-    '<form data-formid="F"><div id="demo_notes_Container"><iframe id="inner" src="/form?formid=Q"></iframe></div></form>',
+    '<form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}"><div id="demo_notes_Container"><iframe id="inner" src="/form?formid=Q"></iframe></div></form>',
     {
       componentIndex: {
         forms: [
@@ -1769,7 +1847,8 @@ test('serialized selected fields follow the independently exact column when lega
   });
   const identity = await page.evaluate(() => {
     const inputDocument = document.getElementById('frame').contentDocument;
-    inputDocument.body.innerHTML = '<form data-formid="F" data-entityname="item"><input id="demo_code"></form>';
+    inputDocument.body.innerHTML =
+      '<form data-form-layout="{&quot;Id&quot;:&quot;F&quot;}" data-paqvilo-table="item"><table class="section"><tbody><tr><td class="cell"><div class="control" data-logical-name="demo_code"><input id="demo_code"></div></td></tr></tbody></table></form>';
     const tools = document.getElementById('paqvilo-xray').__px;
     const node = inputDocument.querySelector('input');
     const observed = tools.identify(node);

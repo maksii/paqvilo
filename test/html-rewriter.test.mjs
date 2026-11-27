@@ -342,6 +342,15 @@ test('disabled previews do not report unchanged sources or newline-only differen
   assert.deepEqual(r.unsupported, []);
 });
 
+test('a Server Logic JavaScript edit is surfaced as a deployment-only change', () => {
+  const rel = 'server-logic/calculator/calculator.js';
+  fx.write(rel, 'function get() { return 1; }');
+  fx.commit();
+  fx.write(rel, 'function get() { return 2; }');
+  const item = rewriter().unsupported.find((item) => item.rel === rel);
+  assert.match(item?.reason ?? '', /Server logic runs on the Power Pages server/);
+});
+
 test('unresolved page routes report edited sources even with previews disabled', () => {
   fx.write(
     'web-pages/about/About.webpage.yml',

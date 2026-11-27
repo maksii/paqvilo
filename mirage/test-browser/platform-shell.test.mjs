@@ -5,6 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { once } from 'node:events';
+import { createServer, request as httpRequest } from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { signedInSimulatorPage } from './shared-browser.mjs';
@@ -33,7 +35,7 @@ test('code component server form preserves hosted nested-form parsing', async (t
 
 // Synthetic portal: header with a dropdown menu, footer followed by an authored cookie
 // banner, a plain page and a basic form page.
-async function portalFixture(t, { settings = [], home = null } = {}) {
+async function portalFixture(t, { settings = [], home = null, pairedBrowserTokens = false, signIn = true } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-shell-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const jquery = await fs.readFile(
@@ -67,6 +69,7 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
       'adx_webfileid: jquery\nadx_name: jquery.min.js\nadx_partialurl: jquery.min.js\nadx_parentpageid: home\nfilename: jquery.min.js',
   };
   if (home) files['PlainContent.webtemplate.source.html'] = home;
+  if (pairedBrowserTokens) files['webrole.yml'] = '- adx_webroleid: member\n  adx_name: Member';
   if (settings.length)
     files['sitesetting.yml'] = settings
       .map(
@@ -88,6 +91,7 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
       mode: 'local',
       pageMode: 'local',
       identity: { id: CONTACT, contactId: CONTACT, roles: ['Member'] },
+      ...(pairedBrowserTokens ? { contactRoles: [{ contactId: CONTACT, roleId: 'member' }] } : {}),
       live: { origin: null },
       endpoints: [],
       componentSchemas: {
@@ -102,12 +106,198 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
       },
     },
   };
-  const { app, page, errors } = await signedInSimulatorPage(t, browser, { dir, initial, contact: CONTACT });
+  const { app, page, errors } = await signedInSimulatorPage(t, browser, {
+    dir,
+    initial,
+    contact: signIn ? CONTACT : null,
+    ...(pairedBrowserTokens ? { identityProvider: { pairedBrowserTokens } } : {}),
+  });
   const requests = [];
   page.on('request', (request) => requests.push(`${request.method()} ${request.url().replace(app.url, '')}`));
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.continue() : route.abort()));
   return { app, page, errors, requests };
 }
+
+const postbackToken = (page) => page.evaluate(() => window.__portalSimulation?.postbackToken);
+const isTokenFragment = (request) => /(?:\/_layout\/tokenhtml|\/Layout\/GetAntiForgeryToken)/i.test(request);
+const isBindingCookie = (cookie) => cookie.name.includes('-request-binding-');
+
+async function directNativeSubmit(page, name) {
+  await page.locator('#fullname').fill(name);
+  const [response] = await Promise.all([
+    page.waitForResponse((item) => item.request().method() === 'POST' && new URL(item.url()).pathname === '/form/'),
+    page.waitForEvent(
+      'framenavigated',
+      (frame) => frame === page.mainFrame() && new URL(frame.url()).pathname === '/form/',
+    ),
+    page.evaluate(() => {
+      const form = document.getElementById('liquid_form');
+      form.elements.namedItem('__EVENTTARGET').value = form.querySelector('#InsertButton').name;
+      HTMLFormElement.prototype.submit.call(form);
+    }),
+  ]);
+  await page.waitForLoadState('domcontentloaded');
+  return response;
+}
+
+// @test-kind security+contract+observation: the Chromium session binds issued tokens to actual browser navigation and native ViewState; the anti-forgery cookie is Secure, HttpOnly and SameSite=Lax as hosted session F4 set it (paqvilo-developer hosted-f4 swap runs a and b).
+test('paired Chromium token survives reload and the first native post follows portal sign-in', async (t) => {
+  const { app, page } = await portalFixture(t, { pairedBrowserTokens: true, signIn: false });
+  const fragment = (url) => isTokenFragment(url.pathname);
+  let fragmentResponses = 0;
+  page.on('response', (response) => {
+    if (response.ok() && fragment(new URL(response.url()))) fragmentResponses++;
+  });
+  await page.route(fragment, (route) => route.abort('blockedbyclient'));
+  await page.goto(app.url + '/signin?ReturnUrl=%2Fform%2F');
+  const anonymous = await postbackToken(page);
+  assert.ok(/^[0-9a-f]{64}$/.test(anonymous ?? '') && anonymous !== app.portalToken);
+  await Promise.all([
+    page.waitForURL(app.url + '/form/'),
+    page.locator('button[name="contactId"][value="' + CONTACT + '"]').click(),
+  ]);
+  const current = await postbackToken(page);
+  assert.ok(/^[0-9a-f]{64}$/.test(current ?? '') && current !== anonymous);
+  const cookie = (await page.context().cookies(app.url)).find(isBindingCookie);
+  assert.ok(cookie?.httpOnly && cookie.sameSite === 'Lax');
+  await page.reload();
+  assert.ok((await postbackToken(page)) === current);
+  assert.equal(fragmentResponses, 0);
+
+  const posted = await directNativeSubmit(page, 'Paired native submit');
+  assert.equal(posted.status(), 200);
+  const fields = new URLSearchParams(posted.request().postData());
+  assert.equal(fields.has('__VIEWSTATE'), true);
+  assert.equal(fields.has('__RequestVerificationToken'), false);
+  assert.equal(
+    app.store.tableRows('contact').some((row) => row.fullname === 'Paired native submit'),
+    true,
+  );
+  assert.equal(fragmentResponses, 0);
+
+  await page.unroute(fragment);
+  await page.goto(app.url + '/form/');
+  assert.ok((await postbackToken(page)) === current);
+  const shell = await page.evaluate(
+    () => new Promise((resolve, reject) => window.shell.getTokenDeferred().done(resolve).fail(reject)),
+  );
+  assert.ok(shell === current);
+  assert.ok(fragmentResponses >= 1);
+  const nativeCookie = (await page.context().cookies(app.url)).find(
+    (item) => item.name === '__RequestVerificationToken',
+  );
+  assert.ok(nativeCookie?.secure && nativeCookie.httpOnly && nativeCookie.sameSite === 'Lax');
+});
+
+async function gateInitialDocuments(t, app) {
+  const simulator = new URL(app.url);
+  const gate = () => ({ received: Promise.withResolvers(), release: Promise.withResolvers(), seen: false });
+  const gates = new Map([
+    ['first', gate()],
+    ['second', gate()],
+  ]);
+  let origin;
+  // Hold each document response before Chromium processes either Set-Cookie header.
+  // Forward Chromium's real Fetch Metadata to the simulator. Map only the two loopback listener origins.
+  const proxy = createServer((req, res) => {
+    const target = new URL(req.url, simulator);
+    if (target.origin !== simulator.origin) return res.writeHead(400).end();
+    const selected =
+      req.method === 'GET' && target.pathname === '/form/' ? gates.get(target.searchParams.get('launch')) : null;
+    const first = selected && !selected.seen;
+    if (first) selected.seen = true;
+    const headers = { ...req.headers, host: simulator.host };
+    if (headers.origin === origin) headers.origin = simulator.origin;
+    // The fixture owns the destination. Forward only the parsed origin-form request target.
+    const upstream = httpRequest(
+      simulator,
+      { path: target.pathname + target.search, method: req.method, headers },
+      async (reply) => {
+        if (first) {
+          selected.received.resolve({
+            status: reply.statusCode,
+            browser: Boolean(req.headers['sec-fetch-site']),
+            hadBinding: Boolean(req.headers.cookie?.includes('-request-binding-')),
+            hasNewBinding: (reply.headers['set-cookie'] ?? []).some((cookie) => cookie.includes('-request-binding-')),
+          });
+          await selected.release.promise;
+        }
+        res.writeHead(reply.statusCode, reply.headers);
+        reply.pipe(res);
+      },
+    );
+    upstream.on('error', (error) => {
+      if (first) selected.received.reject(error);
+      res.destroy(error);
+    });
+    req.pipe(upstream);
+  });
+  ownedFixture(t).add(
+    () =>
+      new Promise((resolve) => {
+        proxy.close(resolve);
+        proxy.closeAllConnections();
+      }),
+  );
+  const started = once(proxy, 'listening');
+  proxy.listen(0, '127.0.0.1');
+  await started;
+  origin = 'http://127.0.0.1:' + proxy.address().port;
+  return { origin, first: gates.get('first'), second: gates.get('second') };
+}
+
+// @test-kind security+contract: simultaneous first documents stay paired to the same signed owner without issuing extra bindings afterward.
+test('paired Chromium concurrent first loads keep both native postbacks valid', async (t) => {
+  const { app, page } = await portalFixture(t, { pairedBrowserTokens: true, signIn: false });
+  const context = page.context();
+  const signIn = await context.request.post(app.adminOrigin + '/__sim/api/session/sign-in', {
+    headers: { 'x-sim-csrf': app.csrf },
+    data: { contactId: CONTACT },
+  });
+  assert.equal(signIn.status(), 200);
+  const other = await context.newPage();
+  const { origin, first, second } = await gateInitialDocuments(t, app);
+  const confined = (route) =>
+    [origin, app.url].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort();
+  await page.unroute('**/*');
+  await page.route('**/*', confined);
+  await other.route('**/*', confined);
+  const firstUrl = origin + '/form/?launch=first';
+  const secondUrl = origin + '/form/?launch=second';
+  const navigations = [page.goto(firstUrl), other.goto(secondUrl)];
+  try {
+    const responses = await Promise.all([first.received.promise, second.received.promise]);
+    assert.deepEqual(responses, Array(2).fill({ status: 200, browser: true, hadBinding: false, hasNewBinding: true }));
+    const bindings = async () => (await context.cookies(app.url)).filter(isBindingCookie);
+    assert.equal((await bindings()).length, 0, 'both documents begin without a binding cookie');
+    first.release.resolve();
+    await navigations[0];
+    assert.equal((await bindings()).length, 1);
+    const firstToken = await postbackToken(page);
+    second.release.resolve();
+    await navigations[1];
+    const current = await postbackToken(other);
+    assert.ok(/^[0-9a-f]{64}$/.test(firstToken ?? '') && /^[0-9a-f]{64}$/.test(current ?? ''));
+    assert.ok(firstToken !== current);
+    assert.equal((await bindings()).length, 2);
+
+    assert.equal((await directNativeSubmit(page, 'Early tab accepted')).status(), 200);
+    assert.equal((await directNativeSubmit(other, 'Current tab accepted')).status(), 200);
+    const later = await page.goto(firstUrl);
+    assert.ok([firstToken, current].includes(await postbackToken(page)));
+    assert.equal(
+      (await later.headerValues('set-cookie')).some((value) => value.includes('-request-binding-')),
+      false,
+    );
+    assert.equal((await bindings()).length, 2, 'a live binding prevents another issuance');
+    const names = app.store.tableRows('contact').map((row) => row.fullname);
+    assert.ok(names.includes('Early tab accepted') && names.includes('Current tab accepted'));
+  } finally {
+    first.release.resolve();
+    second.release.resolve();
+    await Promise.allSettled(navigations);
+  }
+});
 
 test('platform chrome, lazy anti-forgery token, app-bundle accessibility and Datejs on a plain page', async (t) => {
   const { app, page, errors, requests } = await portalFixture(t);
@@ -133,10 +323,12 @@ test('platform chrome, lazy anti-forgery token, app-bundle accessibility and Dat
   const tokens = await page.evaluate(() =>
     Promise.all([0, 1].map(() => new Promise((resolve) => window.shell.getTokenDeferred().done(resolve)))),
   );
-  assert.deepEqual(tokens, [app.portalToken, app.portalToken]);
+  // The browser's own paired token, the same for both callers and never the tool token.
+  assert.equal(tokens[0], tokens[1]);
+  assert.ok(tokens[0] && tokens[0] !== app.portalToken);
   assert.equal(
     await page.locator('#antiforgerytoken input[name="__RequestVerificationToken"]').getAttribute('value'),
-    app.portalToken,
+    tokens[0],
   );
   assert.equal(requests.filter((request) => /^GET \/_layout\/tokenhtml\?_=\d+$/.test(request)).length, 1);
   // app.bundle accessibility block: dropdown toggles.

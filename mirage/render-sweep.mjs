@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { reportCliError } from './cli-output.mjs';
 /**
  * Render sweep: request every exported page of a portal from an isolated, local-only Mirage
@@ -41,7 +42,6 @@ import { assertToolPaths, parseToolArgs, toolOptionsHelp } from './tool-options.
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createSimulator } from './server.mjs';
 import { portalField } from './lib/importer.mjs';
 import { isHtmlDocument } from './lib/source-dependencies.mjs';
@@ -659,7 +659,7 @@ async function main(argv = process.argv.slice(2)) {
   return options.strict && failed ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (isEntryPoint(import.meta.url))
   /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;

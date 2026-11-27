@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';
 import { createWebFormSessions, webFormSession } from '../lib/form-service.mjs';
 import { emptyAnswerStore, surveySchemas } from './support/form-fixtures.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A "survey" multistep form on a Bootstrap 5 site: one insert step with a metadata
 // description and a required radio choice, then a second step.
@@ -77,7 +78,7 @@ test('multistep step markup follows the platform control (row wrapper, form name
     html,
     /<div id="WebFormControl_survey"[^>]*>(<script[^>]*>[^<]*<\/script>)*<div class="row"><div id="WebFormControl_survey_ProgressIndicator"><ol class="progress list-group top">/,
   );
-  const panel = html.match(/<div id="WebFormPanel"[^>]*>/)[0];
+  const panel = boundedMarkup(html).match(/<div id="WebFormPanel"[^>]*>/)[0];
   // role and aria-label are added by the client script, not the server.
   assert.equal(
     panel,

@@ -1,7 +1,7 @@
 // Liquid resource strings per culture for the keys lib/liquid.mjs defines (English lives there).
 // From xRM Portals Community Edition (Adxstudio.Xrm.Resources/ResourceFiles/strings.<culture>.resx),
 // MIT License, Copyright (c) 2017 Microsoft and contributors; see licenses/xrm-portals-community-edition.txt.
-export const RESX_CULTURES = Object.freeze({
+const RESX_CULTURES = Object.freeze({
   'bg-BG': Object.freeze({
     Sign_In: 'Влизане',
     Sign_Out: 'Излизане',
@@ -2379,3 +2379,14 @@ export const RESX_CULTURES = Object.freeze({
     Pagination_Previous_Page: '上一頁',
   }),
 });
+
+/** Resource strings of a culture. Sites can use a short language code. */
+export function resxCulture(code) {
+  const text = String(code ?? '').toLowerCase();
+  if (!text || /^en(?:-|$)/i.test(text)) return null;
+  const cultures = Object.keys(RESX_CULTURES);
+  const exact = cultures.find((culture) => culture.toLowerCase() === text);
+  const family = text.split('-')[0];
+  const sibling = exact ?? cultures.find((culture) => culture.split('-')[0].toLowerCase() === family);
+  return sibling ? RESX_CULTURES[sibling] : null;
+}

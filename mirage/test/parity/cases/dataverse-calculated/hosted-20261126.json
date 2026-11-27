@@ -1,0 +1,696 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "dataverse-calculated",
+  "suite": "hosted-20261126",
+  "oracle": {
+    "kind": "native",
+    "name": "Dataverse Web API",
+    "version": "2026-11-26",
+    "scope": "Two hosted runs (A, B) of eleven designer calculated columns on one table, Solution-exported FormulaDefinition XAML (arithmetic, IF / ELSE IF / ELSE, IF without ELSE, SelectFirstNonNull-wrapped literals, AddDays, DiffInDays, divide by zero, precision 2, a one-hop parent field, Concat, Boolean and choice results): reads of eight seeded rows, a write of a source column, a direct write to a calculated column, and $filter / $orderby on a calculated column. Schema names, option values and row names are invented equivalents; ids, annotations and creation times are not compared (the creation date is). The exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "run-derived-A",
+      "sha256": "634943d3a0ba587fb575b4b7804bbd51a6f9c55d541ecd0c9c3b41bd72762947",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "run-derived-B",
+      "sha256": "e86d4903bc654d3e17a0d83651aff9226056e6c493a2b4edcc82c0ec17c62fbc",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "seed",
+      "input": {
+        "op": "setup",
+        "clock": "2026-11-26",
+        "schema": {
+          "parent": {
+            "table": "inv_parent",
+            "set": "inv_parents",
+            "columns": {
+              "inv_name": {
+                "type": "nvarchar"
+              }
+            }
+          },
+          "child": {
+            "table": "inv_child",
+            "set": "inv_children",
+            "lookup": {
+              "column": "inv_parentid",
+              "relationship": "inv_parent_child"
+            },
+            "options": {
+              "inv_category": [100000000, 100000001, 100000002]
+            },
+            "columns": {
+              "inv_name": {
+                "type": "nvarchar"
+              },
+              "inv_amount": {
+                "type": "decimal",
+                "precision": 2
+              },
+              "inv_price": {
+                "type": "money",
+                "precision": 2
+              },
+              "inv_qty": {
+                "type": "int"
+              },
+              "inv_duedate": {
+                "type": "datetime"
+              },
+              "inv_category": {
+                "type": "picklist"
+              },
+              "inv_flag": {
+                "type": "bit"
+              }
+            },
+            "calculated": {
+              "inv_ctext": {
+                "type": "nvarchar",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_name\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.String, \" #calc\", \"String\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_5]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Concat</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_ctext\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cwhole": {
+                "type": "int",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Integer, \"2\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_5]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Multiply</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cwhole\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cdecimal": {
+                "type": "decimal",
+                "precision": 2,
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Decimal, \"1.5\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_5]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Subtract</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cdecimal\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cmoney": {
+                "type": "money",
+                "precision": 2,
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_price\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Multiply</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cmoney\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:Money\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cdivide": {
+                "type": "decimal",
+                "precision": 2,
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Divide</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cdivide\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cdate": {
+                "type": "datetime",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Integer, \"7\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_3]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_duedate\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">AddDays</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cdate\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cdiff": {
+                "type": "int",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"createdon\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_duedate\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"s:DateTime\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">DiffInDays</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cdiff\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cbool": {
+                "type": "bit",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_condition\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_2\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep5_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:GetEntityProperty Attribute=\"inv_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_1]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Decimal, \"100\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">GreaterThan</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { ConditionBranchStep2_2 }]</InArgument><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_1]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[ConditionBranchStep2_condition]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cbool\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep5_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep5\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep5\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep7\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep7_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"false\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep7_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cbool\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep7_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep7\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cchoice": {
+                "type": "picklist",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_condition\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_2\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep5_condition\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep5_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep5_2\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"True\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep8_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:GetEntityProperty Attribute=\"inv_flag\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_1]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"True\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep2_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">Equal</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { ConditionBranchStep2_2 }]</InArgument><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_1]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[ConditionBranchStep2_condition]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.OptionSetValue, \"100000000\", \"Picklist\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cchoice\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep5_1]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Integer, \"5\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Int32\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep5_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">GreaterThan</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { ConditionBranchStep5_2 }]</InArgument><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep5_1]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep5_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep5\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[ConditionBranchStep5_condition]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep5\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep7\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep7_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.OptionSetValue, \"100000001\", \"Picklist\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep7_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cchoice\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep7_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep7\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.Boolean, \"true\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Boolean\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[ConditionBranchStep8_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep8\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[True]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep8\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep10\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep10_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">CreateCrmType</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { Microsoft.Xrm.Sdk.Workflow.WorkflowPropertyType.OptionSetValue, \"100000002\", \"Picklist\" }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep10_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cchoice\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep10_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"mxs:OptionSetValue\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep10\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cparent": {
+                "type": "nvarchar",
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_condition\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_1\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:GetEntityProperty Attribute=\"inv_parentid\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_1]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">NotNull</InArgument><x:Null x:Key=\"Parameters\" /><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_1]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[ConditionBranchStep2_condition]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_name\" Entity=\"[InputEntities(&quot;related_inv_parentid#inv_parent&quot;)]\" EntityName=\"inv_parent\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:SetEntityProperty Attribute=\"inv_cparent\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:String\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              },
+              "inv_cmulti": {
+                "type": "decimal",
+                "precision": 2,
+                "xaml": "<Activity x:Class=\"XrmWorkflow00000000000000000000000000000000\" xmlns=\"http://schemas.microsoft.com/netfx/2009/xaml/activities\" xmlns:mcwc=\"clr-namespace:Microsoft.Crm.Workflow.ClientActivities;assembly=Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mva=\"clr-namespace:Microsoft.VisualBasic.Activities;assembly=System.Activities, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxs=\"clr-namespace:Microsoft.Xrm.Sdk;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxsq=\"clr-namespace:Microsoft.Xrm.Sdk.Query;assembly=Microsoft.Xrm.Sdk, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:mxswa=\"clr-namespace:Microsoft.Xrm.Sdk.Workflow.Activities;assembly=Microsoft.Xrm.Sdk.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" xmlns:s=\"clr-namespace:System;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:scg=\"clr-namespace:System.Collections.Generic;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:sco=\"clr-namespace:System.Collections.ObjectModel;assembly=mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:srs=\"clr-namespace:System.Runtime.Serialization;assembly=System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\" xmlns:this=\"clr-namespace:\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"><x:Members><x:Property Name=\"InputEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /><x:Property Name=\"CreatedEntities\" Type=\"InArgument(scg:IDictionary(x:String, mxs:Entity))\" /></x:Members><this:XrmWorkflow00000000000000000000000000000000.InputEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.InputEntities><this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><InArgument x:TypeArguments=\"scg:IDictionary(x:String, mxs:Entity)\" /></this:XrmWorkflow00000000000000000000000000000000.CreatedEntities><mva:VisualBasic.Settings>Assembly references and imported namespaces for internal implementation</mva:VisualBasic.Settings><mxswa:Workflow><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionSequence, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionStep1\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Wait\">False</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\"><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_condition\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_1\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_3\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_5\" /><Variable x:TypeArguments=\"x:Boolean\" Default=\"False\" Name=\"ConditionBranchStep2_6\" /><Variable x:TypeArguments=\"x:Object\" Name=\"ConditionBranchStep2_7\" /></sco:Collection><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><mxswa:GetEntityProperty Attribute=\"inv_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">NotNull</InArgument><x:Null x:Key=\"Parameters\" /><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_3]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">NotNull</InArgument><x:Null x:Key=\"Parameters\" /><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_5]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_price\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[ConditionBranchStep2_7]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:ConditionOperator\" x:Key=\"ConditionOperator\">NotNull</InArgument><x:Null x:Key=\"Parameters\" /><InArgument x:TypeArguments=\"x:Object\" x:Key=\"Operand\">[ConditionBranchStep2_7]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_6]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateLogicalCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateLogicalCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:LogicalOperator\" x:Key=\"LogicalOperator\">And</InArgument><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"LeftOperand\">[ConditionBranchStep2_2]</InArgument><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"RightOperand\">[ConditionBranchStep2_4]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateLogicalCondition, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateLogicalCondition\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"mxsq:LogicalOperator\" x:Key=\"LogicalOperator\">And</InArgument><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"LeftOperand\">[ConditionBranchStep2_1]</InArgument><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"RightOperand\">[ConditionBranchStep2_6]</InArgument><OutArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Result\">[ConditionBranchStep2_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.ConditionBranch, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:Boolean\" x:Key=\"Condition\">[ConditionBranchStep2_condition]</InArgument></mxswa:ActivityReference.Arguments><mxswa:ActivityReference.Properties><mxswa:ActivityReference x:Key=\"Then\" AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.Composite, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"ConditionBranchStep2\"><mxswa:ActivityReference.Properties><sco:Collection x:TypeArguments=\"Variable\" x:Key=\"Variables\" /><sco:Collection x:TypeArguments=\"Activity\" x:Key=\"Activities\"><Sequence DisplayName=\"SetAttributeValueStep4\"><Sequence.Variables><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_1\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_2\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_3\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_4\" /><Variable x:TypeArguments=\"x:Object\" Name=\"SetAttributeValueStep4_5\" /></Sequence.Variables><Assign x:TypeArguments=\"mxs:Entity\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" Value=\"[New Entity(&quot;inv_child&quot;)]\" /><Assign x:TypeArguments=\"s:Guid\" To=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;).Id]\" Value=\"[InputEntities(&quot;primaryEntity&quot;).Id]\" /><mxswa:GetEntityProperty Attribute=\"inv_amount\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_3]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_3 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_2]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:GetEntityProperty Attribute=\"inv_qty\" Entity=\"[InputEntities(&quot;primaryEntity&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_5]\"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">SelectFirstNonNull</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_5 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_4]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:ActivityReference AssemblyQualifiedName=\"Microsoft.Crm.Workflow.Activities.EvaluateExpression, Microsoft.Crm.Workflow, Version=9.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35\" DisplayName=\"EvaluateExpression\"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments=\"x:String\" x:Key=\"ExpressionOperator\">Multiply</InArgument><InArgument x:TypeArguments=\"s:Object[]\" x:Key=\"Parameters\">[New Object() { SetAttributeValueStep4_2, SetAttributeValueStep4_4 }]</InArgument><InArgument x:TypeArguments=\"s:Type\" x:Key=\"TargetType\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument><OutArgument x:TypeArguments=\"x:Object\" x:Key=\"Result\">[SetAttributeValueStep4_1]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference><mxswa:SetEntityProperty Attribute=\"inv_cmulti\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" Value=\"[SetAttributeValueStep4_1]\"><mxswa:SetEntityProperty.TargetType><InArgument x:TypeArguments=\"s:Type\"><mxswa:ReferenceLiteral x:TypeArguments=\"s:Type\" Value=\"x:Decimal\" /></InArgument></mxswa:SetEntityProperty.TargetType></mxswa:SetEntityProperty><mcwc:SetAttributeValue DisplayName=\"SetAttributeValueStep4\" Entity=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" EntityName=\"inv_child\" /><Assign x:TypeArguments=\"mxs:Entity\" To=\"[InputEntities(&quot;primaryEntity&quot;)]\" Value=\"[CreatedEntities(&quot;primaryEntity#Temp&quot;)]\" /></Sequence></sco:Collection></mxswa:ActivityReference.Properties></mxswa:ActivityReference><x:Null x:Key=\"Else\" /><x:Null x:Key=\"Description\" /></mxswa:ActivityReference.Properties></mxswa:ActivityReference></sco:Collection><x:Boolean x:Key=\"ContainsElseBranch\">False</x:Boolean></mxswa:ActivityReference.Properties></mxswa:ActivityReference></mxswa:Workflow></Activity>"
+              }
+            }
+          }
+        },
+        "parents": ["P1", "P2", "P3", "P4"],
+        "children": [
+          {
+            "key": "c1",
+            "parent": "P1",
+            "values": {
+              "inv_amount": 5,
+              "inv_price": 2.5,
+              "inv_qty": 2,
+              "inv_duedate": "2026-01-10T10:00:00Z",
+              "inv_category": 100000000,
+              "inv_flag": false
+            }
+          },
+          {
+            "key": "c2",
+            "parent": "P1",
+            "values": {
+              "inv_amount": 20,
+              "inv_price": 10,
+              "inv_qty": 3,
+              "inv_duedate": "2026-03-05T00:00:00Z",
+              "inv_category": 100000001,
+              "inv_flag": true
+            }
+          },
+          {
+            "key": "c3",
+            "parent": "P1",
+            "values": {
+              "inv_amount": 150,
+              "inv_price": 1.25,
+              "inv_qty": 7,
+              "inv_category": 100000001,
+              "inv_flag": true
+            }
+          },
+          {
+            "key": "c4",
+            "parent": "P1",
+            "values": {
+              "inv_duedate": "2025-12-31T23:00:00Z",
+              "inv_category": 100000002,
+              "inv_flag": false
+            }
+          },
+          {
+            "key": "c5",
+            "parent": "P2",
+            "values": {
+              "inv_amount": 40,
+              "inv_price": 4,
+              "inv_qty": 1,
+              "inv_duedate": "2026-02-01T08:30:00Z",
+              "inv_category": 100000001,
+              "inv_flag": false
+            }
+          },
+          {
+            "key": "c6",
+            "parent": "P2",
+            "values": {
+              "inv_amount": 12.5,
+              "inv_price": 0.33,
+              "inv_qty": 0,
+              "inv_duedate": "2026-06-15T12:00:00Z",
+              "inv_category": 100000001,
+              "inv_flag": true
+            }
+          },
+          {
+            "key": "c7",
+            "parent": "P3",
+            "values": {
+              "inv_amount": 100,
+              "inv_price": 3,
+              "inv_qty": 4,
+              "inv_duedate": "2027-01-01T00:00:00Z",
+              "inv_category": 100000000,
+              "inv_flag": true
+            }
+          },
+          {
+            "key": "c8",
+            "parent": "P1",
+            "values": {
+              "inv_amount": 1000,
+              "inv_price": 100,
+              "inv_qty": 1,
+              "inv_duedate": "2024-05-05T05:05:00Z",
+              "inv_category": 100000001,
+              "inv_flag": true
+            }
+          }
+        ],
+        "deactivate": ["c8"]
+      },
+      "output": {
+        "parents": 4,
+        "children": 8
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c1",
+      "input": {
+        "op": "read",
+        "child": "c1",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c1",
+        "inv_amount": 5,
+        "inv_price": 2.5,
+        "inv_qty": 2,
+        "inv_duedate": "2026-01-10T10:00:00Z",
+        "inv_category": 100000000,
+        "inv_flag": false,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c1 #calc",
+        "inv_cwhole": 4,
+        "inv_cdecimal": 3.5,
+        "inv_cmoney": 5,
+        "inv_cdivide": 2.5,
+        "inv_cdate": "2026-01-17T10:00:00Z",
+        "inv_cdiff": -320,
+        "inv_cbool": false,
+        "inv_cchoice": 100000002,
+        "inv_cparent": "P1",
+        "inv_cmulti": 10
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c2",
+      "input": {
+        "op": "read",
+        "child": "c2",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c2",
+        "inv_amount": 20,
+        "inv_price": 10,
+        "inv_qty": 3,
+        "inv_duedate": "2026-03-05T00:00:00Z",
+        "inv_category": 100000001,
+        "inv_flag": true,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c2 #calc",
+        "inv_cwhole": 6,
+        "inv_cdecimal": 18.5,
+        "inv_cmoney": 30,
+        "inv_cdivide": 6.67,
+        "inv_cdate": "2026-03-12T00:00:00Z",
+        "inv_cdiff": -266,
+        "inv_cbool": false,
+        "inv_cchoice": 100000000,
+        "inv_cparent": "P1",
+        "inv_cmulti": 60
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c3",
+      "input": {
+        "op": "read",
+        "child": "c3",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c3",
+        "inv_amount": 150,
+        "inv_price": 1.25,
+        "inv_qty": 7,
+        "inv_duedate": null,
+        "inv_category": 100000001,
+        "inv_flag": true,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c3 #calc",
+        "inv_cwhole": 14,
+        "inv_cdecimal": 148.5,
+        "inv_cmoney": 8.75,
+        "inv_cdivide": 21.43,
+        "inv_cdate": null,
+        "inv_cdiff": null,
+        "inv_cbool": true,
+        "inv_cchoice": 100000000,
+        "inv_cparent": "P1",
+        "inv_cmulti": 1050
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c4",
+      "input": {
+        "op": "read",
+        "child": "c4",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c4",
+        "inv_amount": null,
+        "inv_price": null,
+        "inv_qty": null,
+        "inv_duedate": "2025-12-31T23:00:00Z",
+        "inv_category": 100000002,
+        "inv_flag": false,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c4 #calc",
+        "inv_cwhole": null,
+        "inv_cdecimal": null,
+        "inv_cmoney": null,
+        "inv_cdivide": null,
+        "inv_cdate": "2026-01-07T23:00:00Z",
+        "inv_cdiff": -330,
+        "inv_cbool": false,
+        "inv_cchoice": 100000002,
+        "inv_cparent": "P1",
+        "inv_cmulti": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c5",
+      "input": {
+        "op": "read",
+        "child": "c5",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c5",
+        "inv_amount": 40,
+        "inv_price": 4,
+        "inv_qty": 1,
+        "inv_duedate": "2026-02-01T08:30:00Z",
+        "inv_category": 100000001,
+        "inv_flag": false,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c5 #calc",
+        "inv_cwhole": 2,
+        "inv_cdecimal": 38.5,
+        "inv_cmoney": 4,
+        "inv_cdivide": 40,
+        "inv_cdate": "2026-02-08T08:30:00Z",
+        "inv_cdiff": -298,
+        "inv_cbool": false,
+        "inv_cchoice": 100000002,
+        "inv_cparent": "P2",
+        "inv_cmulti": 40
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c6",
+      "input": {
+        "op": "read",
+        "child": "c6",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c6",
+        "inv_amount": 12.5,
+        "inv_price": 0.33,
+        "inv_qty": 0,
+        "inv_duedate": "2026-06-15T12:00:00Z",
+        "inv_category": 100000001,
+        "inv_flag": true,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c6 #calc",
+        "inv_cwhole": 0,
+        "inv_cdecimal": 11,
+        "inv_cmoney": 0,
+        "inv_cdivide": null,
+        "inv_cdate": "2026-06-22T12:00:00Z",
+        "inv_cdiff": -164,
+        "inv_cbool": false,
+        "inv_cchoice": 100000000,
+        "inv_cparent": "P2",
+        "inv_cmulti": 0
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c7",
+      "input": {
+        "op": "read",
+        "child": "c7",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c7",
+        "inv_amount": 100,
+        "inv_price": 3,
+        "inv_qty": 4,
+        "inv_duedate": "2027-01-01T00:00:00Z",
+        "inv_category": 100000000,
+        "inv_flag": true,
+        "createdonDate": "2026-11-26",
+        "statecode": 0,
+        "inv_ctext": "c7 #calc",
+        "inv_cwhole": 8,
+        "inv_cdecimal": 98.5,
+        "inv_cmoney": 12,
+        "inv_cdivide": 25,
+        "inv_cdate": "2027-01-08T00:00:00Z",
+        "inv_cdiff": 36,
+        "inv_cbool": false,
+        "inv_cchoice": 100000000,
+        "inv_cparent": "P3",
+        "inv_cmulti": 400
+      },
+      "volatile": []
+    },
+    {
+      "id": "read-c8",
+      "input": {
+        "op": "read",
+        "child": "c8",
+        "select": [
+          "inv_name",
+          "inv_amount",
+          "inv_price",
+          "inv_qty",
+          "inv_duedate",
+          "inv_category",
+          "inv_flag",
+          "createdon",
+          "statecode",
+          "inv_ctext",
+          "inv_cwhole",
+          "inv_cdecimal",
+          "inv_cmoney",
+          "inv_cdivide",
+          "inv_cdate",
+          "inv_cdiff",
+          "inv_cbool",
+          "inv_cchoice",
+          "inv_cparent",
+          "inv_cmulti"
+        ]
+      },
+      "output": {
+        "inv_name": "c8",
+        "inv_amount": 1000,
+        "inv_price": 100,
+        "inv_qty": 1,
+        "inv_duedate": "2024-05-05T05:05:00Z",
+        "inv_category": 100000001,
+        "inv_flag": true,
+        "createdonDate": "2026-11-26",
+        "statecode": 1,
+        "inv_ctext": "c8 #calc",
+        "inv_cwhole": 2,
+        "inv_cdecimal": 998.5,
+        "inv_cmoney": 100,
+        "inv_cdivide": 1000,
+        "inv_cdate": "2024-05-12T05:05:00Z",
+        "inv_cdiff": -935,
+        "inv_cbool": true,
+        "inv_cchoice": 100000000,
+        "inv_cparent": "P1",
+        "inv_cmulti": 1000
+      },
+      "volatile": []
+    },
+    {
+      "id": "update-source-c1",
+      "input": {
+        "op": "patch",
+        "child": "c1",
+        "body": {
+          "inv_amount": 7
+        }
+      },
+      "output": {
+        "status": 204,
+        "error": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "write-calculated-c2",
+      "input": {
+        "op": "patch",
+        "child": "c2",
+        "body": {
+          "inv_cwhole": 1
+        }
+      },
+      "output": {
+        "status": 204,
+        "error": null
+      },
+      "volatile": []
+    },
+    {
+      "id": "filter-orderby-calculated",
+      "input": {
+        "op": "query",
+        "select": ["inv_name", "inv_cwhole"],
+        "filter": "inv_cwhole gt 5",
+        "orderby": "inv_cwhole desc"
+      },
+      "output": {
+        "status": 200,
+        "rows": [
+          ["c3", 14],
+          ["c7", 8],
+          ["c2", 6]
+        ],
+        "error": null
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -6,6 +6,19 @@ import http from 'node:http';
 import { createFrameReadiness } from '../lib/frame-readiness.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 
+async function serveReadiness(t, readiness) {
+  const server = http.createServer((req, res) =>
+    readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`)),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  ownedFixture(t).add(async () => {
+    readiness.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
 test('frame overrides require evidence and immediate mode omits the load blocker', () => {
   assert.throws(() => observedConfig({ modalLoadOrdering: 'immediate' }), /evidence/);
   assert.throws(() => observedConfig({ modalLoadOrdering: 'later', evidence: 'synthetic' }), /ready or immediate/);
@@ -38,17 +51,11 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   const timeoutMs = 2500, // not the 5 s default, so the configured bound is the one observed
     diagnostics = [],
     readiness = createFrameReadiness({ timeoutMs, diagnostic: (item) => diagnostics.push(item) });
+  const { server, origin } = await serveReadiness(t, readiness);
   let observeHeld;
   const held = new Promise((resolve) => (observeHeld = resolve));
-  const server = http.createServer((req, res) => {
-    readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`));
+  server.on('request', (req, res) => {
     if (req.method === 'GET') observeHeld(!res.writableEnded);
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(async () => {
-    readiness.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
   });
   const document = readiness.decorate('<html><body>Frame</body></html>', { path: '/synthetic' });
   const route = /image\.src='([^']+)'/.exec(document)[1];
@@ -62,7 +69,7 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   // A loaded host delivers the document's scripts, and so the image request, long after decoration.
   t.mock.timers.tick(3 * timeoutMs);
   assert.deepEqual(diagnostics, [], 'a document not yet requested keeps its blocker');
-  const responding = fetch(`http://127.0.0.1:${server.address().port}${route}`);
+  const responding = fetch(origin + route);
   assert.equal(await held, true, 'the late image request is held, not answered at once');
   t.mock.timers.tick(timeoutMs - 1);
   assert.deepEqual(diagnostics, [], 'the image stays held until the deadline');
@@ -75,7 +82,7 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   assert.equal(response.headers.get('content-type'), 'image/gif');
   assert.ok((await response.arrayBuffer()).byteLength > 0, 'the held image is released with its GIF body');
   // The expired entry is forgotten: a late request for it is answered at once and adds no diagnostic.
-  const late = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
+  const late = await fetch(origin + route);
   assert.equal(late.status, 204);
   assert.equal(diagnostics.length, 1);
 });
@@ -182,16 +189,7 @@ test('a document whose page never requests the image ends after its lifetime wit
 test('the entry limit evicts the oldest document: a held image is released with a timeout, a never-requested one quietly', async (t) => {
   const diagnostics = [],
     readiness = createFrameReadiness({ limit: 1, diagnostic: (item) => diagnostics.push(item) });
-  const server = http.createServer((req, res) =>
-    readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`)),
-  );
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(async () => {
-    readiness.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const { server, origin } = await serveReadiness(t, readiness);
   const routeOf = (html) => /image\.src='([^']+)'/.exec(html)[1];
   const held = routeOf(readiness.decorate('<html><body>A</body></html>', { path: '/held' }));
   const answer = fetch(origin + held);
@@ -205,6 +203,29 @@ test('the entry limit evicts the oldest document: a held image is released with 
     [{ code: 'FRAME_READY_TIMEOUT', path: '/held' }],
   );
   assert.equal((await fetch(origin + unrequested)).status, 204, 'the evicted entry is forgotten');
+});
+
+// @test-kind contract+security: the ready release fallback requires the local frame identifier and same-origin image fetch metadata.
+test('only a same-origin image fallback releases a registered frame', async (t) => {
+  const diagnostics = [],
+    readiness = createFrameReadiness({ diagnostic: (item) => diagnostics.push(item) });
+  const { origin } = await serveReadiness(t, readiness);
+  const document = readiness.decorate('<html><body>Frame</body></html>', { path: '/synthetic' });
+  const route = /image\.src='([^']+)'/.exec(document)[1];
+  const image = { 'sec-fetch-site': 'same-origin', 'sec-fetch-dest': 'image' };
+  const release = '?release=jquery-ready';
+  const answer = (target, headers, mode = 'no-cors') => fetch(origin + target + release, { headers, mode });
+  assert.equal((await answer('/__sim/frame-ready/unknown', image)).status, 204);
+  for (const headers of [{}, { ...image, 'sec-fetch-site': 'cross-site' }, { ...image, 'sec-fetch-dest': 'empty' }])
+    assert.equal((await answer(route, headers)).status, 403);
+  assert.equal((await answer(route, image, 'cors')).status, 403);
+  assert.deepEqual(diagnostics, []);
+  assert.equal((await answer(route, image)).status, 204);
+  assert.deepEqual(
+    diagnostics.map(({ code, ordering }) => ({ code, ordering })),
+    [{ code: 'FRAME_LOAD_ORDERING', ordering: 'jquery-ready' }],
+  );
+  assert.equal((await fetch(origin + route)).status, 204, 'a blocker image arriving after ready needs no hold');
 });
 
 test('a HEAD answer gets no load blocker and keeps no entry', () => {

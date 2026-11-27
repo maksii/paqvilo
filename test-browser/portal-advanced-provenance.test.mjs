@@ -1,3 +1,4 @@
+// @test-kind contract: Lense X-ray evidence for Mirage progress-step markup is Paqvilo's own render-provenance design (step labels, localized sources, stale links)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -150,9 +151,10 @@ test('native progress proves the actual localized step label, opens that field f
       'exact',
       'matching CSS classes cannot fabricate a platform step',
     );
+    // The numbering is the advanced form's progress indicator (render provenance binds every element), never the step.
     assert.notEqual(
-      (await read('ol.progress .number')).owner.status,
-      'exact',
+      (await read('ol.progress .number')).owner.component?.key,
+      'advanced-form-step:step',
       'generated numerical chrome is not the selected step definition',
     );
     const current = await load('/es-ES/');

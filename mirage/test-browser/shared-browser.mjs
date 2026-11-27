@@ -306,13 +306,19 @@ export function accountListAccess(contact) {
  * A simulator over `initial`, whose state file lives in `dir`, and a page in a fresh context signed in as the Member
  * `contact`. The simulator and the context close with the test; `errors` collects the page's errors.
  */
-export async function signedInSimulatorPage(t, browser, { dir, initial, contact }) {
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
+export async function signedInSimulatorPage(t, browser, { dir, initial, contact, identityProvider }) {
+  const app = await createSimulator({
+    sourceDir: dir,
+    stateFile: path.join(dir, 'state.json'),
+    initial,
+    watch: false,
+    ...(identityProvider ? { identityProvider } : {}),
+  });
   let context;
   ownedFixture(t).add(() => context?.close());
   ownedFixture(t).add(() => app.close());
   context = await browser.newContext();
-  await signInContext(context, app, contact, { roles: ['Member'] });
+  if (contact) await signInContext(context, app, contact, { roles: ['Member'] });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

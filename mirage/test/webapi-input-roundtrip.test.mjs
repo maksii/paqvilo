@@ -115,9 +115,9 @@ async function assertReadable(call, record, id, values, fragment, label) {
   assert.equal(read.headers.get('x-content-type-options'), 'nosniff');
   for (const [field, value] of Object.entries(values)) {
     assert.equal(read.json[field], value, `${label}: entity ${field}`);
+    // /<column> is refused before any read (hosted session F1 summary-F1 API-02c, two runs); /$value reads it.
     const property = await call(`${record}/${field}`);
-    assert.equal(property.status, 200, `${label}: property ${field}`);
-    assert.deepEqual(property.json, { value }, label);
+    assert.equal(property.status, 403, `${label}: property ${field}`);
     const raw = await call(`${record}/${field}/$value`);
     assert.equal(raw.status, 200, `${label}: raw ${field}`);
     assert.equal(raw.text, value, `${label}: raw ${field} preserves input`);
@@ -184,7 +184,8 @@ test('malformed JSON and non-object Web API bodies reject create/update/property
       const result = await call(route, { method, rawBody });
       assert.equal(result.status, 400, `${method} ${route}: ${rawBody}`);
       assert.equal(result.json.error.code, '9004010D', `${method}: error envelope`);
-      assert.equal(result.json.error.message, 'CDS error occurred.');
+      // The hosted text (hosted session F1 summary-F1 API-02c and the demo site's captures).
+      assert.equal(result.json.error.message, 'Common Data Service error occurred.');
       assert.equal(typeof result.json.error.innererror.message, 'string');
       assert.deepEqual(probeState(app), before, `${method}: rejected input must not mutate rows or versions`);
     }
@@ -206,7 +207,7 @@ test('a malformed percent escape in an absolute bind is refused like any other m
   assert.deepEqual(probeState(app), before, 'a refused bind must not mutate rows or versions');
 });
 
-// @test-kind security: a Web API write with a missing or wrong CSRF token changes nothing
+// @test-kind security+observation: a Web API write with a missing or wrong CSRF token changes nothing; both answer 401 90040107 as hosted session F4 did (paqvilo-developer hosted-f4 swap runs a and b)
 test('missing and wrong CSRF tokens reject each Web API write before any mutation', async () => {
   const { app, call } = await shared;
   const writes = [
@@ -218,7 +219,7 @@ test('missing and wrong CSRF tokens reject each Web API write before any mutatio
   ];
   for (const [token, expected] of [
     [null, 401],
-    ['wrong-local-token', 403],
+    ['wrong-local-token', 401],
   ]) {
     for (const [route, method, body] of writes) {
       const before = probeState(app);
@@ -259,12 +260,13 @@ test('schema types accept observed scalar strings and email format normalizes af
     referenceid: 'abcdefab-1234-4321-abcd-123456789abc',
   });
   assert.equal((await call(BASE_RECORD, { method: 'PATCH', body: { flag: 'false' } })).status, 204);
-  assert.equal((await call(`${BASE_RECORD}/flag`)).json.value, false);
+  // Read back through $select: /<column> is refused before any read (hosted session F1 summary-F1 API-02c, two runs).
+  assert.equal((await call(`${BASE_RECORD}?$select=flag`)).json.flag, false);
   // Live probes also accepted surrounding integer whitespace and
   // Boolean text in another case; these are wire conversions, not form parsing.
   assert.equal((await call(BASE_RECORD, { method: 'PATCH', body: { count: ' 12 ', flag: 'TRUE' } })).status, 204);
-  assert.equal((await call(`${BASE_RECORD}/count`)).json.value, 12);
-  assert.equal((await call(`${BASE_RECORD}/flag`)).json.value, true);
+  assert.equal((await call(`${BASE_RECORD}?$select=count`)).json.count, 12);
+  assert.equal((await call(`${BASE_RECORD}?$select=flag`)).json.flag, true);
   for (const rejected of [
     { amount: '12.50' },
     { price: '12.50' },
@@ -280,7 +282,7 @@ test('schema types accept observed scalar strings and email format normalizes af
     assert.deepEqual(probeState(app), before);
   }
   assert.equal((await call(BASE_RECORD, { method: 'PATCH', body: { address: ' \u2028\u2029 ' } })).status, 204);
-  assert.equal((await call(`${BASE_RECORD}/address`)).status, 204, 'whitespace email becomes null');
+  assert.equal((await call(`${BASE_RECORD}/address/$value`)).status, 204, 'whitespace email becomes null');
   // Internal fixture wrappers remain supported; the public policy separately
   // rejects object payloads before they reach the reusable store coercion.
   app.store.updateRecord('probeentry', BASE_ID, { category: { value: 1, label: 'One' } }, {}, { coerce: true });

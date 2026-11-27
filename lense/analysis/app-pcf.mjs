@@ -5,6 +5,9 @@ const manifest = 'https://learn.microsoft.com/power-apps/developer/component-fra
 const property = `${manifest}property`;
 const libraries =
   'https://learn.microsoft.com/power-apps/developer/component-framework/react-controls-platform-libraries';
+const pages = 'https://learn.microsoft.com/power-pages/configure/component-framework';
+const pagesUnsupported = `${pages}#unsupported-code-components-in-power-pages`;
+const pagesTypes = `${pages}#supported-field-types-and-formats`;
 const bestPractice =
   'https://learn.microsoft.com/power-apps/developer/component-framework/code-components-best-practices';
 export const pcfRules = [
@@ -116,7 +119,58 @@ export const pcfRules = [
     'For model-driven hosts, literal defaults belong on input properties. Verify the intended host and pfx-default-value semantics before changing Canvas behavior.',
     { references: [property], confidence: 'medium' },
   ),
+  appRule(
+    'APP-PCF-013',
+    'Required feature excluded by Power Pages',
+    'warning',
+    'compatibility',
+    'A uses-feature declaration is required; Power Pages does not host a code component whose uses-feature is set to true.',
+    'For a component meant for Power Pages, declare the feature with required="false" and handle its absence at run time.',
+    { references: [pagesUnsupported] },
+  ),
+  appRule(
+    'APP-PCF-014',
+    'API unsupported on Power Pages',
+    'hint',
+    'compatibility',
+    'The manifest declares a Device capture, location, barcode or file API or Utility, which Power Pages does not support.',
+    'On Power Pages, keep a path that works without the API; the declaration itself is allowed when it is not required.',
+    { references: [pagesUnsupported], confidence: 'medium' },
+  ),
+  appRule(
+    'APP-PCF-015',
+    'Bound type outside the Power Pages field types',
+    'hint',
+    'compatibility',
+    'A bound property declares a type Power Pages forms do not support for code components.',
+    'For a Power Pages form field, bind one of the documented types; other hosts can support more.',
+    { references: [pagesTypes], confidence: 'medium' },
+  ),
+  appRule(
+    'APP-PCF-016',
+    'Several bound properties on Power Pages',
+    'hint',
+    'compatibility',
+    'The control declares more than one bound property; Power Pages does not support a code component bound to multiple fields of a form.',
+    'For a Power Pages form, bind one column and pass other values as input properties.',
+    { references: [pagesUnsupported], confidence: 'medium' },
+  ),
+  appRule(
+    'APP-PCF-017',
+    'Dependent library outside model-driven apps',
+    'hint',
+    'compatibility',
+    'The manifest declares a dependency, which Microsoft documents for model-driven apps only.',
+    'Verify dependent-library loading on the intended host before relying on it outside model-driven apps.',
+    { references: [`${manifest}dependency`], confidence: 'medium' },
+  ),
 ];
+// Power Pages form field types for code components (Learn, supported field types and formats); a type group passes
+// when any of its types is one of them.
+const PAGES_BOUND_TYPES =
+  /^(?:Currency|DateAndTime\.DateAndTime|DateAndTime\.DateOnly|Decimal|Enum|FP|Multiple|OptionSet|SingleLine\.(?:Email|Phone|Text|TextArea|Ticker|URL)|TwoOptions|Whole\.None)$/;
+const PAGES_UNSUPPORTED_FEATURE =
+  /^(?:Device\.(?:captureAudio|captureImage|captureVideo|getBarcodeValue|getCurrentPosition|pickFile)|Utility)$/;
 
 const children = (node, name) => node.children.filter((candidate) => candidate.name === name);
 function duplicate(nodes, emit, entry) {
@@ -147,6 +201,8 @@ function inspectProperty(node, groups, entry, emit) {
     'File',
   ]);
   if (types?.some((type) => unsupported.has(type))) emit('APP-PCF-011', entry, undefined, atNode(node));
+  if (attrs.usage === 'bound' && types?.length && !types.some((type) => PAGES_BOUND_TYPES.test(type)))
+    emit('APP-PCF-015', entry, undefined, atNode(node));
   if (attrs.usage === 'bound' && Object.hasOwn(attrs, 'default-value'))
     emit('APP-PCF-012', entry, undefined, atNode(node));
   if (!attrs.name?.trim() || conflicting || missingGroup || invalidUsage || invalidObject)
@@ -171,6 +227,10 @@ function inspectControl(control, entry, emit) {
   if (attrs['control-type'] === 'virtual' && !platform.some((node) => node.attrs.name === 'React'))
     emit('APP-PCF-007', entry, undefined, atNode(control));
   if (attrs['control-type'] === 'virtual' || platform.length) emit('APP-PCF-008', entry, undefined, atNode(control));
+  const dependency = resources.find((node) => node.name === 'dependency');
+  if (dependency) emit('APP-PCF-017', entry, undefined, atNode(dependency));
+  const bound = children(control, 'property').filter((node) => node.attrs.usage === 'bound');
+  if (bound.length > 1) emit('APP-PCF-016', entry, undefined, atNode(bound[1]));
   const external = children(control, 'external-service-usage').find((node) => node.attrs.enabled === 'true');
   if (external) emit('APP-PCF-009', entry, undefined, atNode(external));
   inspectContracts(control, entry, emit);
@@ -185,6 +245,12 @@ function inspectContracts(control, entry, emit) {
   for (const list of [groupNodes, properties, datasets]) duplicate(list, emit, entry);
   const features = children(control, 'feature-usage').flatMap((node) => children(node, 'uses-feature'));
   duplicate(features, emit, entry);
+  for (const feature of features) {
+    if (['true', '1'].includes(String(feature.attrs.required).trim()))
+      emit('APP-PCF-013', entry, undefined, atNode(feature));
+    if (PAGES_UNSUPPORTED_FEATURE.test(feature.attrs.name ?? ''))
+      emit('APP-PCF-014', entry, undefined, atNode(feature));
+  }
   for (const dataset of datasets) {
     const sets = children(dataset, 'property-set');
     duplicate(sets, emit, entry);

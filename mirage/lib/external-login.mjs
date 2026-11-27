@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { siteSetting } from './redirects.mjs';
+import { CLAIM_TYPES } from './identity-federation.mjs';
 
 /** External sign-in configuration derived from the portal's site settings. */
 
@@ -31,6 +32,64 @@ export function timeSpanMs(value) {
   if (!match) return null;
   const [, days = '0', hours, minutes, seconds = '0'] = match;
   return (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000;
+}
+
+const ONE_DAY = 24 * 60 * 60 * 1000;
+/**
+ * The application-cookie lifetime: Authentication/ApplicationCookie/ExpireTimeSpan (Learn default 24 hours) and
+ * SlidingExpiration (Learn default true); a value that is not a TimeSpan or a boolean keeps its default. Hosted session
+ * F4 (paqvilo-developer hosted-f4 cookies runs a and b): without either setting a remembered sign-in's persistent cookie
+ * expires 24 hours after it is issued.
+ */
+export function applicationSessionLifetime(portal) {
+  const setting = (name) => siteSetting(portal, 'Authentication/ApplicationCookie/' + name);
+  const value = text(setting('ExpireTimeSpan'));
+  const duration = /^(?:\d+\.)?\d{1,2}:[0-5]\d:[0-5]\d$/.test(value ?? '') ? timeSpanMs(value) : null;
+  return {
+    duration: Number.isSafeInteger(duration) && duration > 0 ? duration : ONE_DAY,
+    sliding: lower(setting('SlidingExpiration')) !== 'false',
+  };
+}
+
+const THIRTY_MINUTES = 30 * 60 * 1000;
+/**
+ * Authentication/ApplicationCookie/SecurityStampValidator/ValidateInterval (Learn: the period between security stamp
+ * validations, default 30 minutes), in milliseconds; zero validates every request.
+ */
+export function securityStampInterval(portal) {
+  const value = timeSpanMs(
+    siteSetting(portal, 'Authentication/ApplicationCookie/SecurityStampValidator/ValidateInterval'),
+  );
+  return Number.isSafeInteger(value) && value >= 0 ? value : THIRTY_MINUTES;
+}
+
+/**
+ * The private-site admission session's lifetime, a fixed deadline: the application cookie's ExpireTimeSpan (24 hours
+ * without it). With observed.privateSiteAdmissionLifetime "fixed-day" it is 24 hours whatever the cookie lifetime: hosted
+ * session F4 AUTH-06h (paqvilo-developer hosted-f4 admission-watch runs a and b) kept an admission for at least 59
+ * minutes, through LogOff, with an application cookie lifetime of 6 minutes and without issuing it again; its own expiry
+ * was not reached, so the 24 hours are inferred, not observed.
+ */
+export function admissionSessionLifetime(portal) {
+  const duration =
+    portal?.observed?.privateSiteAdmissionLifetime === 'fixed-day'
+      ? ONE_DAY
+      : applicationSessionLifetime(portal).duration;
+  return { duration, sliding: false };
+}
+
+/**
+ * The warning for an admission deadline shorter than a hosted site keeps (observed.privateSiteAdmissionLifetime
+ * application-cookie with an ExpireTimeSpan under 24 hours), or null.
+ */
+export function admissionLifetimeDiagnostic(portal) {
+  const { duration } = admissionSessionLifetime(portal);
+  if (duration >= ONE_DAY) return null;
+  return {
+    code: 'PRIVATE_SITE_ADMISSION_HOSTED_LIFETIME',
+    severity: 'warning',
+    message: `Private-site admission ends ${duration / 1000} seconds after admission, at Authentication/ApplicationCookie/ExpireTimeSpan. A hosted site kept an admission for at least 59 minutes with a 6-minute application cookie lifetime, without issuing it again (hosted session F4 AUTH-06h); set observed.privateSiteAdmissionLifetime to fixed-day, with evidence, for a 24-hour admission whatever the cookie lifetime.`,
+  };
 }
 
 /** Registration and sign-in switches with their documented defaults. */
@@ -160,6 +219,7 @@ export function oidcOptions(fields = {}) {
     tokenAuthMethod: method === 'private_key_jwt' ? 'private_key_jwt' : 'client_secret_post',
     certificateKid,
     useUserInfo: flag(fieldOf(fields, 'UseUserInfoEndpointforClaims'), false),
+    useTokenLifetime: flag(fieldOf(fields, 'UseTokenLifetime'), false),
     userInfoEndpoint: fieldOf(fields, 'UserInfoEndpoint'),
     prompt: PROMPT_VALUES.includes(promptSetting) ? promptSetting : null,
     acrValues: fieldOf(fields, 'AcrValues'),
@@ -203,11 +263,14 @@ function readDynamicParameters(fields, problems) {
  *   (reported as authoritySource "default"). The adapter posts back to the site root with
  *   scope "openid profile".
  * - OpenID Connect providers with Authentication/OpenIdConnect/<name>/Authority.
- * - OAuth 2.0 providers with Authentication/OpenAuth/<Name>/ClientId (ConsumerKey, AppId).
- * - SAML 2.0 and WS-Federation providers with an AuthenticationType setting.
+ * - OAuth 2.0 providers with Authentication/OpenAuth/<Name>/ClientId (ConsumerKey, AppId): the
+ *   authorization code flow with ClientSecret (ConsumerSecret, AppSecret), Scope (comma-separated) and
+ *   CallbackPath, then the user profile read with the access token (openAuthOptions). Twitter (protocol
+ *   oauth1) signs in with OAuth 1.0a and its ConsumerKey and ConsumerSecret (lib/identity-oauth1.mjs).
+ * - SAML 2.0 and WS-Federation providers with an AuthenticationType setting (federationOptions).
  * OpenID Connect providers without a RedirectUri use the site root, as the platform's built-in
- * provider does; the local OAuth 2.0, SAML 2.0 and WS-Federation providers exchange the
- * same OpenID Connect messages with the local identity provider.
+ * provider does. Every provider talks to the local identity provider: OpenID Connect and OAuth 2.0
+ * messages, SAML 2.0 messages for saml2 and WS-Federation messages for wsfederation.
  */
 export function externalProviders(portal) {
   const settings = authenticationSettings(portal);
@@ -296,25 +359,60 @@ function addOidcProviders(providers, oidc, common) {
   }
 }
 
+/**
+ * Contact defaults of providers that issue System.Security.Claims.ClaimTypes claims (OAuth 2.0 user profiles, SAML 2.0
+ * and WS-Federation attributes), as ASP.NET Identity reads an external login: given name, surname and email.
+ */
+const CLAIM_TYPE_DEFAULTS = Object.freeze([
+  ['firstname', CLAIM_TYPES.givenName],
+  ['lastname', CLAIM_TYPES.surname],
+  ['emailaddress1', 'email'],
+]);
+
+/**
+ * The OAuth 2.0 options (Learn, "Additional settings for OAuth 2.0 providers"): the client secret (ClientSecret,
+ * ConsumerSecret or AppSecret), Scope as a comma-separated list of permissions, and CallbackPath.
+ */
+function openAuthOptions(name, fields = {}) {
+  const callback = replyPath(fieldOf(fields, 'CallbackPath'));
+  const clientSecret =
+    fieldOf(fields, 'ClientSecret') ?? fieldOf(fields, 'ConsumerSecret') ?? fieldOf(fields, 'AppSecret');
+  return {
+    clientSecret,
+    problems: clientSecret
+      ? []
+      : ['ClientSecret (ConsumerSecret, AppSecret) is not set, so the authorization code cannot be redeemed.'],
+    scope: String(fieldOf(fields, 'Scope') ?? '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(' '),
+    callbackPath: callback ?? OAUTH_CALLBACKS[name.toLowerCase()] ?? `/signin-${slugOf(name)}`,
+    callbackSource: callback ? 'site-setting' : 'default',
+  };
+}
+
 function addOauthProviders(providers, portal, common) {
   for (const [name, fields] of settingsUnder(portal, 'Authentication/OpenAuth/')) {
     const clientId = fieldOf(fields, 'ClientId') ?? fieldOf(fields, 'ConsumerKey') ?? fieldOf(fields, 'AppId');
     if (!clientId) continue;
+    // The platform's Twitter provider is the OWIN Twitter middleware: OAuth 1.0a with the consumer key and secret.
+    const twitter = name.toLowerCase() === 'twitter';
     providers.push({
       key: name,
       slug: `oauth-${slugOf(name)}`,
       type: 'oauth2',
+      protocol: twitter ? 'oauth1' : 'oauth2',
       id: name,
       authoritySource: 'site-setting',
       aliases: [name.toLowerCase()],
       clientId,
-      callbackPath: OAUTH_CALLBACKS[name.toLowerCase()] ?? `/signin-${slugOf(name)}`,
-      callbackSource: 'default',
-      responseType: 'id_token',
-      responseMode: 'form_post',
-      scope: 'openid',
+      responseType: twitter ? null : 'code',
+      responseMode: 'query',
       ...common(fields, name),
       ...oidcOptions(),
+      ...openAuthOptions(name, fields),
+      claimDefaults: CLAIM_TYPE_DEFAULTS,
     });
   }
 }
@@ -325,6 +423,25 @@ function addFederatedProviders(providers, portal, common) {
     ['Authentication/WsFederation/', 'wsfederation'],
   ])
     addFederatedProviderSettings(providers, settingsUnder(portal, prefix), type, common);
+}
+
+/**
+ * SAML 2.0 and WS-Federation options (Learn, "Set up a SAML 2.0 provider", "Set up a WS-Federation provider", SAML 2.0
+ * FAQ): MetadataAddress (answered by the local identity provider), ValidateAudience (on unless explicitly false) with
+ * ValidAudiences (comma-separated, besides the realm), Whr (WS-Federation home realm) and ExternalLogoutCertThumbprint
+ * (SAML 2.0 logout requests, signed with the site's custom certificate).
+ */
+function federationOptions(fields = {}) {
+  return {
+    metadataAddress: fieldOf(fields, 'MetadataAddress'),
+    validateAudience: flag(fieldOf(fields, 'ValidateAudience'), true),
+    validAudiences: String(fieldOf(fields, 'ValidAudiences') ?? '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+    homeRealm: fieldOf(fields, 'Whr'),
+    logoutCertificate: fieldOf(fields, 'ExternalLogoutCertThumbprint'),
+  };
 }
 
 function addFederatedProviderSettings(providers, settings, type, common) {
@@ -343,11 +460,13 @@ function addFederatedProviderSettings(providers, settings, type, common) {
         fieldOf(fields, 'ServiceProviderRealm') ?? fieldOf(fields, 'Wtrealm') ?? `paqvilo-mirage-${slugOf(name)}`,
       callbackPath: replyPath(reply) ?? '/',
       callbackSource: reply ? 'site-setting' : 'default',
-      responseType: 'id_token',
+      responseType: null,
       responseMode: 'form_post',
-      scope: 'openid',
+      scope: null,
       ...common(fields, name),
       ...oidcOptions(),
+      ...federationOptions(fields),
+      claimDefaults: CLAIM_TYPE_DEFAULTS,
     });
   }
 }
@@ -376,24 +495,36 @@ export function presetSubject(provider, contactId) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The documented email claims for contact mapping: email, emails or upn. */
+/** The documented email claims for contact mapping: email, emails or upn (also as ClaimTypes Email and Upn). */
 export function emailClaim(claims) {
-  for (const name of ['email', 'emails', 'upn']) {
+  for (const name of ['email', 'emails', 'upn', CLAIM_TYPES.email, CLAIM_TYPES.upn]) {
     const value = Array.isArray(claims?.[name]) ? claims[name][0] : claims?.[name];
     if (typeof value === 'string' && value.includes('@')) return value.trim();
   }
   return null;
 }
 
+const DEFAULT_PAIRS = Object.freeze([
+  ['firstname', 'given_name'],
+  ['lastname', 'family_name'],
+  ['emailaddress1', 'email'],
+]);
+
 /**
  * Contact fields from claims. A RegistrationClaimsMapping/LoginClaimsMapping value
  * ("firstname=given_name,lastname=family_name") maps text and boolean claims (the platform
  * maps only text and boolean contact attributes); without one, registration fills first
- * name, last name and primary email from given_name, family_name and the email claim
- * (local default). "field = userinfo.claim" reads the UserInfo response (`userinfo`), and is
+ * name, last name and primary email from `defaultPairs`: given_name, family_name and the email
+ * claim, or for ClaimTypes claims (OAuth 2.0, SAML 2.0, WS-Federation) the given name, surname
+ * and email claim types (local default). A mapped claim name is the claim type as issued, such
+ * as a SAML attribute name. "field = userinfo.claim" reads the UserInfo response (`userinfo`), and is
  * ignored without one (natively only with UseUserInfoEndpointforClaims).
  */
-export function contactFieldsFromClaims(claims, mapping, { defaults = true, userinfo = null } = {}) {
+export function contactFieldsFromClaims(
+  claims,
+  mapping,
+  { defaults = true, userinfo = null, defaultPairs = DEFAULT_PAIRS } = {},
+) {
   const pairs = chooseLazily(
     () => text(mapping),
     () =>
@@ -404,11 +535,7 @@ export function contactFieldsFromClaims(claims, mapping, { defaults = true, user
     () =>
       chooseLazily(
         () => defaults,
-        () => [
-          ['firstname', 'given_name'],
-          ['lastname', 'family_name'],
-          ['emailaddress1', 'email'],
-        ],
+        () => defaultPairs,
         () => [],
       ),
   );

@@ -1,3 +1,4 @@
+// @test-kind compatibility+unproven: Microsoft Learn PCF Paging.reset reference ("Reload the results from the server, and reset to page 1") for the reload of page 1; the returned Promise and the loading and hasPreviousPage state after it are the model-driven host's local model
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDatasetHost } from '../lib/model-driven/pcf-runtime.mjs';

@@ -1,0 +1,1758 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-dataverse-query",
+  "suite": "hosted-f1-fetchxml",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal over Dataverse (Liquid fetchxml and portal Web API)",
+    "version": "2026-11-26",
+    "scope": "Two signed-in runs of a hosted Power Pages site (classic authorization) over a synthetic item, child and hierarchy fixture: FetchXML as Liquid {% fetchxml %} and as the Web API fetchXml parameter, covering hierarchy, identity, union-hint and link-type operators, filter links, paging beyond the end and an authored top. Only cases equal in both runs whose rows stay inside the item fixture are recorded. Names and ids are invented; the exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-fetchxml-a",
+      "sha256": "b40405137b3a4734ab14ab12d068edefff804a60ef55b6e33f8116af58673c9d",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-fetchxml-b",
+      "sha256": "0c70b7811f7d97bf7ff68e39e2992ad118b489f8088127647b6c888692d186f4",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "webapi-under",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_itemid%22+operator%3D%22under%22+value%3D%22a1a1a1a1-0000-4000-8000-000000001001%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001003",
+            "qa_name": "A child 2"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-eq-or-under",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_itemid%22+operator%3D%22eq-or-under%22+value%3D%22a1a1a1a1-0000-4000-8000-000000001001%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001003",
+            "qa_name": "A child 2"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-above",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_itemid%22+operator%3D%22above%22+value%3D%22a1a1a1a1-0000-4000-8000-000000001004%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-eq-or-above",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_itemid%22+operator%3D%22eq-or-above%22+value%3D%22a1a1a1a1-0000-4000-8000-000000001004%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-eq-userid",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22ownerid%22+operator%3D%22eq-userid%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040101",
+          "message": "Attribute ownerid in table qa_item is not enabled for Web Api.",
+          "cdscode": null
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-ne-userid",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22ownerid%22+operator%3D%22ne-userid%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040101",
+          "message": "Attribute ownerid in table qa_item is not enabled for Web Api.",
+          "cdscode": null
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-eq-businessid",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22owningbusinessunit%22+operator%3D%22eq-businessid%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040101",
+          "message": "Attribute owningbusinessunit in table qa_item is not enabled for Web Api.",
+          "cdscode": null
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-ne-businessid",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22owningbusinessunit%22+operator%3D%22ne-businessid%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 403,
+        "error": {
+          "code": "90040101",
+          "message": "Attribute owningbusinessunit in table qa_item is not enabled for Web Api.",
+          "cdscode": null
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-filter-hint-union",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter+type%3D%22or%22+hint%3D%22union%22%3E%3Ccondition+attribute%3D%22qa_amount%22+operator%3D%22eq%22+value%3D%2210%22%2F%3E%3Ccondition+attribute%3D%22qa_amount%22+operator%3D%22eq%22+value%3D%2250%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001005",
+            "qa_name": "B root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-in",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22in%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-exists",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22exists%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-any",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22any%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-not-any",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22not+any%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x8004111c"
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-all",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22all%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x8004111c"
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-not-all",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22not+all%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 400,
+        "error": {
+          "code": "9004010D",
+          "message": "Common Data Service error occurred.",
+          "cdscode": "0x8004111c"
+        },
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-crossapply",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22matchfirstrowusingcrossapply%22+alias%3D%22first%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1",
+            "first.qa_name@OData.Community.Display.V1.AttributeName": "qa_name",
+            "first.qa_name": "C3 of A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root",
+            "first.qa_name@OData.Community.Display.V1.AttributeName": "qa_name",
+            "first.qa_name": "C1 of A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-link-inner-baseline",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Clink-entity+name%3D%22qa_child%22+from%3D%22qa_item%22+to%3D%22qa_itemid%22+link-type%3D%22inner%22%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_tag%22+operator%3D%22eq%22+value%3D%22x%22%2F%3E%3C%2Ffilter%3E%3C%2Flink-entity%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-1-of-2",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%222%22+page%3D%221%22+returntotalrecordcount%3D%22true%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 4,
+        "total": 4,
+        "more": true,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001003",
+            "qa_name": "A child 2"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-2-of-2-exact-end",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%222%22+page%3D%222%22+returntotalrecordcount%3D%22true%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 4,
+        "total": 4,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-3-beyond",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%222%22+page%3D%223%22+returntotalrecordcount%3D%22true%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 4,
+        "total": 4,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-9-beyond",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%222%22+page%3D%229%22+returntotalrecordcount%3D%22true%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 4,
+        "total": 4,
+        "more": false,
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-count-4-exact",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%224%22+page%3D%221%22+returntotalrecordcount%3D%22true%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 4,
+        "total": 4,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001003",
+            "qa_name": "A child 2"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-page-count-3-partial",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+count%3D%223%22+page%3D%222%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-top-2",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_items?fetchXml=%3Cfetch+top%3D%222%22%3E%3Centity+name%3D%22qa_item%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_itemid%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_name%22+operator%3D%22like%22+value%3D%22A+%25%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": -1,
+        "more": false,
+        "rows": [
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001002",
+            "qa_name": "A child 1"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001003",
+            "qa_name": "A child 2"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001004",
+            "qa_name": "A grandchild"
+          },
+          {
+            "qa_itemid": "a1a1a1a1-0000-4000-8000-000000001001",
+            "qa_name": "A root"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-under",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_itemid\" operator=\"under\" value=\"a1a1a1a1-0000-4000-8000-000000001001\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "3",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A grandchild&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001004}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A child 2",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-eq-or-under",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_itemid\" operator=\"eq-or-under\" value=\"a1a1a1a1-0000-4000-8000-000000001001\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "4",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A child 2",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-above",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_itemid\" operator=\"above\" value=\"a1a1a1a1-0000-4000-8000-000000001004\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-eq-or-above",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_itemid\" operator=\"eq-or-above\" value=\"a1a1a1a1-0000-4000-8000-000000001004\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "3",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-eq-userid",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"ownerid\" operator=\"eq-userid\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "0",
+        "more": "false",
+        "total": "-1",
+        "cookie": "",
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-ne-businessid",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"owningbusinessunit\" operator=\"ne-businessid\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "0",
+        "more": "false",
+        "total": "-1",
+        "cookie": "",
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-filter-hint-union",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter type=\"or\" hint=\"union\"><condition attribute=\"qa_amount\" operator=\"eq\" value=\"10\"/><condition attribute=\"qa_amount\" operator=\"eq\" value=\"50\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;B root&quot; first=&quot;A root&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001005}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "B root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-in",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"in\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-exists",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"exists\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-any",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"any\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-not-any",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"not any\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "error": "Liquid error: Exception has been thrown by the target of an invocation."
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-all",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"all\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "error": "Liquid error: Exception has been thrown by the target of an invocation."
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-not-all",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"not all\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "error": "Liquid error: Exception has been thrown by the target of an invocation."
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-crossapply",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"matchfirstrowusingcrossapply\" alias=\"first\"><attribute name=\"qa_name\"/><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "C3 of A child 1",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "C1 of A root",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-link-inner-baseline",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><link-entity name=\"qa_child\" from=\"qa_item\" to=\"qa_itemid\" link-type=\"inner\"><filter><condition attribute=\"qa_tag\" operator=\"eq\" value=\"x\"/></filter></link-entity><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-1-of-2",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"2\" page=\"1\" returntotalrecordcount=\"true\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "true",
+        "total": "4",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A child 2&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001003}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A child 2",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-2-of-2-exact-end",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"2\" page=\"2\" returntotalrecordcount=\"true\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "2",
+        "more": "false",
+        "total": "4",
+        "cookie": "&lt;cookie page=&quot;2&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A grandchild&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001004}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-3-beyond",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"2\" page=\"3\" returntotalrecordcount=\"true\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "0",
+        "more": "false",
+        "total": "4",
+        "cookie": "",
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-9-beyond",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"2\" page=\"9\" returntotalrecordcount=\"true\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "0",
+        "more": "false",
+        "total": "4",
+        "cookie": "",
+        "rows": []
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-count-4-exact",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"4\" page=\"1\" returntotalrecordcount=\"true\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "4",
+        "more": "false",
+        "total": "4",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A child 2",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-page-count-3-partial",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch count=\"3\" page=\"2\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "1",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;2&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A root&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-top-2",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch top=\"2\"><entity name=\"qa_item\"><attribute name=\"qa_name\"/><attribute name=\"qa_itemid\"/><filter><condition attribute=\"qa_name\" operator=\"like\" value=\"A %\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "4",
+        "more": "false",
+        "total": "-1",
+        "cookie": "&lt;cookie page=&quot;1&quot;&gt;&lt;qa_name last=&quot;A root&quot; first=&quot;A child 1&quot; /&gt;&lt;qa_itemid last=&quot;{A1A1A1A1-0000-4000-8000-000000001001}&quot; first=&quot;{A1A1A1A1-0000-4000-8000-000000001002}&quot; /&gt;&lt;/cookie&gt;",
+        "rows": [
+          {
+            "name": "A child 1",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A child 2",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A grandchild",
+            "kids": "",
+            "first": "",
+            "n": ""
+          },
+          {
+            "name": "A root",
+            "kids": "",
+            "first": "",
+            "n": ""
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import {
   validateScenarioId,
   validateCaptureLabel,
@@ -30,7 +31,6 @@ import http from 'node:http';
 import { assertToolPaths, parseToolCommand } from './tool-options.mjs';
 import { runMutatingHook, MUTATING_HOOK_FAILURE } from './baseline-hooks.mjs';
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import {
   captureNetDecision,
   captureScenario,
@@ -79,19 +79,22 @@ export const list = (value) => {
   return ids;
 };
 
+function validateScenarioDefinition(scenario, personas, ids) {
+  validateScenarioId(scenario.id);
+  if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
+  ids.add(scenario.id);
+  if (!Array.isArray(scenario.steps) || !scenario.steps.length) throw new Error(`Scenario ${scenario.id} needs steps.`);
+  if (scenario.persona && !personas?.[scenario.persona])
+    throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
+  if (scenario.compareScreenshot !== undefined && typeof scenario.compareScreenshot !== 'boolean')
+    throw new Error(`Scenario ${scenario.id} compareScreenshot must be a Boolean.`);
+}
+
 export function validateMatrix(matrix) {
   if (matrix?.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
     throw new Error('A version 1 matrix with scenarios is required.');
   const ids = new Set();
-  for (const scenario of matrix.scenarios) {
-    validateScenarioId(scenario.id);
-    if (ids.has(scenario.id)) throw new Error(`Duplicate scenario id: ${scenario.id}`);
-    ids.add(scenario.id);
-    if (!Array.isArray(scenario.steps) || !scenario.steps.length)
-      throw new Error(`Scenario ${scenario.id} needs steps.`);
-    if (scenario.persona && !matrix.personas?.[scenario.persona])
-      throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
-  }
+  for (const scenario of matrix.scenarios) validateScenarioDefinition(scenario, matrix.personas, ids);
   for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern); // NOSONAR: constructor validates the pattern or has side effects
   if (matrix.origin && !/^https:\/\/[^/?#]+$/.test(matrix.origin))
     throw new Error('matrix.origin must be a bare HTTPS origin.');
@@ -1029,6 +1032,7 @@ async function runCompareAction({ action, values, matrix, outDir, only }) {
       verdict: result.verdict,
       counts: result.counts,
       signatures: result.signatures,
+      ...(result.screenshot ? { screenshot: result.screenshot } : {}),
       reason: result.reason,
     });
     console.log(
@@ -1049,7 +1053,7 @@ async function runCompareAction({ action, values, matrix, outDir, only }) {
   process.exitCode = report.totals.fail || report.totals.error ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;

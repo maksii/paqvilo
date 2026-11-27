@@ -44,6 +44,12 @@ const windowsArguments = (pid) => [
   `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`,
 ];
 const psArguments = (pid) => ['-o', 'lstart=', '-p', String(pid)];
+/**
+ * `ps` prints `lstart` through the locale's date format (macOS: "Сб 21 лист. 23:47:31 2026" under uk_UA), so a start
+ * time read in one locale neither parses as the C form nor equals one read in another. Every read is made in the C
+ * locale.
+ */
+const psEnvironment = (env = process.env) => ({ ...env, LC_ALL: 'C' });
 
 /** The start time a finished helper printed, or null: a helper that did not run or failed read nothing. */
 const printedIdentity = (result) => (result.status === 0 ? result.stdout.trim() || null : null);
@@ -97,7 +103,7 @@ export function processIdentity(pid) {
       spawnSync(
         PS, // NOSONAR: fixed tool name resolved through PATH by developer tooling
         psArguments(pid),
-        { encoding: 'utf8', windowsHide: true },
+        { encoding: 'utf8', windowsHide: true, env: psEnvironment() },
       ),
     ),
   );
@@ -117,7 +123,7 @@ export async function processIdentityAsync(pid, { signal } = {}) {
   const proc = await procIdentityAsync(pid, signal);
   if (signal?.aborted) return null;
   if (proc !== undefined) return rememberIdentity(pid, proc);
-  const result = await runAsync(PS, psArguments(pid), signal);
+  const result = await runAsync(PS, psArguments(pid), signal, psEnvironment());
   return signal?.aborted ? null : rememberIdentity(pid, printedIdentity(result));
 }
 

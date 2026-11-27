@@ -1,3 +1,4 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
@@ -6,7 +7,6 @@ import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { navigationCommitBudget } from './lib/navigation-budget.mjs';
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
@@ -1347,7 +1347,7 @@ export const __testing = {
   endFlowPage,
 };
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   try {
     const values = parseToolArgs('acceptance', process.argv.slice(2));
     assertToolOptions('acceptance', values, ['local', 'origin', 'cdp']);

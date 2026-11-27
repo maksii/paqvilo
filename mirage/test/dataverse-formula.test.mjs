@@ -312,3 +312,26 @@ test('a chain of more than ten formula columns reads null with the depth diagnos
   assert.equal(row.x_z0, null);
   assert.ok(diagnostics.some((entry) => /more than 10 chained/.test(entry.message)));
 });
+
+// Regression: the store's read copy holds every formula column as a lazy getter; copying it inside one computation started
+// each other formula column nested inside it, so a table of more than ten formula columns read the later ones null with
+// FORMULA_NOT_EVALUATED (chain depth).
+test('a table of more than ten independent formula columns computes every one; a pack function still reads the others', async (t) => {
+  const MANY = '77777777-7777-4777-8777-7777777777d4';
+  const formulas = Object.fromEntries(
+    Array.from({ length: 14 }, (_, i) => [`x_f${String(i).padStart(2, '0')}`, `x_amount * ${i}`]),
+  );
+  const layout = layoutOf('x_many', formulas, MANY);
+  const { request, json, diagnostics } = await setup(
+    t,
+    { formulaColumns: { 'x_many.x_f13': (row) => row.x_f12 + 1 } },
+    null,
+    layout,
+  );
+  const row = await json(await request('GET', `/x_manys(${MANY})`), 200);
+  assert.deepEqual(
+    Object.keys(formulas).map((name) => row[name]),
+    [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 49],
+  );
+  assert.deepEqual(diagnostics, []);
+});

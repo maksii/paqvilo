@@ -7,7 +7,8 @@ import { adminServes } from '../../lib/admin-origin.mjs';
 import { ownedFixture } from '../../testing/owned-fixture.mjs';
 
 export const AUTHORITY = 'https://idp.example.test/local/';
-const decode = (value) =>
+// The text of an HTML attribute value or text node: the five entities the portal's markup escapes.
+export const decode = (value) =>
   value
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
@@ -136,15 +137,24 @@ export function initialState({ tables = {}, mappings = {} } = {}) {
   };
 }
 
-export async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
+export async function simulator(
+  t,
+  settings = LOCAL_PROVIDER,
+  state = initialState(),
+  // files: extra or replaced source files of the invented site (name -> body).
+  { fixturePack, files = {}, ...options } = {},
+) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-')));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  for (const [name, body] of Object.entries(portalFiles(settings))) {
+  for (const [name, body] of Object.entries({ ...portalFiles(settings), ...files })) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
+  const module = path.join(dir, 'fixture-pack.mjs');
+  if (fixturePack) await fs.writeFile(module, fixturePack);
   const app = await createSimulator({
     sourceDir: dir,
+    ...(fixturePack ? { projectRoot: dir, dataPacks: [{ module }] } : {}),
     stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
@@ -153,7 +163,7 @@ export async function simulator(t, settings = LOCAL_PROVIDER, state = initialSta
   });
   let closed = false;
   ownedFixture(t).add(() => (closed ? undefined : app.close()));
-  const { csrf } = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
+  const { csrf } = await (await fetch(app.adminOrigin + '/__sim/api/state?summary=1')).json();
   return { app, csrf, idp: app.identityProvider, close: async () => ((closed = true), app.close()) };
 }
 
@@ -188,7 +198,9 @@ export function client(app) {
       }),
     );
   };
-  return { jar, request };
+  // The request token this browser's pages carry for its current sign-in (tokens pair with the browser by default).
+  const token = async () => /value="([^"]+)"/.exec(await (await request('/_layout/tokenhtml')).text())?.[1] ?? null;
+  return { jar, request, token };
 }
 
 /** The portal's provider form: POST ExternalLogin with the token /_layout/tokenhtml hands out. */

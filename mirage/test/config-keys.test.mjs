@@ -45,10 +45,13 @@ const NEW_KEYS = [
   'localServices',
   'providers',
   'canvas',
+  'pcf',
   'codeApps',
   'sourceMaps',
   'trace',
   'logs',
+  'uploadedAssemblies',
+  'implicitGrant',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',

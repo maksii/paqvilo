@@ -8,6 +8,8 @@ import { DataError } from '../lib/data-error.mjs';
 import { createThroughPipeline, install, reset } from '../lib/dataverse-files.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { attachmentApi } from './attachment-api-fixture.mjs';
+import { PNG as PNG_CODEC } from 'pngjs';
+import { pngThumbnail } from '../lib/portal-png.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -422,6 +424,23 @@ test('images store and return base64, serve full and thumbnail bytes and honour 
     204,
   );
   assert.deepEqual((await h.hooks.stream(request('GET', { segment: 'sealed', value: true }))).body, PNG);
+});
+
+// @test-kind observation: hosted session F2 thumbs runs a and b (the dataverse: reads of each image column): the organization $value read answers the same thumbnail bytes as the portal (a square of the shorter side, the source format kept), size=full the upload
+test('the organization image $value read answers the thumbnail, size=full the stored bytes', async () => {
+  const h = harness();
+  const image = new PNG_CODEC({ width: 300, height: 100 });
+  for (let i = 0; i < 300 * 100; i++) image.data.set([i % 251, (i >> 3) % 256, 90, 255], i * 4);
+  const original = PNG_CODEC.sync.write(image);
+  await h.hooks.stream(
+    request('PATCH', { segment: 'photo', headers: { 'x-ms-file-name': 'wide.png' }, bodyBuffer: original }),
+  );
+  const thumb = await h.hooks.stream(request('GET', { segment: 'photo', value: true }));
+  assert.deepEqual(Buffer.from(thumb.body), pngThumbnail(original));
+  const decoded = PNG_CODEC.sync.read(Buffer.from(thumb.body));
+  assert.deepEqual([decoded.width, decoded.height], [100, 100]);
+  const full = await h.hooks.stream(request('GET', { segment: 'photo', value: true, search: '?size=full' }));
+  assert.deepEqual(Buffer.from(full.body), original);
 });
 
 test('an image thumbnail sends no file headers, while size=full keeps them', async () => {

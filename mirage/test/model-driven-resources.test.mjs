@@ -445,7 +445,7 @@ test('an empty model-driven client allowlist preserves the separate Power Pages 
     'web-pages/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main\n',
     'Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main\n',
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main\n',
-    'Main.webtemplate.source.html': '<html><body>{% codecomponent name:"fx.Widget" %}</body></html>',
+    'Main.webtemplate.source.html': '<html><body>{% codecomponent name:fx.Widget %}</body></html>',
   });
   const runtime = await createSimulator({
     sourceDir: portal,

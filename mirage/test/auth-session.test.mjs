@@ -5,6 +5,7 @@ import {
   AUTH_COOKIE,
   authCookieName,
   authRoute,
+  cookieRequestHeader,
   createAuthSessions,
   parseCookies,
   returnUrlParameter,
@@ -12,6 +13,7 @@ import {
   signInContent,
 } from '../lib/auth-session.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { makeFixtureDirectory, startLocalSimulator, writeFixtureFiles } from './support/origin-requests.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
@@ -129,10 +131,13 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
   },
 });
 
-async function simulator(t, initial = initialState()) {
+async function simulator(t, initial = initialState(), { clock, settings = [], identityProvider } = {}) {
   const dir = await makeFixtureDirectory(t, 'pp-auth-');
-  await writeFixtureFiles(dir, portalFiles);
-  const app = await startLocalSimulator(t, dir, initial);
+  await writeFixtureFiles(dir, {
+    ...portalFiles,
+    'sitesetting.yml': [portalFiles['sitesetting.yml'], ...settings].join('\n'),
+  });
+  const app = await startLocalSimulator(t, dir, initial, { clock, identityProvider });
   const state = await (await fetch(app.url + '/__sim/api/state?summary=1')).json();
   // A browser sends Fetch Metadata (Sec-Fetch-Site) with every request.
   const browser = (target, { cookie, headers = {}, ...init } = {}) =>
@@ -141,16 +146,31 @@ async function simulator(t, initial = initialState()) {
       ...init,
       headers: { 'sec-fetch-site': 'same-origin', ...(cookie ? { cookie } : {}), ...headers },
     });
-  const signIn = async (contactId, returnUrl = '/') => {
+  // The browser's request token and the binding cookie it pairs with (tokens pair with the browser by default).
+  const signInPage = async (cookie) => {
+    const page = await browser('/_layout/tokenhtml', { cookie });
+    return { token: formToken(await page.text()), binding: bindingCookie(page) };
+  };
+  // `cookie`: the browser's earlier cookies, for a browser the configured identity would otherwise sign in.
+  const signIn = async (contactId, returnUrl = '/', cookie) => {
+    const { token, binding } = await signInPage(cookie);
     const response = await browser('/SignIn', {
       method: 'POST',
+      cookie: [cookie, binding].filter(Boolean).join('; '),
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ contactId, ReturnUrl: returnUrl }),
+      body: new URLSearchParams({ contactId, ReturnUrl: returnUrl, __RequestVerificationToken: token }),
     });
     return { response, cookie: response.headers.get('set-cookie')?.split(';')[0] ?? null };
   };
-  return { app, csrf: state.csrf, browser, signIn };
+  return { app, csrf: state.csrf, browser, signIn, signInPage };
 }
+
+const formToken = (html) => /name="__RequestVerificationToken" type="hidden" value="([^"]+)"/.exec(html)?.[1];
+const bindingCookie = (response) =>
+  response.headers
+    .getSetCookie()
+    .find((cookie) => cookie.includes('-request-binding-'))
+    ?.split(';')[0];
 
 const text = async (response) => response.text();
 const field = (html, id) => new RegExp(`id="${id}">([^<]*)<`).exec(html)?.[1] ?? null;
@@ -379,8 +399,9 @@ test('portal requests are anonymous without a session cookie, whoever the client
   );
 });
 
+// @test-kind contract+observation: the local sign-in page is designed runtime behaviour; an anonymous LogOff's sign-in redirect is hosted session F4 (paqvilo-developer hosted-f4 accounts lifecycle runs a and b).
 test('the sign-in page renders in the site shell; sign-in validates personas and return URLs; sign-out ends the session', async (t) => {
-  const { browser, signIn, csrf } = await simulator(t);
+  const { browser, signIn, signInPage, csrf } = await simulator(t);
   const hop = await browser('/en-US/signin?ReturnUrl=%2Fmembers%2F');
   assert.equal(hop.status, 302);
   assert.equal(hop.headers.get('location'), '/signin?ReturnUrl=%2Fmembers%2F');
@@ -411,8 +432,9 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
   const button = /name="contactId" value="([^"]*)">Sign in<\/button><strong>Alex Local/.exec(html)[1];
   const submitted = await browser(action, {
     method: 'POST',
+    cookie: bindingCookie(page),
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ ReturnUrl: hidden, contactId: button }),
+    body: new URLSearchParams({ ReturnUrl: hidden, contactId: button, __RequestVerificationToken: formToken(html) }),
   });
   assert.equal(submitted.status, 302);
   assert.equal(submitted.headers.get('location'), '/members/');
@@ -465,10 +487,12 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
     assert.match(await text(rejected.response), /Choose an active local persona to sign in\./);
   }
   // The rendered page's form posts contactId and ReturnUrl (URL-encoded); JSON works too.
+  const jsonForm = await signInPage();
   const posted = await browser('/SignIn', {
     method: 'POST',
+    cookie: jsonForm.binding,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ contactId: 'blair', ReturnUrl: '/members/' }),
+    body: JSON.stringify({ contactId: 'blair', ReturnUrl: '/members/', __RequestVerificationToken: jsonForm.token }),
   });
   assert.equal(posted.status, 302);
   assert.equal(posted.headers.get('location'), '/members/');
@@ -498,7 +522,8 @@ test('the sign-in page renders in the site shell; sign-in validates personas and
   for (const cookieHeader of [undefined, signedOut]) {
     const anonymous = await browser('/Account/Login/LogOff?returnUrl=%2F', { cookie: cookieHeader });
     assert.equal(anonymous.status, 302);
-    assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=%2FAccount%2FLogin%2FLogOff');
+    // Hosted session F4 (paqvilo-developer hosted-f4 accounts lifecycle runs a and b): the log-off path as it is.
+    assert.equal(anonymous.headers.get('location'), '/signin?ReturnUrl=/Account/Login/LogOff');
     assert.equal(anonymous.headers.get('set-cookie'), null);
   }
 });
@@ -567,6 +592,196 @@ test('the session API signs the calling browser in and out (CSRF-protected) with
   assert.equal(field(await text(await browser('/', { cookie })), 'user'), 'anonymous');
 });
 
+// @test-kind security+contract: the signed browser session ID distinguishes repeated sign-ins without changing existing tool cookies.
+test('the browser session ID is minted on sign-in and retained by validated role changes', async (t) => {
+  const { app, csrf, browser, signIn } = await simulator(t);
+  const id = (cookie) => {
+    const value = cookie.slice(cookie.indexOf('=') + 1).split('.')[0];
+    return JSON.parse(Buffer.from(value, 'base64url')).sid;
+  };
+  const first = await signIn('alex');
+  const second = await signIn('alex');
+  assert.equal(first.response.status, 302);
+  assert.equal(second.response.status, 302);
+  const firstId = id(first.cookie);
+  assert.ok(/^[0-9a-f]{32}$/.test(firstId ?? ''), 'HTTP sign-in must mint a private session ID');
+  assert.ok(firstId !== id(second.cookie), 'a second sign-in for the same contact gets its own session ID');
+  const update = (suffix, cookie, body) =>
+    fetch(app.adminOrigin + '/__sim/api/session' + suffix, {
+      method: 'POST',
+      headers: { cookie, origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+      body: JSON.stringify(body),
+    });
+  const reissue = await update('/roles', first.cookie, { roles: ['Member'] });
+  assert.equal(reissue.status, 200);
+  const sessionBody = await reissue.json();
+  assert.equal(Object.hasOwn(sessionBody, 'sessionId'), false);
+  assert.equal(Object.hasOwn(sessionBody.cookie, 'sessionId'), false);
+  const updatedCookie = reissue.headers.get('set-cookie').split(';')[0];
+  assert.equal(updatedCookie, sessionBody.cookie.name + '=' + sessionBody.cookie.value);
+  assert.ok(id(updatedCookie) === firstId, 'a role update retains the browser session ID');
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 200);
+
+  const signedOut = await update('/sign-out', updatedCookie, {});
+  assert.equal(signedOut.status, 200);
+  assert.equal(id(signedOut.headers.get('set-cookie').split(';')[0]), undefined);
+  const embedded = app.signIn('alex');
+  assert.equal(id(embedded.cookieHeader), undefined);
+  assert.equal((await browser('/members/', { cookie: embedded.cookieHeader })).status, 200);
+});
+
+// @test-kind security: an explicitly bounded application cookie must lose portal access when its signed deadline passes.
+test('configured fixed application session expiry survives a web-role change', async (t) => {
+  const clock = fixedClock();
+  const state = initialState();
+  state.simulator.identityScope = 'configured';
+  const settings = [
+    '- adx_sitesettingid: absolute\n  adx_name: Authentication/ApplicationCookie/ExpireTimeSpan\n  adx_value: "00:00:10"',
+    '- adx_sitesettingid: sliding\n  adx_name: Authentication/ApplicationCookie/SlidingExpiration\n  adx_value: "false"',
+  ];
+  const { app, browser, csrf, signIn } = await simulator(t, state, { clock, settings });
+  const { response, cookie } = await signIn('alex', '/members/');
+  assert.equal(response.status, 302);
+  assert.equal((await browser('/members/', { cookie })).status, 200);
+
+  clock.advance(9999);
+  const update = await fetch(app.adminOrigin + '/__sim/api/session/roles', {
+    method: 'POST',
+    headers: { cookie, origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+    body: JSON.stringify({ roles: ['Member'] }),
+  });
+  assert.equal(update.status, 200);
+  const updated = (await update.json()).cookie;
+  const updatedCookie = `${updated.name}=${updated.value}`;
+  assert.equal(update.headers.get('set-cookie').split(';')[0], updatedCookie);
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 200);
+
+  clock.advance(1);
+  assert.equal((await browser('/members/', { cookie })).status, 302, 'original application session expires');
+  assert.equal((await browser('/members/', { cookie: updatedCookie })).status, 302);
+  assert.equal(field(await text(await browser('/', { cookie: updatedCookie })), 'user'), 'anonymous');
+  assert.equal((await browser('/members/')).status, 200, 'cookie-less tooling still uses its configured identity');
+  assert.equal((await browser('/members/', { cookie: (await signIn('alex', '/', cookie)).cookie })).status, 200);
+});
+
+// @test-kind security+contract: clock-bound browser renewal preserves the paired owner and never revives a rejected session.
+test('explicit sliding sessions renew strictly after halfway and keep their paired browser token', async (t) => {
+  const clock = fixedClock();
+  const settings = [
+    '- adx_sitesettingid: absolute\n  adx_name: Authentication/ApplicationCookie/ExpireTimeSpan\n  adx_value: "00:00:10"',
+    '- adx_sitesettingid: sliding\n  adx_name: Authentication/ApplicationCookie/SlidingExpiration\n  adx_value: "true"',
+  ];
+  const { app, browser, csrf } = await simulator(t, initialState(), {
+    clock,
+    settings,
+    identityProvider: { pairedBrowserTokens: true },
+  });
+  const name = authCookieName(new URL(app.url).port);
+  const applicationCookie = (response) =>
+    response.headers.getSetCookie().find((cookie) => cookie.startsWith(name + '='));
+  const signIn = async () => {
+    const response = await fetch(app.adminOrigin + '/__sim/api/session/sign-in', {
+      method: 'POST',
+      headers: { origin: app.adminOrigin, 'content-type': 'application/json', 'x-sim-csrf': csrf },
+      body: JSON.stringify({ contactId: 'alex' }),
+    });
+    assert.equal(response.status, 200);
+    const issued = applicationCookie(response);
+    assert.ok(issued && !/Max-Age|Expires=/i.test(issued), 'the application cookie remains a browser session cookie');
+    await response.json();
+    return issued.split(';')[0];
+  };
+  const token = async (response) => /value="([0-9a-f]{64})"/.exec(await response.text())?.[1];
+  const original = await signIn();
+  const expired = await signIn();
+  const legacy = app.signIn('alex').cookieHeader;
+  const firstLayout = await browser('/_layout/tokenhtml', { cookie: original });
+  const firstToken = await token(firstLayout);
+  assert.ok(firstToken);
+  const binding = firstLayout.headers
+    .getSetCookie()
+    .find((cookie) => cookie.includes('-request-binding-'))
+    ?.split(';')[0];
+  assert.ok(binding);
+  const combined = (session) => session + '; ' + binding;
+  clock.advance(5000);
+  const middle = await browser('/members/', { cookie: combined(original) });
+  assert.equal(middle.status, 200);
+  assert.equal(applicationCookie(middle), undefined);
+  await middle.text();
+
+  clock.advance(1);
+  const head = await browser('/members/', { method: 'HEAD', cookie: combined(original) });
+  assert.equal(head.status, 200);
+  assert.equal(applicationCookie(head), undefined);
+  const layout = await browser('/_layout/tokenhtml', { cookie: combined(original) });
+  const renewed = applicationCookie(layout)?.split(';')[0];
+  assert.ok(renewed, 'browser response after halfway reissues the application cookie');
+  assert.ok(layout.headers.getSetCookie().some((cookie) => cookie.startsWith('__RequestVerificationToken=')));
+  assert.ok((await token(layout)) === firstToken, 'the request token keeps its authenticated owner');
+  const document = await browser('/members/', { cookie: combined(original) });
+  assert.equal(document.status, 200);
+  assert.ok(applicationCookie(document)?.split(';')[0] === renewed, 'portal documents also renew the original ticket');
+  await document.text();
+  const nextLayout = await browser('/_layout/tokenhtml', { cookie: combined(renewed) });
+  assert.ok((await token(nextLayout)) === firstToken, 'the renewed cookie preserves the paired owner');
+  assert.equal(applicationCookie(nextLayout), undefined);
+
+  clock.advance(4999);
+  const stale = await browser('/members/', { cookie: combined(expired) });
+  assert.equal(stale.status, 302);
+  assert.equal(applicationCookie(stale), undefined);
+  const accepted = await browser('/members/', { cookie: combined(renewed) });
+  assert.equal(accepted.status, 200);
+  assert.equal(applicationCookie(accepted), undefined);
+  await accepted.text();
+  const tooling = await browser('/members/', { cookie: legacy });
+  assert.equal(tooling.status, 200);
+  assert.equal(applicationCookie(tooling), undefined);
+  await tooling.text();
+  const last = renewed.at(-1);
+  const damaged = renewed.slice(0, -1) + (last === 'a' ? 'b' : 'a');
+  const invalid = await browser('/members/', { cookie: combined(damaged) });
+  assert.equal(invalid.status, 302);
+  assert.equal(applicationCookie(invalid), undefined);
+
+  clock.advance(2);
+  const logout = await browser('/Account/Login/LogOff', { cookie: combined(renewed) });
+  assert.equal(logout.status, 302);
+  assert.equal(logout.headers.getSetCookie().filter((cookie) => cookie.startsWith(name + '=')).length, 1);
+  const signedOut = applicationCookie(logout).split(';')[0];
+  assert.equal((await browser('/members/', { cookie: combined(signedOut) })).status, 302);
+  clock.advance(4999);
+  const timedOut = await browser('/members/', { cookie: combined(renewed) });
+  assert.equal(timedOut.status, 302);
+  assert.equal(applicationCookie(timedOut), undefined);
+});
+
+// @test-kind security: renewal re-signs the original identity and window and requires the currently enabled sliding setting.
+test('sliding renewal retains the signed provider, credential stamp and role override', () => {
+  const clock = fixedClock();
+  let policy = { duration: 10_000, sliding: true };
+  const sessions = createAuthSessions({ clock: clock.now, lifetime: () => policy, identifyIssuedSessions: true });
+  const claims = {
+    contactId: 'alex',
+    provider: 'fixture-provider',
+    credentialStamp: 'fixture-stamp',
+    roles: ['Member'],
+  };
+  const original = sessions.read(sessions.cookie(claims).split(';')[0]);
+  clock.advance(5001);
+  policy = { duration: 60_000, sliding: false };
+  assert.equal(sessions.renewalCookie(original), null);
+  policy = { duration: 60_000, sliding: true };
+  const renewed = sessions.read(sessions.renewalCookie(original).split(';')[0]);
+  assert.deepEqual(renewed, {
+    ...claims,
+    sessionId: original.sessionId,
+    issuedAt: clock.now(),
+    expiresAt: clock.now() + 10_000,
+  });
+});
+
 test('simulator.identityScope configured (alias all-requests) gives cookie-less portal requests the configured identity', async (t) => {
   for (const scope of ['configured', 'all-requests']) {
     const initial = initialState();
@@ -617,4 +832,151 @@ test('simulator.signIn and the shared helper give tools a session; admin operati
   // /_sim/api administration requests use the configured persona.
   const status = await (await fetch(app.url + '/__sim/api/status')).json();
   assert.equal(status.identity.contactId, 'alex');
+});
+
+// A browser of the test runtime with a cookie jar: its binding, session and anti-forgery cookies follow its requests.
+function browserJar(browser) {
+  const jar = new Map();
+  const request = async (target, init = {}) => {
+    const response = await browser(target, {
+      ...init,
+      cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; ') || undefined,
+    });
+    for (const line of response.headers.getSetCookie()) {
+      const [pair] = line.split(';');
+      jar.set(pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1));
+    }
+    return response;
+  };
+  const token = async () => formToken(await (await request('/_layout/tokenhtml')).text());
+  return { jar, request, token };
+}
+
+// @test-kind security+observation: hosted session F4 (paqvilo-developer hosted-f4 swap runs a and b): each browser's token is refused in another browser (both directions) and after LogOff, each with its own 401 90040107 text, a token is reusable, reads ignore it, and the anti-forgery cookie is a SameSite=Lax session cookie.
+test('request tokens pair with one browser and its sign-in by default', async (t) => {
+  const { browser } = await simulator(t);
+  const signedIn = async () => {
+    const visitor = browserJar(browser);
+    const signIn = await visitor.request('/SignIn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        contactId: 'alex',
+        ReturnUrl: '/',
+        __RequestVerificationToken: await visitor.token(),
+      }),
+    });
+    assert.equal(signIn.status, 302);
+    return visitor;
+  };
+  const first = await signedIn();
+  const second = await signedIn();
+  const layout = await first.request('/_layout/tokenhtml');
+  const cookies = layout.headers.getSetCookie();
+  assert.ok(
+    cookies.some((cookie) =>
+      /^__RequestVerificationToken=[^;]+; path=\/; secure; HttpOnly; SameSite=Lax$/.test(cookie),
+    ),
+  );
+  const firstToken = formToken(await layout.text());
+  const secondToken = await second.token();
+  assert.notEqual(firstToken, secondToken);
+  const write = (visitor, token) =>
+    visitor.request('/_api/sample_items', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { __requestverificationtoken: token } : {}) },
+      body: JSON.stringify({ sample_name: 'Invented' }),
+    });
+  const refusal = async (response) => {
+    assert.equal(response.status, 401);
+    const { error } = await response.json();
+    assert.equal(error.code, '90040107');
+    return error.message;
+  };
+  // An accepted token, also when reused, reaches the table permission check (Member may only read).
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await write(first, firstToken)).status, 403);
+  assert.equal((await write(second, secondToken)).status, 403);
+  for (const [visitor, token] of [
+    [first, secondToken],
+    [second, firstToken],
+  ])
+    assert.equal(
+      await refusal(await write(visitor, token)),
+      'Request validation failed : The anti-forgery cookie token and form field token do not match.',
+    );
+  assert.equal(
+    await refusal(await write(first)),
+    'Request validation failed : The required anti-forgery form field "__RequestVerificationToken" is not present.',
+  );
+  assert.match(
+    await refusal(await write(first, firstToken.slice(0, 32))),
+    /^Request validation failed : The anti-forgery token could not be decrypted\./,
+  );
+  // A read ignores the token.
+  const read = await first.request('/_api/sample_items?$select=sample_name', {
+    headers: { __requestverificationtoken: secondToken },
+  });
+  assert.equal(read.status, 200);
+  await read.arrayBuffer();
+  const logOff = await first.request('/Account/Login/LogOff');
+  assert.equal(logOff.status, 302);
+  assert.equal(logOff.headers.get('location'), '/');
+  assert.equal(
+    await refusal(await write(first, firstToken)),
+    'Request validation failed : The provided anti-forgery token was meant for a different claims-based user than the current user.',
+  );
+  // The binding is a browser-session cookie.
+  const binding = [...first.jar.keys()].find((cookie) => cookie.includes('-request-binding-'));
+  assert.ok(binding);
+});
+
+// @test-kind observation: hosted session F4 (paqvilo-developer hosted-f4 accounts cookies and renewal runs a and b): without lifetime settings the application cookie is a browser-session cookie with a 24-hour sliding lifetime, and a portal Web API read alone renews it after half its lifetime, as a page load does.
+test('the default application cookie lifetime is 24 hours sliding and a portal Web API read renews it', async (t) => {
+  const clock = fixedClock();
+  const { browser, signIn } = await simulator(t, initialState(), { clock });
+  const { response, cookie } = await signIn('alex', '/members/');
+  assert.doesNotMatch(response.headers.get('set-cookie'), /Expires|Max-Age/i, 'persistent only with remember-me');
+  const name = cookie.split('=')[0];
+  const renewal = (answer) => answer.headers.getSetCookie().find((line) => line.startsWith(name + '='));
+  const day = 24 * 60 * 60 * 1000;
+  clock.advance(day / 2 - 1);
+  const early = await browser('/_api/sample_items?$select=sample_name', { cookie });
+  assert.equal(early.status, 200);
+  assert.equal(renewal(early), undefined, 'no renewal before half the lifetime');
+  await early.arrayBuffer();
+  clock.advance(2);
+  const read = await browser('/_api/sample_items?$select=sample_name', { cookie });
+  assert.equal(read.status, 200);
+  const renewed = renewal(read)?.split(';')[0];
+  assert.ok(renewed, 'the Web API read renews the application cookie');
+  await read.arrayBuffer();
+  clock.advance(day / 2);
+  assert.equal((await browser('/members/', { cookie })).status, 302, 'the original cookie ends after 24 hours');
+  const members = await browser('/members/', { cookie: renewed });
+  assert.equal(members.status, 200, 'the renewed cookie slides');
+  await members.arrayBuffer();
+});
+
+// @test-kind security+observation: Microsoft.Owin cookie chunking as hosted session F4 sent it (paqvilo-developer hosted-f4 accounts cookies runs a and b: name=chunks:2, C1 of 4021 characters, every part with the cookie's attributes); a missing or altered chunk is no session.
+test('an application cookie longer than a cookie is sent and read in chunks', () => {
+  const sessions = createAuthSessions({ secret: Buffer.from('fixed secret for chunking'), name: 'invented-auth' });
+  const roles = Array.from({ length: 150 }, (_, index) => `Invented role ${String(index).padStart(3, '0')} name`);
+  const headers = sessions.cookie({ contactId: 'alex', roles });
+  assert.ok(Array.isArray(headers));
+  const [main, ...chunks] = headers;
+  assert.equal(main, `invented-auth=chunks:${chunks.length}; Path=/; HttpOnly; SameSite=Lax`);
+  const size = 4050 - 'invented-auth='.length - 3;
+  chunks.forEach((line, index) => {
+    assert.ok(line.startsWith(`invented-authC${index + 1}=`));
+    assert.ok(line.endsWith('; Path=/; HttpOnly; SameSite=Lax'));
+    const value = line.split(';')[0].slice(line.indexOf('=') + 1);
+    if (index < chunks.length - 1) assert.equal(value.length, size);
+    else assert.ok(value.length <= size);
+  });
+  assert.deepEqual(sessions.read(cookieRequestHeader(headers)), { contactId: 'alex', roles });
+  assert.equal(sessions.read(cookieRequestHeader(headers.slice(0, -1))), null, 'a missing chunk');
+  const altered = [...headers];
+  altered[1] = altered[1].replace(/=(.)/, (_match, first) => '=' + (first === 'a' ? 'b' : 'a'));
+  assert.equal(sessions.read(cookieRequestHeader(altered)), null, 'an altered chunk');
+  assert.equal(typeof sessions.cookie({ contactId: 'alex', roles: roles.slice(0, 3) }), 'string');
 });

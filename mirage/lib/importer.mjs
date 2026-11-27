@@ -1,9 +1,18 @@
 import { stripTrailingCharacter } from './text-scanning.mjs';
 import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
+import {
+  componentEnvelope,
+  componentIdentity,
+  componentPayload,
+  enhancedSolutionRoot,
+  isEnhancedSiteMetadataSource,
+} from '../../lense/portal-model.mjs';
 import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
-import { decodeXml } from './xml-text.mjs';
 import { portalField as field } from './portal-field.mjs';
+import { assertSingleEnhancedSite, enhancedPortalRecords, enhancedSiteLookup } from './portal-solution.mjs';
+import { child, childText, parseSolutionXml } from './solution-xml.mjs';
+import { codeSiteUploadPages, readCodeSite } from './code-site.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -11,7 +20,7 @@ import { duplicateYamlDiagnostics } from '../../lense/yaml-diagnostics.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { portalLanguage } from './portal-languages.mjs';
-import { detectSourceDialect, unrecognisedSourceMessage } from './source-dialect.mjs';
+import { detectSourceDialect, portalSourceDir, unrecognisedSourceMessage } from './source-dialect.mjs';
 import { platformChangeDiagnostics } from './platform-changes.mjs';
 import { createHash } from 'node:crypto';
 import { requiredArgument } from './required-argument.mjs';
@@ -117,6 +126,9 @@ const componentIdField = (kind) => {
   return `${kind}id`;
 };
 const active = (r) => Number(field(r, 'statecode', 0)) !== 1;
+// Shortcut target columns in the documented priority order, and the target kinds Mirage does not host.
+const SHORTCUT_TARGET_FIELDS = ['externalurl', 'webpageid', 'surveyid', 'webfileid', 'eventid', 'forumid'];
+const SHORTCUT_UNSUPPORTED_TARGETS = Object.freeze({ surveyid: 'survey', eventid: 'event', forumid: 'forum' });
 // A malformed escape keeps the raw path, so one bad partial URL neither stops an import nor a page request.
 const decodePortalPath = (pathname) => {
   try {
@@ -347,16 +359,148 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
   for (const [key, claimants] of claims) reportUrlClaim(entries, kind, key, claimants, diagnostics);
 }
 
+function enhancedComponentRecord(file, xml, siteIds) {
+  const envelope = componentEnvelope(xml);
+  if (!envelope) throw new Error('Malformed Power Pages component XML.');
+  siteIds.push(envelope.powerpagesiteid || envelope.websiteid);
+  const type = Number(envelope.powerpagecomponenttype);
+  const payload = componentPayload(xml);
+  if (payload.status !== 'record' && payload.status !== 'absent')
+    throw new Error('Power Pages component content must contain one JSON object.');
+  const content = payload.value ?? {};
+  const attachment = xml.includes('<filecontent') ? child(parseSolutionXml(xml), 'filecontent') : null;
+  const siteLanguageId = id(envelope.powerpagesitelanguageid?.trim() || null);
+  const languageFields = siteLanguageId
+    ? {
+        powerpagesitelanguageid: siteLanguageId,
+        ...(type === 2 && content.webpagelanguageid == null ? { webpagelanguageid: siteLanguageId } : {}),
+        ...(type === 7 && content.contentsnippetlanguageid == null ? { contentsnippetlanguageid: siteLanguageId } : {}),
+      }
+    : {};
+  // An outer lifecycle status is distinct from any named status inside the content record.
+  const status = envelope.statuscode?.trim();
+  return {
+    kind: TYPES[type] ?? `component:${type}`,
+    powerpagecomponenttype: type,
+    id: id(componentIdentity(xml) ?? path.basename(path.dirname(file))),
+    name: envelope.name ?? '',
+    ...content,
+    ...languageFields,
+    statecode: Number(envelope.statecode ?? 0),
+    ...(status !== undefined ? { _componentEnvelope: { statuscode: status ? Number(status) : null } } : {}),
+    _file: file,
+    _sourceRevision: sourceRevisionOf(xml),
+    _attachment: attachment ? { name: attachment.text.trim(), mimeType: attachment.attrs.mimetype } : null,
+  };
+}
+
+function enhancedWebsiteRecord(site) {
+  const auth = childText(site, 'enhancedauthorization');
+  return {
+    ...JSON.parse(childText(site, 'content') || '{}'),
+    id: id(site.attrs.powerpagesiteid),
+    name: child(site, 'name')?.text ?? '',
+    ...(auth && /^\d+$/.test(auth) ? { enhancedauthorization: Number(auth) } : {}),
+  };
+}
+
+function enhancedLanguageRecord(language, file, diagnostics) {
+  let content = {};
+  try {
+    content = JSON.parse(childText(language, 'content') || '{}');
+  } catch (error) {
+    diagnostics.push({ code: 'invalid-enhanced-content', file, message: error.message });
+  }
+  const name = childText(language, 'name');
+  const displayName = childText(language, 'displayname');
+  const languageCode = childText(language, 'languagecode');
+  const lcid = childText(language, 'lcid');
+  return {
+    kind: 'websitelanguage',
+    id: id(language.attrs.powerpagesitelanguageid),
+    name: name ?? displayName ?? '',
+    ...content,
+    ...(languageCode ? { languagecode: languageCode } : {}),
+    ...(lcid ? { lcid: Number(lcid) } : {}),
+    ...(displayName ? { displayname: displayName } : {}),
+    statecode: Number(childText(language, 'statecode') ?? 0),
+    _file: file,
+  };
+}
+
+// Reports the site metadata files outside the folders that site metadata is read from.
+function reportIgnoredSiteMetadata(sourceDir, ignored, metadataCount, diagnostics) {
+  if (!ignored.length) return;
+  const list = ignored.map((file) => path.relative(sourceDir, file).replaceAll('\\', '/'));
+  diagnostics.push({
+    code: 'ENHANCED_SITE_METADATA_IGNORED',
+    files: list,
+    message:
+      `${metadataCount ? 'Site metadata' : 'No site metadata was read; site metadata'} outside Assets/ (or the root) ` +
+      `of the folder that holds powerpagecomponents/ is ignored: ${list.join(', ')}.`,
+  });
+}
+
+// Collects the site IDs of the powerpagesites.xml files and returns the website record of the first site, if any.
+async function readEnhancedSites(metadata, contents, siteIds, diagnostics) {
+  let website;
+  for (const file of metadata.filter((name) => /(?:^|[\\/])powerpagesites\.xml$/i.test(name))) {
+    try {
+      const sites = enhancedPortalRecords(await read(file, contents), 'powerpagesite');
+      for (const site of sites) siteIds.push(site.attrs.powerpagesiteid);
+      if (!website && sites[0]) website = enhancedWebsiteRecord(sites[0]);
+    } catch (error) {
+      diagnostics.push({ code: 'invalid-website', message: error.message });
+    }
+  }
+  return website;
+}
+
+// Collects the site IDs and the language records of the powerpagesitelanguages.xml files.
+async function readEnhancedSiteLanguages(metadata, contents, siteIds, records, diagnostics) {
+  for (const file of metadata.filter((name) => /(?:^|[\\/])powerpagesitelanguages\.xml$/i.test(name))) {
+    try {
+      for (const language of enhancedPortalRecords(await read(file, contents), 'powerpagesitelanguage')) {
+        siteIds.push(enhancedSiteLookup(language));
+        records.push(enhancedLanguageRecord(language, file, diagnostics));
+      }
+    } catch (error) {
+      diagnostics.push({ code: 'invalid-enhanced-content', file, message: error.message });
+    }
+  }
+}
+
+async function readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, records, diagnostics) {
+  // Site metadata is read only where Lense reads it: Assets/ (or the root) of each folder that holds
+  // powerpagecomponents/, which may sit below sourceDir. Files arrive in name order.
+  const roots = [
+    ...new Set(
+      files
+        .filter((file) => path.basename(file) === 'powerpagecomponent.xml')
+        .map(enhancedSolutionRoot)
+        .filter(Boolean),
+    ),
+  ];
+  const candidates = files.filter((file) => /^powerpagesite(?:s|languages)\.xml$/i.test(path.basename(file)));
+  const metadata = candidates.filter((file) => roots.some((root) => isEnhancedSiteMetadataSource(root, file)));
+  const ignored = candidates.filter((file) => !metadata.includes(file));
+  reportIgnoredSiteMetadata(sourceDir, ignored, metadata.length, diagnostics);
+  const website = await readEnhancedSites(metadata, contents, siteIds, diagnostics);
+  await readEnhancedSiteLanguages(metadata, contents, siteIds, records, diagnostics);
+  return website ?? {};
+}
+
 /**
- * Read a portal source; no source mutation. Layouts: PAC YAML with adx_ keys, the short-key
- * .powerpages-site YAML (unprefixed keys, record IDs in id:, language folders under
+ * Read a portal source; no source mutation. Layouts: PAC YAML with adx_ keys, YAML with mspp_ keys
+ * (a layout PAC 2.13.1 does not write), the short-key .powerpages-site YAML (unprefixed keys, record IDs in id:, language folders under
  * content-pages/ and content-snippets/, one folder per web file, language codes in
  * .portalconfig/*.portallanguage.yml), and an unpacked Solution with powerpagecomponents/.
  * A code-site project folder is read through its .powerpages-site/ folder.
  *
  * `dataModel` ("standard" or "enhanced") selects the site's data model for a YAML layout. The
- * enhanced layout is always the enhanced data model; standard YAML defaults to the standard data
- * model, and short-key YAML, which does not record it, defaults to the enhanced data model with
+ * unpacked or mspp_ layout is always the enhanced data model; adx_ YAML defaults to the standard data
+ * model (PAC 2.13.1 also downloads enhanced data model sites with adx_ keys, so set dataModel for
+ * them), and short-key YAML, which does not record it, defaults to the enhanced data model with
  * a DATA_MODEL_ASSUMED diagnostic (code sites require it).
  */
 /* NOSONAR: single-pass routine, splitting it would change shared state */ export async function importPortal(
@@ -379,17 +523,22 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
   const layoutNotes = [];
   if (layout.dialect === 'code-site-project') {
     // A code-site project keeps its site records in .powerpages-site/ beside the app sources.
-    const siteDir = await fs.realpath(path.join(sourceDir, '.powerpages-site'));
-    layoutNotes.push({
-      code: 'CODE_SITE_PROJECT_SOURCE',
-      projectDir: sourceDir,
-      sourceDir: siteDir,
-      message: `${sourceDir} is a code-site project; its site records are read from ${siteDir}.`,
-    });
-    sourceDir = siteDir;
-    layout = detectSourceDialect(sourceDir);
+    const nested = portalSourceDir(sourceDir);
+    if (nested !== sourceDir) {
+      const siteDir = await fs.realpath(nested);
+      layoutNotes.push({
+        code: 'CODE_SITE_PROJECT_SOURCE',
+        projectDir: sourceDir,
+        sourceDir: siteDir,
+        message: `${sourceDir} is a code-site project; its site records are read from ${siteDir}.`,
+      });
+      sourceDir = siteDir;
+      layout = detectSourceDialect(sourceDir);
+    }
   }
   const shortKey = layout.dialect === 'short-key-yaml';
+  const enhancedYaml = layout.dialect === 'enhanced-yaml';
+  const compiledOnly = layout.dialect === 'code-site-project';
   // Commit times for differing duplicate copies: one HEAD lookup per import, then each
   // file's last commit time, kept in `cache` (a SolutionFileCache: by file path and
   // content, re-validated when the file's stamp changes, and only for the same HEAD).
@@ -400,91 +549,49 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     if (!head) return null;
     return cache ? cache.remember(file, 'git-commit@1', head, () => git.commitTime(file)) : git.commitTime(file);
   };
-  const files = await walk(sourceDir);
+  const files = compiledOnly ? [] : await walk(sourceDir);
   const contents = await prefetch(files);
   const enhanced = files.some((f) => path.basename(f) === 'powerpagecomponent.xml');
   const records = [];
   const diagnostics = [...layoutNotes];
-  let website = {};
+  const codeSite = await readCodeSite(sourceDir, diagnostics);
+  let website = compiledOnly && codeSite?.siteName ? { name: codeSite.siteName } : {};
   // The data model: the enhanced layout is the enhanced data model; a YAML layout uses the
   // requested model, else standard (adx_ keys) or enhanced (short keys, assumed).
   let dataModel, dataModelSource;
-  if (enhanced) {
+  if (enhanced || enhancedYaml) {
     dataModel = 'enhanced';
     dataModelSource = 'export';
   } else {
     if (requestedDataModel != null) dataModel = requestedDataModel;
-    else if (shortKey) dataModel = 'enhanced';
+    else if (shortKey || compiledOnly) dataModel = 'enhanced';
     else dataModel = 'standard';
     if (requestedDataModel) dataModelSource = 'configured';
-    else if (shortKey) dataModelSource = 'assumed';
+    else if (shortKey || compiledOnly) dataModelSource = 'assumed';
     else dataModelSource = 'export';
   }
-  if (enhanced && requestedDataModel === 'standard')
+  if ((enhanced || enhancedYaml) && requestedDataModel === 'standard')
     diagnostics.push({
       code: 'DATA_MODEL_OVERRIDE_IGNORED',
       requested: requestedDataModel,
-      message:
-        'An unpacked Solution with powerpagecomponents/ is the enhanced data model; the requested standard data model is ignored.',
+      message: enhanced
+        ? 'An unpacked Solution with powerpagecomponents/ is the enhanced data model; the requested standard data model is ignored.'
+        : 'Portal YAML with mspp_ keys uses the enhanced data model; the requested standard data model is ignored.',
     });
   if (dataModelSource === 'assumed')
     diagnostics.push({
       code: 'DATA_MODEL_ASSUMED',
       dataModel,
-      message:
-        "The .powerpages-site layout does not record the site's data model; the enhanced data model is assumed (code sites require it). For a standard data model site set dataModel: standard (serve and inspect --data-model standard, the project portal's dataModel, or the catalogue site's mirage.dataModel).",
+      message: compiledOnly
+        ? 'Code-site build output does not contain Dataverse site metadata; the enhanced data model is used.'
+        : "The .powerpages-site layout does not record the site's data model; the enhanced data model is assumed (code sites require it). For a standard data model site set dataModel: standard (serve and inspect --data-model standard, the project portal's dataModel, or the catalogue site's mirage.dataModel).",
     });
   if (enhanced) {
+    const siteIds = [];
     for (const file of files.filter((f) => path.basename(f) === 'powerpagecomponent.xml')) {
       const xml = await read(file, contents);
-      const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
       try {
-        const content = JSON.parse(decodeXml(/<content>([\s\S]*?)<\/content>/.exec(xml)?.[1] ?? '{}'));
-        const attachment = /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
-        // Component lifecycle status belongs to the outer envelope. A content
-        // statuscode can instead be the HTTP status of a redirect.
-        const componentStatus = /<statuscode\b[^>]*(?:\/>|>([\s\S]*?)<\/statuscode>)/.exec(xml);
-        // The component's site language is the <powerpagesitelanguageid> element outside
-        // <content>; it selects language copies as adx_webpagelanguageid and
-        // adx_contentsnippetlanguageid do in standard exports.
-        const siteLanguageId = id(
-          /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>\s*)?([^<\s][^<]*)<\/powerpagesitelanguageid>/
-            .exec(xml)?.[1]
-            ?.trimEnd(),
-        );
-        const languageFields = siteLanguageId
-          ? {
-              powerpagesitelanguageid: siteLanguageId,
-              ...(type === 2 && content.webpagelanguageid == null ? { webpagelanguageid: siteLanguageId } : {}),
-              ...(type === 7 && content.contentsnippetlanguageid == null
-                ? { contentsnippetlanguageid: siteLanguageId }
-                : {}),
-            }
-          : {};
-        records.push({
-          kind: TYPES[type] ?? `component:${type}`,
-          powerpagecomponenttype: type,
-          id: id(/powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? path.basename(path.dirname(file))),
-          name: decodeXml(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
-          ...content,
-          ...languageFields,
-          statecode: Number(/<statecode>\s*(\d+)\s*</.exec(xml)?.[1] ?? 0),
-          ...(componentStatus
-            ? {
-                _componentEnvelope: {
-                  statuscode: componentStatus[1]?.trim() ? Number(componentStatus[1].trim()) : null,
-                },
-              }
-            : {}),
-          _file: file,
-          _sourceRevision: sourceRevisionOf(xml),
-          _attachment: attachment
-            ? {
-                name: decodeXml(attachment[2]).trim(),
-                mimeType: /mimetype="([^"]*)"/.exec(attachment[1])?.[1],
-              }
-            : null,
-        });
+        records.push(enhancedComponentRecord(file, xml, siteIds));
       } catch (error) {
         diagnostics.push({
           code: 'invalid-enhanced-content',
@@ -493,55 +600,8 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
         });
       }
     }
-    const sites = files.find((f) => path.basename(f).toLowerCase() === 'powerpagesites.xml');
-    if (sites) {
-      const xml = await read(sites, contents);
-      try {
-        website = {
-          ...JSON.parse(decodeXml(/<content>([\s\S]*?)<\/content>/.exec(xml)?.[1] ?? '{}')),
-          id: id(/powerpagesiteid="([^"]+)"/.exec(xml)?.[1]),
-          name: decodeXml(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
-          // powerpagesite.enhancedauthorization (0-3), read by lib/platform-changes.mjs.
-          ...(/<enhancedauthorization>\s*(\d+)\s*<\/enhancedauthorization>/.test(xml)
-            ? {
-                enhancedauthorization: Number(
-                  /<enhancedauthorization>\s*(\d+)\s*<\/enhancedauthorization>/.exec(xml)[1],
-                ),
-              }
-            : {}),
-        };
-      } catch (error) {
-        diagnostics.push({ code: 'invalid-website', message: error.message });
-      }
-    }
-    // Site languages (powerpagesitelanguages.xml, the enhanced counterpart of
-    // adx_websitelanguage) carry their language code and LCID directly.
-    for (const file of files.filter((f) => path.basename(f).toLowerCase() === 'powerpagesitelanguages.xml')) {
-      const xml = await read(file, contents);
-      for (const match of xml.matchAll(/<powerpagesitelanguage\b([^>]*)>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
-        const element = (name) => {
-          const value = new RegExp(String.raw`<${name}>([\s\S]*?)</${name}>`).exec(match[2])?.[1];
-          return value === undefined ? undefined : decodeXml(value).trim();
-        };
-        let content = {};
-        try {
-          content = JSON.parse(element('content') || '{}');
-        } catch (error) {
-          diagnostics.push({ code: 'invalid-enhanced-content', file, message: error.message });
-        }
-        records.push({
-          kind: 'websitelanguage',
-          id: id(/powerpagesitelanguageid="([^"]+)"/.exec(match[1])?.[1]),
-          name: element('name') ?? element('displayname') ?? '',
-          ...content,
-          ...(element('languagecode') ? { languagecode: element('languagecode') } : {}),
-          ...(element('lcid') ? { lcid: Number(element('lcid')) } : {}),
-          ...(element('displayname') ? { displayname: element('displayname') } : {}),
-          statecode: Number(element('statecode') ?? 0),
-          _file: file,
-        });
-      }
-    }
+    website = await readEnhancedSiteMetadata(sourceDir, files, contents, siteIds, records, diagnostics);
+    assertSingleEnhancedSite(sourceDir, siteIds);
   } else {
     for (const file of files.filter((f) => /\.ya?ml$/i.test(f) && !/[\\/]deployment-profiles[\\/]/i.test(f))) {
       const originalKind = path
@@ -774,6 +834,12 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     if (value) origins[fallbackField] = { value, file: sidecar, sidecar: true };
     return value || String(localized(fallback, lcid));
   }
+  const pageBindings = (record) => ({
+    pageTemplateId: id(field(record, 'pagetemplateid')),
+    formId: id(field(record, 'entityformid', field(record, 'entityform'))),
+    advancedFormId: id(field(record, 'webformid', field(record, 'webform'))),
+    listId: id(field(record, 'entitylistid', field(record, 'entitylist'))),
+  });
   const pages = [];
   for (const r of roots) {
     const copies = rawPages.filter((c) => id(field(c, 'rootwebpageid')) === r.id);
@@ -789,16 +855,18 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     for (const variant of copies) {
       const variantLanguage = id(field(variant, 'webpagelanguageid'));
       if (!variantLanguage || Object.hasOwn(translations, variantLanguage)) continue;
+      const metadata = { ...r, ...variant };
       translations[variantLanguage] = {
+        ...pageBindings(metadata),
         title:
           [field(variant, 'title'), field(variant, 'name'), field(r, 'title'), field(r, 'name')]
-            .map((value) => String(localized(value, lcid) ?? '').trim())
-            .find(Boolean) ?? '',
+            .map((value) => String(localized(value, lcid) ?? ''))
+            .find((value) => value.trim()) ?? '',
         html: await source(variant, 'copy.html', 'copy'),
         css: await source(variant, 'custom_css.css', 'customcss'),
         js: await source(variant, 'custom_javascript.js', 'customjavascript'),
         summary: await source(variant, 'summary.html', 'summary'),
-        metadata: { ...r, ...variant },
+        metadata,
       };
     }
     const url = pageUrl(r.id);
@@ -813,25 +881,44 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     pages.push({
       id: r.id,
       name: field(r, 'name', ''),
-      // The node title is adx_title, else adx_name, of the language content page.
+      // The node title is adx_title, else adx_name, of the language content page: the first that is not blank, with
+      // the spaces the record holds around it (the portal writes them out).
       title:
         [field(copy, 'title'), field(copy, 'name'), field(r, 'title'), field(r, 'name')]
-          .map((value) => String(localized(value, lcid) ?? '').trim())
-          .find(Boolean) ?? '',
+          .map((value) => String(localized(value, lcid) ?? ''))
+          .find((value) => value.trim()) ?? '',
       url,
       parentId: id(field(r, 'parentpageid')),
-      pageTemplateId: id(field(merged, 'pagetemplateid')),
+      ...pageBindings(merged),
       html: await source(copy, 'copy.html', 'copy'),
       css: await source(copy, 'custom_css.css', 'customcss'),
       js: await source(copy, 'custom_javascript.js', 'customjavascript'),
       summary: await source(copy, 'summary.html', 'summary'),
-      formId: id(field(merged, 'entityformid', field(merged, 'entityform'))),
-      advancedFormId: id(field(merged, 'webformid', field(merged, 'webform'))),
-      listId: id(field(merged, 'entitylistid', field(merged, 'entitylist'))),
       metadata: merged,
       translations,
     });
   }
+  if (codeSite?.entryFile && !pages.some((page) => page.url === '/')) {
+    const name = website.name || codeSite.siteName || 'Home';
+    const root = { id: 'local-code-site-entry', name, isroot: true, partialurl: '/' };
+    pages.push({
+      id: root.id,
+      name,
+      title: name,
+      url: '/',
+      parentId: null,
+      html: '',
+      metadata: root,
+      translations: {},
+    });
+    diagnostics.push({
+      code: 'CODE_SITE_LOCAL_ENTRY',
+      message: 'The compiled app uses a local entry page because the project has no exported home-page record.',
+    });
+  }
+  // The local build as pac pages upload-code-site would store it: the landing page in the Home page copy and one web
+  // page per build folder (lib/code-site.mjs codeSiteUploadPages).
+  if (codeSite?.entryFile) await codeSiteUploadPages(codeSite, pages, diagnostics);
   const templates = {};
   for (const r of byKind('webtemplate')) {
     const t = {
@@ -844,11 +931,8 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     templates[t.name] = t;
   }
   const snippets = {};
-  const snippetRows = byKind('contentsnippet').sort(
-    (a, b) =>
-      Number(id(field(a, 'contentsnippetlanguageid')) === language) -
-      Number(id(field(b, 'contentsnippetlanguageid')) === language),
-  );
+  const snippetRank = snippetLanguageRank(language, id(field(website, 'defaultlanguage')));
+  const snippetRows = byKind('contentsnippet').sort((a, b) => snippetRank(a) - snippetRank(b));
   const snippetTranslations = {};
   for (const r of snippetRows) {
     const value = await source(r, 'value.html', 'value');
@@ -1143,14 +1227,38 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
   for (const step of byKind('advancedformstep'))
     step.customJavascript = await source(step, 'custom_javascript.js', 'customjavascript');
   const shortcuts = byKind('shortcut').map((record) => {
-    const targetPageId = id(field(record, 'webpageid'));
-    const targetFileId = id(field(record, 'webfileid'));
+    // A shortcut has one target: the first set of external URL, web page, survey, web file, event and forum
+    // (https://learn.microsoft.com/power-pages/configure/place-child-nodes#manage-shortcuts). Enhanced mspp_shortcut
+    // offers only the external URL, web page and web file columns, so a standard export's survey, event or forum
+    // target is reported and leaves the shortcut without a URL; a lower-priority web file is not used in its place.
+    const selected = SHORTCUT_TARGET_FIELDS.find((name) => field(record, name));
+    const unsupported = SHORTCUT_UNSUPPORTED_TARGETS[selected];
+    if (unsupported)
+      diagnostics.push({
+        code: 'SHORTCUT_TARGET_UNSUPPORTED',
+        shortcutId: record.id,
+        targetId: id(field(record, selected)),
+        targetKind: unsupported,
+        message: `The shortcut targets a ${unsupported}, which the enhanced shortcut table (mspp_shortcut) does not offer and Mirage does not host; the shortcut has no URL.`,
+      });
+    const externalUrl = selected === 'externalurl' ? field(record, 'externalurl') : null;
+    const targetPageId = selected === 'webpageid' ? id(field(record, 'webpageid')) : null;
+    const targetFileId = selected === 'webfileid' ? id(field(record, 'webfileid')) : null;
     const target = pages.find((page) => page.id === targetPageId) ?? webFiles.find((file) => file.id === targetFileId);
+    if (!target && (targetPageId || targetFileId))
+      diagnostics.push({
+        code: 'SHORTCUT_TARGET_UNRESOLVED',
+        shortcutId: record.id,
+        targetId: targetPageId ?? targetFileId,
+        targetKind: targetPageId ? 'webpage' : 'webfile',
+        message: 'The selected shortcut target does not resolve to an exported page or web file attachment.',
+      });
     return {
       id: record.id,
       name: record.name,
       title: localized(field(record, 'title') || target?.title || target?.name || record.name, lcid),
-      url: field(record, 'externalurl', target?.url),
+      description: field(record, 'description'),
+      url: externalUrl ?? target?.url ?? null,
       parentId: id(field(record, 'parentpage_webpageid')),
       targetPageId,
       targetFileId,
@@ -1220,7 +1328,10 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     };
   });
   // Platform changes the runtime reports instead of modelling (lib/platform-changes.mjs).
-  diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates }));
+  diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates, settings }));
+  const codeSiteSetting = Object.keys(settings).find((name) => name.toLowerCase() === 'codesite/enabled');
+  const codeSiteEnabled =
+    codeSiteSetting !== undefined && flagOf(settings['CodeSite/Enabled'] ?? settings[codeSiteSetting]);
   // A source with zero recognised pages is not a portal (serve, inspect and bootstrap-report
   // refuse it through assertPortalSource, lib/source-dialect.mjs).
   if (!pages.length)
@@ -1240,6 +1351,8 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
     format: dataModel,
     dataModel,
     dataModelSource,
+    codeSite,
+    isSpaSite: Boolean(codeSite?.entryFile) || flagOf(field(website, 'isspasite', false)) || codeSiteEnabled,
     website,
     pages,
     templates,
@@ -1284,18 +1397,39 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
 
 export { field as portalField };
 
-/** Shared effective snippet identity, matching last-wins importer language selection. */
-export function effectiveSnippetRecords(records, languageId) {
+/**
+ * Order of preference between content snippets that share a name: a snippet in the selected
+ * language, else one without a language (Content Snippet Language left blank), else one in the
+ * site's default language, else any other. Higher ranks sort later and win, because the
+ * importer keeps the last value per name; equal ranks keep export order. Microsoft Learn
+ * ("Customize content by using content snippets", "Enable multiple-language website support")
+ * documents the snippet language column but states no fallback order; this order is a
+ * deterministic local model, not native evidence.
+ */
+export function snippetLanguageRank(languageId, defaultLanguageId = null) {
   const selected = id(languageId),
-    winners = new Map(),
+    fallback = id(defaultLanguageId);
+  return (record) => {
+    const language = id(field(record, 'contentsnippetlanguageid'));
+    if (selected && language === selected) return 3;
+    if (!language) return 2;
+    if (fallback && language === fallback) return 1;
+    return 0;
+  };
+}
+
+/** Shared effective snippet identity, matching last-wins importer language selection. */
+export function effectiveSnippetRecords(records, languageId, defaultLanguageId) {
+  const website = records.find((record) => record.kind === 'website');
+  const rank = snippetLanguageRank(
+    languageId,
+    defaultLanguageId === undefined ? field(website ?? {}, 'defaultlanguage') : defaultLanguageId,
+  );
+  const winners = new Map(),
     exact = new Map();
   const rows = records
     .filter((record) => record.kind === 'contentsnippet' && Number(field(record, 'statecode', 0)) !== 1)
-    .sort(
-      (a, b) =>
-        Number(id(field(a, 'contentsnippetlanguageid')) === selected) -
-        Number(id(field(b, 'contentsnippetlanguageid')) === selected),
-    );
+    .sort((a, b) => rank(a) - rank(b));
   for (const record of rows) {
     exact.set(String(record.name), record);
     if (record._originalName) exact.set(record._originalName, record);

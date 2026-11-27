@@ -4,7 +4,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
-import { FETCH_UNSUPPORTED_ATTRIBUTES, parseXmlDocument, planFetch } from '../lib/fetchxml-engine.mjs';
+import {
+  FETCH_UNSUPPORTED_ATTRIBUTES,
+  parseXmlDocument,
+  planFetch,
+  xmlEscapeAttribute,
+} from '../lib/fetchxml-engine.mjs';
 import { likeMatcher } from '../lib/dataverse-values.mjs';
 import { supportOf } from '../webapi-inventory.mjs';
 import { readFixture } from './read-projection-fixture.mjs';
@@ -384,6 +389,49 @@ test('count returns the page length and returntotalrecordcount reports the total
   assert.equal(page.total_record_count, 3);
   assert.equal(page.total_record_count_limit_exceeded, false);
   assert.equal(page.more_records, true);
+});
+
+// @test-kind compatibility+contract: Microsoft Learn's FetchXML simple-paging cap, with a local terminal-page representation.
+test('FetchXML linked sorting bounds simple paging without limiting cookie continuation', () => {
+  const fixture = store({ accounts: 1, contactsPerAccount: 50_002 });
+  const visitor = { admin: true };
+  const options = { profile: 'webapi', portalRequest: true };
+  const linkedPage = (page) =>
+    fixture.fetchXml(
+      '<fetch count="4096" page="' +
+        page +
+        '" returntotalrecordcount="true">' +
+        '<entity name="account"><attribute name="name"/>' +
+        '<link-entity name="contact" from="parentcustomerid" to="accountid">' +
+        '<attribute name="fullname"/><order attribute="fullname"/></link-entity></entity></fetch>',
+      visitor,
+      options,
+    );
+  const last = linkedPage(13);
+  assert.equal(last.entities.length, 848);
+  assert.equal(last.more_records, false);
+  assert.equal(last.paging_cookie, null);
+  assert.equal(last.total_record_count, 5000);
+  assert.equal(last.total_record_count_limit_exceeded, true);
+  assert.deepEqual(linkedPage(14).entities, []);
+
+  const cookiePage = (page, cookie = null) =>
+    fixture.fetchXml(
+      '<fetch count="5000" page="' +
+        page +
+        '"' +
+        (cookie ? ' paging-cookie="' + xmlEscapeAttribute(cookie) + '"' : '') +
+        '><entity name="contact"><attribute name="contactid"/><order attribute="contactid"/></entity></fetch>',
+      visitor,
+      options,
+    );
+  const before = cookiePage(10);
+  assert.equal(before.entities.length, 5000);
+  assert.equal(before.more_records, true);
+  assert.ok(before.paging_cookie);
+  const continued = cookiePage(11, before.paging_cookie);
+  assert.equal(continued.entities.length, 2);
+  assert.equal(continued.more_records, false);
 });
 
 test('FetchXML count and page must be positive integers: 0, negative, fractional and non-numeric values are a 400', () => {

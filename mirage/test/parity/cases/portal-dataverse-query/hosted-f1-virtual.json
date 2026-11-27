@@ -1,0 +1,673 @@
+{
+  "schema": "paqvilo.parity-cases/1",
+  "surface": "portal-dataverse-query",
+  "suite": "hosted-f1-virtual",
+  "oracle": {
+    "kind": "native",
+    "name": "Power Pages portal over Dataverse (Liquid fetchxml and portal Web API)",
+    "version": "2026-11-26",
+    "scope": "Two signed-in runs of a hosted Power Pages site reading a virtual table served by a custom data provider plug-in that returns three fixed rows and echoes the QueryExpression it received: Liquid {% fetchxml %}, Web API fetchXml, $select, $filter/$orderby/$top, $count and a keyed read, under a Global table permission. Establishes the translated query, the principal and that rows come back as returned. Names and ids are invented; the exact hosted build is unrecorded."
+  },
+  "captures": [
+    {
+      "id": "hosted-f1-virtual-a",
+      "sha256": "476db2e0687939f930bcca72cf866991ed78c36658a101b237707154707674f7",
+      "capturedAt": "2026-11-26"
+    },
+    {
+      "id": "hosted-f1-virtual-b",
+      "sha256": "d65bae7fa433e2b2f1f060a2ff7547a3f488a7890735239162a43b26b199af07",
+      "capturedAt": "2026-11-26"
+    }
+  ],
+  "cases": [
+    {
+      "id": "liquid-vrow-base",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_vrow\"><attribute name=\"qa_name\"/><attribute name=\"qa_amount\"/><attribute name=\"qa_query\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "3",
+        "more": "false",
+        "total": "0",
+        "cookie": "",
+        "rows": [
+          {
+            "name": "virtual one",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          },
+          {
+            "name": "virtual two",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          },
+          {
+            "name": "virtual three",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "liquid-vrow-filter",
+      "input": {
+        "lane": "liquid",
+        "fetchXml": "<fetch><entity name=\"qa_vrow\"><attribute name=\"qa_name\"/><attribute name=\"qa_query\"/><filter><condition attribute=\"qa_amount\" operator=\"gt\" value=\"1\"/></filter><order attribute=\"qa_name\"/></entity></fetch>",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "count": "3",
+        "more": "false",
+        "total": "0",
+        "cookie": "",
+        "rows": [
+          {
+            "name": "virtual one",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          },
+          {
+            "name": "virtual two",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          },
+          {
+            "name": "virtual three",
+            "kids": "",
+            "first": "",
+            "n": "",
+            "query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            }
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-fetch-vrow-base",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_vrow%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_amount%22%2F%3E%3Cattribute+name%3D%22qa_query%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": 0,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual one",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "1",
+            "qa_amount": 1,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003001"
+          },
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          },
+          {
+            "qa_name": "virtual three",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "3",
+            "qa_amount": 3,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003003"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "webapi-fetch-vrow-filter",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows?fetchXml=%3Cfetch%3E%3Centity+name%3D%22qa_vrow%22%3E%3Cattribute+name%3D%22qa_name%22%2F%3E%3Cattribute+name%3D%22qa_query%22%2F%3E%3Cfilter%3E%3Ccondition+attribute%3D%22qa_amount%22+operator%3D%22gt%22+value%3D%221%22%2F%3E%3C%2Ffilter%3E%3Corder+attribute%3D%22qa_name%22%2F%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": 0,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual one",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "1",
+            "qa_amount": 1,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003001"
+          },
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          },
+          {
+            "qa_name": "virtual three",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "3",
+            "qa_amount": 3,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Ascending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003003"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "vrows-select",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows?%24select=qa_name%2Cqa_amount%2Cqa_query",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": 0,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual one",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "1",
+            "qa_amount": 1,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003001"
+          },
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          },
+          {
+            "qa_name": "virtual three",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "3",
+            "qa_amount": 3,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_amount", "qa_query", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003003"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "vrows-filter-orderby-top",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows?%24select=qa_name%2Cqa_query&%24filter=qa_amount+gt+1&%24orderby=qa_name+desc&%24top=2",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": 0,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual one",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "1",
+            "qa_amount": 1,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "2",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Descending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003001"
+          },
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "2",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Descending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          },
+          {
+            "qa_name": "virtual three",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "3",
+            "qa_amount": 3,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "2",
+              "columns": ["qa_name", "qa_query", "qa_vrowid"],
+              "conditions": ["qa_amount GreaterThan 1"],
+              "links": [],
+              "orders": ["qa_name Descending"],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003003"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "vrows-keyed",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows(a1a1a1a1-0000-4000-8000-000000003002)?%24select=qa_name%2Cqa_query",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": null,
+        "total": null,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "retrieve",
+              "user": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          }
+        ]
+      },
+      "volatile": []
+    },
+    {
+      "id": "vrows-count",
+      "input": {
+        "lane": "webapi",
+        "path": "/_api/qa_vrows?%24select=qa_name&%24count=true",
+        "observed": {
+          "tablePermissionQueryPipeline": "native-classic",
+          "portalFetchXmlAuthoring": "portal-classic",
+          "portalFetchIdentityOperators": "application-user",
+          "webApiFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchXmlLinkTypes": "portal-classic",
+          "liquidFetchErrorMessage": "target-invocation",
+          "liquidFetchExecution": "lazy-query-drop",
+          "webApiCdsErrorMessage": "Common Data Service error occurred.",
+          "webApiCdsErrorCode": "cdscode",
+          "portalApplicationUserId": "a1a1a1a1-0000-4000-8000-000000009004",
+          "evidence": "Hosted session F1 (2026-11-26), signed-in Power Pages Liquid and Web API reads of a synthetic fixture, two runs each."
+        }
+      },
+      "output": {
+        "status": 200,
+        "error": null,
+        "count": 0,
+        "total": 0,
+        "more": false,
+        "rows": [
+          {
+            "qa_name": "virtual one",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "1",
+            "qa_amount": 1,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003001"
+          },
+          {
+            "qa_name": "virtual two",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "2",
+            "qa_amount": 2,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003002"
+          },
+          {
+            "qa_name": "virtual three",
+            "qa_amount@OData.Community.Display.V1.FormattedValue": "3",
+            "qa_amount": 3,
+            "qa_query": {
+              "kind": "qe",
+              "entity": "qa_vrow",
+              "top": "",
+              "page": "1",
+              "count": "5000",
+              "columns": ["qa_name", "qa_vrowid"],
+              "conditions": [],
+              "links": [],
+              "orders": [],
+              "user": "<application-user>",
+              "initiating": "<application-user>"
+            },
+            "qa_vrowid": "a1a1a1a1-0000-4000-8000-000000003003"
+          }
+        ]
+      },
+      "volatile": []
+    }
+  ],
+  "history": []
+}

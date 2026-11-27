@@ -1,8 +1,9 @@
+// @test-kind contract: Mirage's native-field PCF payload (column metadata, binding types, record context) is designed local behaviour exercised with an invented schema
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderComponent } from '../lib/platform.mjs';
+import { renderSyntheticCreateForm } from './support/native-pcf-form.mjs';
 
-test('native PCF parameters carry typed column metadata and actual binding types independently per field', async () => {
+test('native PCF payloads carry the column facts and binding types independently per field', async () => {
   const definitions = [
     {
       name: 'amount',
@@ -53,65 +54,46 @@ test('native PCF parameters carry typed column metadata and actual binding types
     },
   }));
   const captures = [];
-  const html = await renderComponent(
-    'entityform',
-    'create',
-    {},
-    {
-      portal: {
-        forms: [{ id: 'create', name: 'Create synthetic row', mode: 100000000 }],
-        records: definitions.map((field) => ({
-          kind: 'basicformmetadata',
-          adx_entityform: 'create',
-          adx_attributelogicalname: field.name,
-          adx_type: 100000000,
-          adx_controlstyle: 756150001,
-        })),
-        pages: [],
-        website: { id: 'site' },
-      },
-      schemas: { create: { entity: 'synthetic', fields } },
-      store: {
-        resolveMapping: () => ({ entitySet: 'synthetics', idColumn: 'syntheticid' }),
-        query: () => ({ value: [] }),
-      },
-      codeComponent: async (spec) => {
-        captures.push(spec);
-        return '<div data-test-component></div>';
-      },
-    },
-  );
+  const html = await renderSyntheticCreateForm(definitions, fields, async (spec) => {
+    captures.push(spec);
+    spec.onNativeBinding?.({ properties: ['value'] }, {});
+    return '<script src="/__sim-static/pcf-host.js"></script><div data-test-component></div>';
+  });
   assert.equal(captures.length, 3);
-  assert.equal((html.match(/data-pcf-native-field=/g) ?? []).length, 3);
+  // Each mounted field renders the field host markup (lib/pcf-field-host.mjs) with the mount element in its view.
+  assert.equal((html.match(/<div id="PcfControl_/g) ?? []).length, 3);
+  assert.equal(
+    html.split(
+      '_ControlView" class="flexbox"><script src="/__sim-static/pcf-host.js"></script><div data-test-component>',
+    ).length - 1,
+    3,
+  );
+  // The payload names the column facts; the client derives the captured attribute values from the property type.
   assert.deepEqual(captures[0].nativeBinding, {
     id: 'amount',
     control: 'decimal',
     properties: ['value'],
     propertyTypes: { value: 'Decimal' },
-    attributes: {
-      DisplayName: 'Amount',
-      LogicalName: 'amount',
-      RequiredLevel: 3,
-      MinValue: -12.25,
-      MaxValue: 400.5,
-      Precision: 3,
-      PrecisionSource: 2,
-    },
+    attributes: { LogicalName: 'amount', Options: null, MaxLength: null, IsSecured: false },
+    security: { secured: false, readable: true, editable: true },
+    column: { logicalName: 'amount', dataverseType: 'decimal' },
+    context: { label: 'Amount', entityId: null, entityTypeName: 'synthetic', entityRecordName: null },
   });
   assert.deepEqual(captures[1].nativeBinding.attributes, {
-    DisplayName: 'Category',
     LogicalName: 'category',
-    RequiredLevel: 0,
+    MaxLength: null,
+    IsSecured: false,
     Options: [
       { Label: 'Seven', Value: 7 },
       { Label: 'Nine', Value: 9 },
     ],
-    DefaultValue: 9,
   });
   assert.deepEqual(captures[2].nativeBinding.propertyTypes, { value: 'DateAndTime.DateOnly' });
-  assert.equal(captures[2].nativeBinding.attributes.RequiredLevel, 2);
-  assert.equal(captures[2].nativeBinding.attributes.Behavior, 3);
-  assert.equal(Object.hasOwn(captures[0].nativeBinding.attributes, 'Behavior'), false);
+  assert.deepEqual(captures[2].nativeBinding.column, {
+    logicalName: 'start',
+    dataverseType: 'datetime',
+    dateOnly: true,
+  });
   assert.equal(captures[2].args.caption, 'Start');
   assert.notEqual(captures[0].nativeBinding.attributes, captures[1].nativeBinding.attributes);
 });

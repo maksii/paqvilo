@@ -121,6 +121,72 @@ test('the implicit grant token endpoint issues a signed ID token for the signed-
   assert.equal(redirect.status, 302);
 });
 
+// @test-kind contract+observation: the portal token endpoint accepts the documented implicit token response type and rejects other explicit types with the id hosted session F4 answered response_type=code with (paqvilo-developer hosted-f4 implicit runs a and b).
+test('the implicit grant endpoint validates the requested response type', async (t) => {
+  const { app, session } = await servicesFixture(t);
+  const route = app.url + '/_services/auth/token';
+  const issue = (query = '', fields) =>
+    fetch(route + query, {
+      method: 'POST',
+      headers: session,
+      ...(fields && { body: new URLSearchParams(fields) }),
+    });
+
+  for (const response of [
+    await issue('?response_type=code'),
+    await issue('?response_type='),
+    await issue('', { response_type: 'id_token' }),
+  ]) {
+    assert.equal(response.status, 400, 'an unsupported response type must not issue a token');
+    assert.equal(response.headers.get('expires_in'), null);
+    assert.equal((await response.json()).ErrorId, 'PortalSTS0007');
+  }
+
+  for (const response of [
+    await issue(),
+    await issue('?response_type=token'),
+    await issue('', { response_type: 'token' }),
+  ]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('expires_in'), '900');
+    await response.arrayBuffer();
+  }
+});
+
+// @test-kind observation: hosted session F4 (paqvilo-developer hosted-f4 implicit runs a and b): the token service's GET, authorize route, error cache headers and anonymous AJAX answer.
+test('the implicit grant routes answer GET, authorize and anonymous AJAX calls as the hosted service does', async (t) => {
+  const { app, session } = await servicesFixture(t, [['ImplicitGrantFlow/RegisteredClientId', 'local-api']]);
+  const get = await fetch(`${app.url}/_services/auth/token`, { headers: session });
+  assert.equal(get.status, 404);
+  assert.equal(get.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(await get.text(), '');
+  const authorize = await fetch(`${app.url}/_services/auth/authorize`, { headers: session });
+  assert.equal(authorize.status, 404);
+  assert.match(authorize.headers.get('content-type'), /^text\/html/);
+  await authorize.text();
+  const refused = await fetch(`${app.url}/_services/auth/token?client_id=unknown`, {
+    method: 'POST',
+    headers: session,
+  });
+  assert.equal(refused.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(refused.headers.get('pragma'), 'no-cache');
+  assert.equal(refused.headers.get('expires'), '-1');
+  assert.match((await refused.json()).Timestamp, /^\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2} [AP]M$/);
+  const anonymous = await fetch(`${app.url}/_services/auth/token?state=${'s'.repeat(21)}`, {
+    method: 'POST',
+    headers: { 'x-requested-with': 'XMLHttpRequest' },
+  });
+  assert.equal(anonymous.status, 200, 'an anonymous call is answered before its parameters are checked');
+  assert.equal(anonymous.headers.get('content-type'), null);
+  assert.equal(anonymous.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  // .NET's JavaScriptSerializer writes "/" as "\/".
+  const responded = anonymous.headers.get('x-responded-json');
+  assert.ok(responded.startsWith('{"status":401,"headers":{"location":"http:\\/\\/'), responded);
+  assert.equal(responded.includes('\\/SignIn?ReturnUrl='), true);
+  assert.equal(JSON.parse(responded).headers.location.startsWith(app.url + '/SignIn?ReturnUrl='), true);
+  assert.equal(await anonymous.text(), '');
+});
+
 test('the implicit grant flow can be turned off by site setting', async (t) => {
   const { app, session } = await servicesFixture(t, [['Connector/ImplicitGrantFlowEnabled', 'False']]);
   const response = await fetch(`${app.url}/_services/auth/token`, { method: 'POST', headers: session });
@@ -128,7 +194,7 @@ test('the implicit grant flow can be turned off by site setting', async (t) => {
   assert.equal((await fetch(`${app.url}/_services/auth/publickey`)).status, 404);
 });
 
-// @test-kind security: a state that is not a valid header value gets Mirage's own error document, and the form body read is bounded.
+// @test-kind security+observation: a state that is not a valid header value is never issued or echoed and the form body read is bounded; the refusal is the certificate error hosted session F4 answered such a state with (paqvilo-developer hosted-f4 implicit runs a and b).
 test('the implicit grant token refuses a state that is not a header value and bounds the form body', async (t) => {
   const { app, session } = await servicesFixture(t, [['ImplicitGrantFlow/RegisteredClientId', 'local-api']]);
   const post = (query) => fetch(`${app.url}/_services/auth/token?${query}`, { method: 'POST', headers: session });
@@ -136,7 +202,8 @@ test('the implicit grant token refuses a state that is not a header value and bo
   assert.equal(refused.status, 400);
   assert.match(refused.headers.get('content-type'), /^application\/json/);
   assert.equal(refused.headers.get('state'), null);
-  assert.equal((await refused.json()).ErrorId, 'PortalSTS0002');
+  assert.equal(refused.headers.get('expires_in'), null);
+  assert.equal((await refused.json()).ErrorId, 'PortalSTS0018');
   const echoed = await post('client_id=local-api&state=abc');
   assert.equal(echoed.status, 200);
   assert.equal(echoed.headers.get('state'), 'abc');

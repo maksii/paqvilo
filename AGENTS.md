@@ -67,7 +67,9 @@ node bin/paqvilo.mjs mirage dev --config <catalogue> --site <site>
   sign-in page, Tweaks, `/_sim/`, `simulator.signIn()` or [testing/session.mjs](mirage/testing/session.mjs).
 - Select sources with `--repo` or `PAQVILO_REPO`. Configuration/evidence stay outside the portal checkout.
 - Configured coverage is not proof of navigation. `--path` selects only the first tab; HEAD baselines are captured per
-  activated target. Never infer a deployed commit.
+  activated target. Never infer a deployed commit. `agent status` `served` lists the files an opened page shows in
+  another version than the baseline (the checkout is ahead of the portal or behind it) and the refs whose versions
+  explain those pages: evidence about the pages opened, to pass to `--baseline`, not a deployment.
 - Sign-in redirects are intermediate states. When authorized, use headed Edge and the intended connected work account;
   Windows SSO may finish automatically. Inspect the result and let the user handle credential/MFA challenges. Do not
   copy credentials between identities. REAL DATA targets still require authorization.

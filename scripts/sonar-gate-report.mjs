@@ -1,6 +1,5 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { clip, issueLine, MAX_LINE, oneLine, readApi } from './verify-sonar-branch.mjs';
 import { answerHelp } from './script-help.mjs';
 
@@ -113,7 +112,7 @@ async function main() {
   for (const line of lines) console.log(line);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'sonar-gate-report',
     usage: `Usage: node scripts/sonar-gate-report.mjs

@@ -109,6 +109,23 @@ export function decodeNativeViewState(text) {
   };
 }
 
+/** The posted binding of a declared native form field. */
+function boundNativeField(field, wireName) {
+  return {
+    name: field.name,
+    wireName,
+    multiple: field.multiple === true,
+    ...(field.numberLocale ? { numberLocale: field.numberLocale } : {}),
+    // A mounted field component posts its hidden input as JSON (lib/pcf-field-host.mjs), never a check box.
+    ...(field.control === 'pcf' ? { pcf: true } : {}),
+    // The rendered rich text editor posts its HTML as a JSON string; a plain textarea posts its text (platform.mjs).
+    ...(field.control === 'richtext' ? { richText: true } : {}),
+    ...(field.control !== 'pcf' && (field.control === 'checkbox' || field.type === 'checkbox')
+      ? { checkbox: true }
+      : {}),
+  };
+}
+
 /**
  * The caller supplies only fields and actions resolved for a rendered component.
  * Record, step, identity and permission context remain server-owned.
@@ -120,6 +137,7 @@ export function nativeFormPostbackDescriptor({
   actions: declaredActions = [],
   modal = false,
   pageControl = false,
+  numberLocales = {},
 }) {
   if (typeof formId !== 'string' || !formId) invalid('Native form identity required');
   if (!Array.isArray(fields) || !Array.isArray(declaredActions))
@@ -135,12 +153,7 @@ export function nativeFormPostbackDescriptor({
     // A column placed on the form more than once renders (and posts) only its first cell.
     if (names.has(wireName)) continue;
     names.add(wireName);
-    boundFields.push({
-      name: field.name,
-      wireName,
-      multiple: field.multiple === true,
-      ...(field.control === 'checkbox' || field.type === 'checkbox' ? { checkbox: true } : {}),
-    });
+    boundFields.push(boundNativeField(field, wireName));
   }
   const targets = new Set();
   const boundActions = declaredActions.map((action) => {
@@ -164,7 +177,68 @@ export function nativeFormPostbackDescriptor({
       ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}),
     };
   });
-  return { kind, formId, ids, fields: boundFields, actions: boundActions };
+  const locales = nativeNumberLocales(numberLocales);
+  return {
+    kind,
+    formId,
+    ids,
+    fields: boundFields,
+    actions: boundActions,
+    ...(Object.keys(locales).length ? { numberLocales: locales } : {}),
+  };
+}
+
+// Bounded: the tags are site languages, and a posted descriptor never grows the cache past this.
+const CULTURE_CACHE_LIMIT = 64;
+const cultureMarks = new Map();
+
+/**
+ * The decimal and group marks of a page culture's numbers, from the locale data (Intl, Latin digits), or null for a
+ * tag that is not a language tag Intl supports. Captured for en-US and de-DE only (hosted evidence summary E); other
+ * cultures are inferred from the same locale data.
+ */
+export function numberCultureMarks(locale) {
+  if (typeof locale !== 'string' || !/^[a-z]{2,3}(?:-[a-z\d]{2,8}){0,3}$/i.test(locale)) return null;
+  if (cultureMarks.has(locale)) return cultureMarks.get(locale);
+  let marks = null;
+  try {
+    if (Intl.NumberFormat.supportedLocalesOf([locale]).length) {
+      const parts = new Intl.NumberFormat(locale, { numberingSystem: 'latn' }).formatToParts(12345.6);
+      const decimal = parts.find((part) => part.type === 'decimal')?.value;
+      if (decimal)
+        marks = Object.freeze({ decimal, group: parts.find((part) => part.type === 'group')?.value ?? null });
+    }
+  } catch {
+    marks = null;
+  }
+  if (cultureMarks.size < CULTURE_CACHE_LIMIT) cultureMarks.set(locale, marks);
+  return marks;
+}
+
+// The page cultures whose native number boxes hosted forms were captured with (evidence summary E, FORM-06).
+const CAPTURED_NUMBER_CULTURES = new Set(['en-US', 'de-DE']);
+
+/**
+ * Whether native number boxes of a page culture show and parse that culture's marks: the captured cultures always;
+ * another culture only for a site that sets observed.nativeNumberCultures: locale-data (its marks then come from the
+ * locale data, an uncaptured model). Otherwise the boxes keep invariant numbers.
+ */
+export function localizedNumberCulture(locale, observed) {
+  if (CAPTURED_NUMBER_CULTURES.has(locale)) return true;
+  return observed?.nativeNumberCultures === 'locale-data' && numberCultureMarks(locale) !== null;
+}
+
+/** The page culture of each localized number field: { [field]: { parse?, messages } }, on a null prototype. */
+function nativeNumberLocales(declared) {
+  if (!declared || typeof declared !== 'object' || Array.isArray(declared)) invalid('Invalid native number locales');
+  const locales = Object.create(null);
+  for (const [name, locale] of Object.entries(declared)) {
+    if (!name || dangerous.has(name) || !locale || typeof locale !== 'object') invalid('Invalid native number locale');
+    if (!numberCultureMarks(locale.messages) || (locale.parse != null && !numberCultureMarks(locale.parse)))
+      invalid('Invalid native number locale');
+    locales[name] = Object.freeze({ ...(locale.parse ? { parse: locale.parse } : {}), messages: locale.messages });
+  }
+  return locales;
 }
 
 /**

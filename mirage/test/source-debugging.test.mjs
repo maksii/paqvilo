@@ -3,8 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { sourceDebugFixture } from './fixtures/source-debugging.mjs';
+import { createSimulator } from '../api.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 import { parseSetting, runtimeOptions, runtimeIdentity } from '../lib/config-keys.mjs';
 import { runWithSourceDebugging, debugScript } from '../lib/source-debug.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
@@ -73,6 +76,50 @@ test(
     }
   },
 );
+
+test('service worker script requests retain authored bytes and independent validators', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-worker-assets-'));
+  const owned = ownedFixture(t);
+  owned.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const source = 'self.addEventListener("activate", () => {});\n';
+  const files = {
+    'website.yml': 'adx_websiteid: site\nadx_name: Invented worker site',
+    'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_isroot: true\nadx_partialurl: /',
+    'sitesetting.yml': 'adx_name: HTTP/Service-Worker-Allowed\nadx_value: /workers/',
+    'publishingstate.yml': 'adx_publishingstateid: draft\nadx_name: Draft\nadx_isvisible: false',
+    'worker.js.webfile.yml':
+      'adx_webfileid: worker\nadx_name: Worker\nadx_parentpageid: home\nadx_partialurl: worker.js',
+    'preview.js.webfile.yml':
+      'adx_webfileid: preview\nadx_name: Preview worker\nadx_parentpageid: home\nadx_partialurl: preview.js\nadx_publishingstateid: draft',
+    'worker.js': source,
+    'preview.js': source,
+  };
+  for (const [file, contents] of Object.entries(files)) await fs.writeFile(path.join(root, file), contents);
+  const app = await createSimulator({ sourceDir: root, sourceMaps: true, watch: false, requirePortalSource: true });
+  owned.add(() => app.close());
+  const url = `${app.url}/worker.js`;
+  const debug = await fetch(url);
+  assert.match(await debug.text(), /sourceMappingURL=/);
+  const debugEtag = debug.headers.get('etag');
+  const workerHeaders = { 'service-worker': 'script', 'if-none-match': debugEtag };
+  const worker = await fetch(url, { headers: workerHeaders });
+  assert.equal(worker.status, 200);
+  assert.equal(await worker.text(), source);
+  assert.notEqual(worker.headers.get('etag'), debugEtag);
+  assert.match(worker.headers.get('content-type'), /^application\/javascript\b/);
+  assert.equal(worker.headers.get('service-worker-allowed'), '/workers/');
+  assert.equal(worker.headers.get('cache-control'), debug.headers.get('cache-control'));
+  assert.equal(worker.headers.get('vary'), 'Accept-Encoding, Service-Worker');
+  assert.equal(debug.headers.get('vary'), worker.headers.get('vary'));
+  const cached = await fetch(url, {
+    headers: { ...workerHeaders, 'if-none-match': worker.headers.get('etag') },
+  });
+  assert.equal(cached.status, 304);
+  assert.equal(cached.headers.get('vary'), worker.headers.get('vary'));
+  const unpublished = await fetch(`${app.url}/preview.js`, { headers: workerHeaders, redirect: 'manual' });
+  assert.equal(unpublished.status, 302);
+  await unpublished.arrayBuffer();
+});
 
 // Hang guard only: it drives a runtime, the CLI or child processes through this file's fixtures; on a loaded slow host that is slow, not hung.
 test(

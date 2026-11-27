@@ -15,8 +15,7 @@ import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { bootstrapProject } from '../lib/project-config.mjs';
 
 // A source the importer cannot read must fail loudly, naming its layout, instead of importing
-// as an empty portal. The short-key layout itself is imported (short-key-import.test.mjs);
-// mspp_ YAML is refused.
+// as an empty portal. The short-key and enhanced YAML layouts still require an identifiable page.
 
 const execFileAsync = promisify(execFile);
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs');
@@ -54,7 +53,7 @@ const SHORT_KEY_SITE = {
 };
 
 const MSPP_MESSAGE =
-  /No portal pages were recognized in .*mspp\. Detected layout: PAC YAML with mspp_ keys\. The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a \.powerpages-site export or the site's unpacked Solution \(powerpagecomponents\/\)\./;
+  /No portal pages were recognized in .*mspp\. Detected layout: portal YAML with mspp_ keys \(a layout PAC 2\.13\.1 does not write\)\. It has 1 web page record, but none could be identified as a page\./;
 const MSPP_SITE = {
   'mspp/website.yml': 'mspp_name: Site\nmspp_websiteid: 6a0f0c2e-0000-4000-8000-000000000099\n',
   'mspp/web-pages/home/Home.webpage.yml': 'mspp_name: Home\nmspp_partialurl: /\n',
@@ -80,7 +79,7 @@ test('source layouts are named: short-key, code-site project, mspp_ YAML, Soluti
   assert.deepEqual([dialect('').dialect, dialect('').imported], ['code-site-project', true]);
   assert.equal(portalSourceDir(root), path.join(root, '.powerpages-site'));
   assert.equal(portalSourceDir(path.join(root, 'standard')), path.join(root, 'standard'));
-  assert.deepEqual([dialect('mspp').dialect, dialect('mspp').imported], ['enhanced-yaml', false]);
+  assert.deepEqual([dialect('mspp').dialect, dialect('mspp').imported], ['enhanced-yaml', true]);
   assert.equal(dialect('solution').dialect, 'solution-without-site');
   assert.deepEqual([dialect('standard').dialect, dialect('standard').imported], ['standard-yaml', true]);
   assert.deepEqual([dialect('enhanced').dialect, dialect('enhanced').imported], ['enhanced-solution', true]);
@@ -100,13 +99,14 @@ test('source layouts are named: short-key, code-site project, mspp_ YAML, Soluti
   }
 });
 
-test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-report and project bootstrap, naming its layout', async (t) => {
+test('an mspp_ YAML source whose only page has no identity is refused across portal entry points', async (t) => {
   const root = await tree(t, MSPP_SITE);
   const site = path.join(root, 'mspp');
   // The importer records the layout and flags zero recognised pages (it still returns, for tools).
   const portal = await importPortal(site);
   assert.equal(portal.pages.length, 0);
   assert.equal(portal.source.dialect, 'enhanced-yaml');
+  assert.equal(portal.dataModel, 'enhanced');
   const flagged = portal.diagnostics.find((item) => item.code === 'PORTAL_SOURCE_EMPTY');
   assert.equal(flagged.dialect, 'enhanced-yaml');
   assert.match(flagged.message, MSPP_MESSAGE);
@@ -165,6 +165,57 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
   // Project bootstrap imports for tools; the CLI refuses (serve and inspect --project).
   const project = await bootstrapProject({ portals: [{ id: 'mspp', sourceDir: site }], solutionRoots: [], lcid: 1033 });
   assert.throws(() => assertPortalSource(project.portals[0].portal), MSPP_MESSAGE);
+});
+
+// The record census of a PAC 2.13.1 `pac pages download --modelVersion 2` (or Enhanced) of an enhanced data model
+// site: adx_ keys in every record file, website.yml with adx_enhancedauthorization, list files at the root and one
+// folder per page with content-pages/. Invented names and IDs.
+const ENHANCED_MODEL_ADX_SITE = {
+  'website.yml':
+    'adx_defaultlanguage: 7b1f0c2e-0000-4000-8000-000000000001\nadx_enhancedauthorization: 0\nadx_footerwebtemplateid: 7b1f0c2e-0000-4000-8000-000000000041\nadx_headerwebtemplateid: 7b1f0c2e-0000-4000-8000-000000000042\nadx_name: Invented enhanced site\nadx_website_language: 1033\nadx_websiteid: 7b1f0c2e-0000-4000-8000-000000000099\n',
+  'websitelanguage.yml':
+    '- adx_portallanguageid: 7b1f0c2e-0000-4000-8000-000000000002\n  adx_websitelanguageid: 7b1f0c2e-0000-4000-8000-000000000001\n',
+  'publishingstate.yml':
+    '- adx_isdefault: true\n  adx_name: Published\n  adx_publishingstateid: 7b1f0c2e-0000-4000-8000-000000000030\n',
+  'webrole.yml':
+    '- adx_anonymoususersrole: true\n  adx_name: Anonymous Users\n  adx_webroleid: 7b1f0c2e-0000-4000-8000-000000000060\n',
+  'sitesetting.yml':
+    '- adx_name: Invented/Setting\n  adx_sitesettingid: 7b1f0c2e-0000-4000-8000-000000000050\n  adx_value: on\n',
+  'web-pages/home/Home.webpage.yml':
+    'adx_isroot: true\nadx_name: Home\nadx_pagetemplateid: 7b1f0c2e-0000-4000-8000-000000000020\nadx_parentpageid:\nadx_partialurl: /\nadx_publishingstateid: 7b1f0c2e-0000-4000-8000-000000000030\nadx_webpageid: 7b1f0c2e-0000-4000-8000-000000000010\n',
+  'web-pages/home/content-pages/Home.en-US.webpage.yml':
+    'adx_isroot: false\nadx_name: Home\nadx_pagetemplateid: 7b1f0c2e-0000-4000-8000-000000000020\nadx_partialurl: /\nadx_publishingstateid: 7b1f0c2e-0000-4000-8000-000000000030\nadx_rootwebpageid: 7b1f0c2e-0000-4000-8000-000000000010\nadx_webpageid: 7b1f0c2e-0000-4000-8000-000000000011\nadx_webpagelanguageid: 7b1f0c2e-0000-4000-8000-000000000001\n',
+  'web-pages/home/content-pages/Home.en-US.webpage.copy.html': '<p>invented home</p>',
+  'page-templates/Default.pagetemplate.yml':
+    'adx_name: Default\nadx_pagetemplateid: 7b1f0c2e-0000-4000-8000-000000000020\nadx_type: 756150001\nadx_webtemplateid: 7b1f0c2e-0000-4000-8000-000000000040\n',
+  'web-templates/default/Default.webtemplate.yml':
+    'adx_name: Default\nadx_webtemplateid: 7b1f0c2e-0000-4000-8000-000000000040\n',
+  'web-templates/default/Default.webtemplate.source.html': '{{ page.adx_copy }}',
+};
+
+// @test-kind observation: hosted session F5 (download-a-*.json, download-b-code-*.json): PAC 2.13.1 --modelVersion 2 and Enhanced downloads of enhanced data model sites write adx_ keys only, website.yml with adx_enhancedauthorization; the import asserts current behaviour on an invented census
+test('a PAC 2.13.1 enhanced data model download (adx_ keys, adx_enhancedauthorization) is PAC YAML with adx_ keys and imports', async (t) => {
+  const root = await tree(t, ENHANCED_MODEL_ADX_SITE);
+  const dialect = detectSourceDialect(root);
+  assert.deepEqual(
+    [dialect.dialect, dialect.label, dialect.imported, dialect.evidence],
+    ['standard-yaml', 'PAC YAML with adx_ keys', true, 'website.yml with adx_ keys'],
+  );
+  const portal = await importPortal(root);
+  assert.equal(assertPortalSource(portal), portal);
+  assert.deepEqual(
+    [portal.source.dialect, portal.pages.map((page) => page.url), portal.settings['Invented/Setting']],
+    ['standard-yaml', ['/'], 'on'],
+  );
+  assert.equal(Number(portal.website.adx_enhancedauthorization), 0);
+  // The export does not record the data model (adx_enhancedauthorization is a site field, and PAC writes adx_ keys
+  // for both models): adx_ YAML imports as the standard data model unless dataModel is set.
+  assert.deepEqual([portal.dataModel, portal.dataModelSource], ['standard', 'export']);
+  const enhanced = await importPortal(root, { dataModel: 'enhanced' });
+  assert.deepEqual(
+    [enhanced.dataModel, enhanced.dataModelSource, enhanced.pages.map((page) => page.url)],
+    ['enhanced', 'configured', ['/']],
+  );
 });
 
 test('an adx_ export without web pages and an unknown folder fail with their own reason; a portal with pages imports', async (t) => {

@@ -1,6 +1,8 @@
+// @test-kind contract: the native form render contract of required, validator and summary markup over invented schemas
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent, captchaRefreshDelta } from '../lib/platform.mjs';
+import { boundedMarkup } from './support/bounded-markup.mjs';
 
 // A "ticket" insert form on a Bootstrap 5 site where every column is required.
 test('required boxes: validator order and the required markers per box type', async () => {
@@ -452,6 +454,7 @@ test('a read-only form disables its radio lists, keeps required markers on memo 
   );
 });
 
+// @test-kind contract+observation: the postback re-render contract of the local form; the server summary markup is the hosted F2 FORM-06 capture (runs a/b)
 test('postback renders: posted check boxes, blank option labels, failed validators, the server summary and the doubled view class', async () => {
   const fields = [
     { name: 'flag', label: 'Flag', dataverseType: 'bit' },
@@ -482,7 +485,9 @@ test('postback renders: posted check boxes, blank option labels, failed validato
   });
   assert.match(invalid, /<span id="RangeValidatorcount">\*<\/span>/);
   assert.match(invalid, /v\.isvalid="False";/);
-  assert.match(invalid, /role="alert"><h2 class='validation-header'>/);
+  // The server-refused summary as hosted renders it (hosted F2 FORM-06, runs a/b): focusable, no role, a role="none" header.
+  assert.match(invalid, /tabindex="0"><h2 class="validation-header" role="none">/);
+  assert.match(invalid, /<\/h2><ul role="presentation"><li>/);
   assert.match(
     invalid,
     /<li><a href='#count_label' onclick='javascript:scrollToAndFocus\("count_label","count"\);return false;' referenceControlId=count>Count is out of range\. <\/a><\/li>/,
@@ -650,6 +655,6 @@ test('a subgrid without a relationship lists its view with no parent reference a
     html,
     /class="clearfix cell subgrid-cell"><h3 class="table-info form-subgrid-heading"><\/h3><div class="control"><div id="Cards" class="subgrid"><div class="entity-grid subgrid"/,
   );
-  const grid = /<div class="entity-grid subgrid"[^>]*>/.exec(html)[0];
+  const grid = /<div class="entity-grid subgrid"[^>]*>/.exec(boundedMarkup(html))[0];
   assert.doesNotMatch(grid, /data-ref-entity|data-ref-id|data-ref-rel/);
 });

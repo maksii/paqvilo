@@ -198,6 +198,8 @@ export function createFixture() {
       git(dir, 'add', '-A');
       git(dir, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-q', '-m', 'more');
     },
+    /** runs one Git command in the fixture repository (a branch, a tag, a checkout) */
+    git: (...args) => git(dir, ...args),
     cleanup: () => fs.rmSync(container, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
   };
 }

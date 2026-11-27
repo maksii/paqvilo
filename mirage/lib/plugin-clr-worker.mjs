@@ -3,15 +3,24 @@ import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-const { port, signal, executable, input, timeout, parentProcessId, label } = workerData,
+import { clrHostCommand, clrHostEnvironment, clrToolchain, removeClrHostLeftovers } from './clr-toolchain.mjs';
+const { port, signal, executable, launcher, input, timeout, parentProcessId, label } = workerData,
   flags = new Int32Array(signal);
 let complete = false,
-  child;
+  child,
+  hostLauncher;
 try {
-  child = spawn(executable, ['--parent', String(parentProcessId), ...(label ? ['--label', label] : [])], {
+  hostLauncher = launcher === undefined ? (clrToolchain()?.launcher ?? null) : launcher;
+  const [command, args] = clrHostCommand(hostLauncher, executable, [
+    '--parent',
+    String(parentProcessId),
+    ...(label ? ['--label', label] : []),
+  ]);
+  child = spawn(command, args, {
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: clrHostEnvironment(hostLauncher),
   });
 } catch (error) {
   // A start the system refuses outright throws here: no process exists, and the main thread learns it at once.
@@ -51,6 +60,7 @@ child.on('exit', (code) => {
     finish(
       hostExitFailure(code, { kind: 'failure', code: 'LocalPluginHostExited', message: SANDBOX_WORKER_CRASH.message }),
     );
+  removeClrHostLeftovers(hostLauncher, child.pid);
   reportHostProcessExit(code);
 });
 // The host discards plug-in console output; anything else on stderr is drained, never a failure.

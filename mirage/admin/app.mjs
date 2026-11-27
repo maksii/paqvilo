@@ -1421,6 +1421,8 @@ async function loadSession() {
   } catch (error) {
     browserSession = { signedIn: false, roles: [], error: error.message };
   }
+  // The classic publishing preview cookie of this browser (GET /session/preview); null when the Mirage does not report it.
+  browserSession.preview = await request('/session/preview').catch(() => null);
 }
 // External identity records (GET /session/identities: { table, identities, registrations }),
 // for the access view; null when this Mirage does not report them.
@@ -1502,6 +1504,21 @@ function sessionOverrideForm() {
   const override = session.roleSource === 'override';
   const disabled = session.signedIn ? '' : ' disabled';
   return `<section class="advanced-content"><div class="panel-heading"><h2>Simulation override</h2>${badge(override ? 'Override active' : 'No override', override ? 'amber' : '')}</div>${panelHelp('access.session-override', 'the simulation override')}${session.signedIn ? '' : '<div class="notice section-gap">Sign this browser in through the portal first.</div>'}<form id="session-override-form" class="form-grid"><div><label for="override-roles">Web roles for ${escape(session.signedIn ? session.name || session.contactId : "this browser's session")}</label><input id="override-roles" value="${escape(override ? (session.roles || []).join(', ') : '')}" placeholder="Authenticated Users, Administrators"${disabled}><p class="note field-help">Separate role names with commas.</p></div><div class="toolbar"><button class="button primary" type="submit"${disabled}>Apply override</button>${override ? '<button class="button" type="button" data-action="session-override-clear">Clear override</button>' : ''}</div></form></section>`;
+}
+/**
+ * The classic publishing preview toggle (Enable / Disable preview): only a signed-in contact whose web roles hold the
+ * Preview Unpublished Entities website access permission sees it. Without the cookie preview is on; Use the default clears it.
+ */
+function publishingPreviewPanel() {
+  const preview = browserSession?.preview;
+  if (!preview?.eligible) return '';
+  const on = preview.enabled === true;
+  const next = on ? 'false' : 'true';
+  const clear =
+    preview.cookie?.value == null
+      ? ''
+      : '<button class="button" type="button" data-action="publishing-preview" data-enabled="null">Use the default</button>';
+  return `<section class="panel"><div class="panel-heading"><h2>Publishing preview</h2>${badge(on ? 'Preview on' : 'Preview off', on ? 'green' : '')}</div>${panelHelp('access.publishing-preview', 'publishing preview')}<p class="note">${on ? 'This browser sees unpublished pages, content snippets and web files.' : 'This browser sees only published content, as a visitor without the right does.'}</p><div class="toolbar"><button class="button primary" type="button" data-action="publishing-preview" data-enabled="${next}">${on ? 'Turn preview off' : 'Turn preview on'}</button>${clear}</div></section>`;
 }
 const sessionSummary = () => {
   if (!browserSession) return "Loading this browser's session";
@@ -2710,6 +2727,7 @@ function access() {
         : []),
     ]) +
     `<div data-panel="session">${sessionPanel()}</div>` +
+    `<div data-panel="publishing-preview">${publishingPreviewPanel()}</div>` +
     personaPanel() +
     (personaCatalogue ? personaManagementPanel(personaCatalogue) : '') +
     externalIdentitiesPanel() +
@@ -4893,6 +4911,22 @@ async function saveConfig(patch, { form } = {}) {
       notify(signIn ? `Signing in through ${providerLabel} ...` : 'Signing out through the portal ...');
       if (signIn) await signInThroughPortal(contactId);
       else signOutThroughPortal().catch((error) => notify(error.message, true));
+    } catch (error) {
+      notify(error.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === 'publishing-preview') {
+    const enabled = { true: true, false: false }[target.dataset.enabled] ?? null;
+    try {
+      await request('/session/preview', { method: 'POST', body: JSON.stringify({ enabled }) });
+      await refresh();
+      const words = { true: 'on', false: 'off' };
+      notify(
+        enabled === null
+          ? 'Publishing preview is back to the default (on) for this browser.'
+          : `Publishing preview is ${words[enabled]} for this browser.`,
+      );
     } catch (error) {
       notify(error.message, true);
     }

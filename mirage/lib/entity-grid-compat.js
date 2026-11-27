@@ -1,8 +1,8 @@
 /*
  * Local compatibility runtime for the managed Power Pages entity grid, lookup
- * modal, subgrid, associate dialog and notes controls. It binds the
+ * modal, subgrid, associate dialog, notes and SharePoint document controls. It binds the
  * server-rendered native markup (div.entity-grid[data-view-layouts], .entity-lookup,
- * .entity-associate, .entity-notes) and uses the native JSON services under
+ * .entity-associate, .entity-notes, .sharepoint-grid) and uses the native JSON services under
  * /_services/... with the __RequestVerificationToken header. Requests are sent
  * through jQuery.ajax/XMLHttpRequest because authored scripts observe them there.
  * Events: "loaded" (bubbling, after rows render), "refresh" and "metafilter".
@@ -349,6 +349,42 @@
       xhr.send(form ? body : JSON.stringify(body));
     });
   }
+  function confirmFormWorkflow(row, button, body) {
+    confirmFormDialog(row, button, body, '.modal-form-workflow', () => ({ workflowId: button.dataset.ppWorkflowId }));
+  }
+  // Resolve Case asks for the resolution subject and description in its dialog, then posts them with the action.
+  function confirmResolveCase(row, button, body) {
+    confirmFormDialog(row, button, body, '.modal-resolvecase', (modal) => ({
+      resolution: {
+        subject: modal.querySelector('.resolution-input')?.value ?? '',
+        description: modal.querySelector('.resolution-description-input')?.value ?? '',
+      },
+    }));
+  }
+  // A bound form action confirmed in its own dialog (selector, matched by action index) posts the body that extra(modal) adds to.
+  function confirmFormDialog(row, button, body, selector, extra) {
+    if (!Number.isSafeInteger(body.actionIndex)) return;
+    const modal = row.querySelector(`${selector}[data-pp-action-index="${body.actionIndex}"]`);
+    const primary = modal?.querySelector('.modal-footer button.primary');
+    const url = button.dataset.url;
+    if (!primary || !url) return;
+    primary.onclick = async () => {
+      if (primary.disabled) return;
+      primary.disabled = true;
+      try {
+        const result = await post(url, { ...body, ...extra(modal) });
+        hideModal(modal);
+        if (result.outcome?.type === 'redirect' && result.outcome.url) location.assign(result.outcome.url);
+        else location.reload();
+      } catch (error) {
+        hideModal(modal);
+        notify(row, error.message);
+      } finally {
+        primary.disabled = false;
+      }
+    };
+    showModal(modal);
+  }
   /**
    * entityform.js record actions (button.*-link in .form-custom-actions): Delete opens the
    * form's delete dialog whose primary button posts the record reference to the button URL;
@@ -364,12 +400,38 @@
       LogicalName: control.querySelector('input[id$="_EntityFormView_EntityName"]')?.value ?? '',
       Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? '').replace(/[{}]/g, ''),
     };
+    const formAction = button.dataset.ppFormAction;
+    const body = formAction
+      ? {
+          action: formAction,
+          actionIndex: Number(button.dataset.ppActionIndex),
+          recordId: reference.Id,
+          values: {},
+          query: Object.fromEntries(new URLSearchParams(location.search)),
+          pageUrl: location.pathname + location.search,
+        }
+      : { entityReference: reference };
+    if (formAction === 'workflow') return confirmFormWorkflow(row, button, body);
+    if (formAction === 'resolve-case') return confirmResolveCase(row, button, body);
+    // Qualify confirms first only when its dialog is drawn (an action with ShowModal 1, legacy entity-form.js).
+    if (
+      formAction === 'qualify-lead' &&
+      row.querySelector(`.modal-qualify[data-pp-action-index="${body.actionIndex}"]`)
+    )
+      return confirmFormDialog(row, button, body, '.modal-qualify', () => ({}));
+    if (formAction === 'update-pipeline-phase')
+      return confirmFormDialog(row, button, body, '.modal-updatepipelinephase', (modal) => {
+        const phase = modal.querySelector('.pipelinephase-input');
+        return {
+          pipeline: {
+            salesStage: phase?.value ?? '',
+            stepName: phase?.selectedOptions?.[0]?.textContent ?? '',
+            description: modal.querySelector('.resolution-description-input')?.value ?? '',
+          },
+        };
+      });
     const submit = () =>
-      post(
-        /* NOSONAR */ button.getAttribute('data-url') || location.href,
-        { entityReference: reference },
-        { json: false },
-      ).then(
+      post(/* NOSONAR */ button.getAttribute('data-url') || location.href, body, { json: false }).then(
         // NOSONAR: read actual attributes, not inherited dataset properties
         // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
@@ -389,7 +451,7 @@
   document.addEventListener('click', (event) => {
     if (
       event.target.closest(
-        '.form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link',
+        '.form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link, .form-custom-actions button.form-workflow-link, .form-custom-actions button[data-pp-form-action]',
       )
     )
       void formActionClick(event);
@@ -559,6 +621,31 @@
     Deactivate: 17,
     Activate: 18,
   };
+  // The table-specific record actions (legacy entity-grid.js): their row link class and when the record shows it
+  // (StateCode, StatusCode), beside the Write privilege.
+  const RECORD_ACTIONS = {
+    9: { link: 'close-case-link', shows: (record) => record.StateCode === 0 },
+    // Qualify confirms in the grid's qualify dialog, which the grid draws only for an action with ShowModal 1.
+    10: { link: 'qualify-lead-link', shows: (record) => record.StateCode === 0, modal: '.modal-qualify' },
+    11: { link: 'convert-quote-link', shows: (record) => record.StateCode === 1 },
+    12: { link: 'convert-order-link', shows: (record) => record.StateCode !== 2 },
+    13: { link: 'calculate-opportunity-link', shows: () => true },
+    14: { link: 'resolve-case-link', shows: (record) => record.StateCode === 0, modal: '.modal-resolvecase' },
+    15: { link: 'reopen-case-link', shows: (record) => record.StateCode !== 0 },
+    16: { link: 'cancel-case-link', shows: (record) => record.StateCode === 0 },
+    19: { link: 'activate-quote-link', shows: (record) => record.StateCode === 0 },
+    20: {
+      link: 'set-opportunity-on-hold-link',
+      shows: (record) => record.StateCode === 0 && record.StatusCode !== 2,
+    },
+    21: { link: 'win-opportunity-link', shows: (record) => record.StateCode === 0 },
+    22: { link: 'lose-opportunity-link', shows: (record) => record.StateCode === 0 },
+    23: { link: 'generate-quote-from-opportunity-link', shows: (record) => record.StateCode === 0 },
+    25: { link: 'reopen-opportunity-link', shows: (record) => record.StateCode !== 0 },
+  };
+  const RECORD_ACTION_LINKS = Object.values(RECORD_ACTIONS)
+    .map(({ link }) => `, a.${link}`)
+    .join('');
 
   class EntityGrid {
     constructor(element) {
@@ -579,6 +666,8 @@
       this.gridClass = data('grid-class') || '';
       this.widthStyle = data('column-width-style') || 'Percent';
       this.selectedView = data('selected-view');
+      // A dataset code component's list or subgrid: the grid draws its toolbar and the control reads the rows.
+      this.pcfHost = element.dataset.pcfViewHost !== undefined;
       // Grids inside a Bootstrap 5 dialog (lookup, associate) and grids of a page that loads the
       // Bootstrap 5 platform bundles render the Bootstrap 5 toolbar, table and pagination.
       this.dialog = Boolean(element.closest('.modal[data-bs-backdrop]'));
@@ -648,9 +737,28 @@
         this.showMessage('.view-error');
         return;
       }
+      if (this.pcfHost) {
+        this.renderViewToolbar();
+        return;
+      }
       this.renderToolbar();
       this.renderTable();
       if (load) void this.load(1);
+    }
+
+    // The toolbar of a code component's list or subgrid: the view dropdown, drawn for two or more views whatever the
+    // control declares, and an empty actions group (captured, paqvilo-developer pcf-parity summary-F section 4, runs
+    // fa and fb).
+    renderViewToolbar() {
+      this.child('.view-toolbar')?.remove();
+      const select = this.renderViewSelect();
+      if (!select) return;
+      const toolbar = document.createElement('div');
+      toolbar.className = 'view-toolbar grid-actions clearfix';
+      const actions = document.createElement('div');
+      actions.className = `${this.bs5 ? 'float-end' : 'pull-right'} toolbar-actions`;
+      toolbar.append(select, actions);
+      this.element.prepend(toolbar);
     }
 
     renderToolbar() {
@@ -685,7 +793,7 @@
       const name = current.Configuration?.ViewDisplayName || current.ViewName;
       const count = this.layouts.length;
       select.innerHTML = this.bs5
-        ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title">${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
+        ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
             .map(
               (layout, index) =>
                 `<li role="none"${layout === current ? ' class="active"' : ''}><a href="#" role="menuitem" class="dropdown-item" tabindex="0" aria-posinset="${index + 1}" aria-setsize="${count}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
@@ -1133,7 +1241,7 @@
     }
 
     load(page = 1) {
-      if (!this.layout) return Promise.resolve();
+      if (!this.layout || this.pcfHost) return Promise.resolve();
       if (!this.layout.Base64SecureConfiguration) {
         this.showMessage('.view-error');
         return Promise.resolve();
@@ -1467,7 +1575,7 @@
         case ACTION.Delete:
           return record.CanDelete ? 'delete-link' : null;
         case ACTION.Workflow:
-          return 'workflow-link';
+          return record.CanWrite && action.Workflow?.Id ? 'workflow-link' : null;
         case ACTION.Disassociate:
           return this.disassociateActionClass(record);
         case ACTION.Deactivate:
@@ -1475,8 +1583,13 @@
         case ACTION.Activate:
           return this.activateActionClass(record);
         default:
-          return null;
+          return this.recordActionClass(action, record);
       }
+    }
+
+    recordActionClass(action, record) {
+      const known = RECORD_ACTIONS[action.Type];
+      return known && record.CanWrite && known.shows(record) ? known.link : null;
     }
 
     disassociateActionClass(record) {
@@ -1504,7 +1617,8 @@
 
     handleRowActionClick(event, tbody) {
       const link = event.target.closest(
-        'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link',
+        'a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link' +
+          RECORD_ACTION_LINKS,
       );
       if (!link || !tbody.contains(link)) {
         this.toggleRowDropdown(event, tbody);
@@ -1618,13 +1732,43 @@
                 {
                   workflow: { LogicalName: 'workflow', Id: action.Workflow?.Id },
                   entity: { LogicalName: record.EntityName, Id: record.Id },
+                  base64SecureConfiguration: this.layout.Base64SecureConfiguration,
+                  filter: this.state.filter ?? this.userFilter(),
                 },
                 { json: false },
               ),
             { force: action.ShowModal === 1 },
           );
         default:
+          if (RECORD_ACTIONS[action.Type]) return this.runRecordAction(action, record);
       }
+    }
+
+    // A table-specific record action posts the record reference to its action service; Resolve Case first asks for
+    // the resolution in the grid's resolve dialog, Close Case sends the link's default resolution (legacy entity-grid.js).
+    runRecordAction(action, record) {
+      const known = RECORD_ACTIONS[action.Type];
+      const path = action.URL?.PathWithQueryString;
+      if (!path) return;
+      const modal = known.modal ? this.child(known.modal) : null;
+      const resolution = () =>
+        modal
+          ? {
+              resolutionSubject: modal.querySelector('.resolution-input')?.value ?? '',
+              resolutionDescription: modal.querySelector('.resolution-description-input')?.value ?? '',
+            }
+          : { resolutionSubject: action.DefaultResolution, resolutionDescription: action.DefaultResolutionDescription };
+      return this.confirmAndRun(
+        known.modal ?? '.modal-pp-none',
+        action,
+        () =>
+          post(
+            path,
+            { entityReference: { LogicalName: record.EntityName, Id: record.Id }, ...resolution() },
+            { json: false },
+          ),
+        { force: Boolean(modal) },
+      );
     }
 
     websiteId() {
@@ -1852,6 +1996,12 @@
       this.state.sort = null;
       this.state.page = 1;
       this.render(true);
+      // The code component host destroys the control and initialises a new one on the chosen view, also when it is
+      // the current one (captured, summary-F section 4).
+      if (this.pcfHost)
+        this.element.dispatchEvent(
+          new CustomEvent('paqvilo:pcf-view', { bubbles: true, detail: { viewId: String(id) } }),
+        );
     }
 
     download(action, link) {
@@ -2141,6 +2291,95 @@
   }
 
   // ---- notes
+  // Rich note and activity HTML (Timeline/RTEEnabled; activity descriptions) as fresh elements of an allowlist, built
+  // from an inert parse: no attribute survives except link targets and, in notes, image sources. The server sanitizes
+  // the same text before it answers; this keeps a page from rendering unsanitized markup whatever the service returns.
+  const RICH_NOTE_TAGS = new Set(
+    'a,b,blockquote,br,code,dd,div,dl,dt,em,h1,h2,h3,h4,h5,h6,hr,i,li,ol,p,pre,s,span,strike,strong,sub,sup,table,tbody,td,tfoot,th,thead,tr,u,ul'.split(
+      ',',
+    ),
+  );
+  const RICH_NOTE_DROPPED = new Set(
+    'base,button,embed,form,frame,frameset,iframe,input,link,math,meta,noscript,object,script,select,style,svg,template,textarea,title'.split(
+      ',',
+    ),
+  );
+  const RICH_LINK = /^(?:https?:|mailto:|tel:|\/(?!\/)|#)/i;
+  const RICH_IMAGE = /^(?:https?:|\/(?!\/)|data:image\/(?:png|gif|jpe?g|webp);)/i;
+  // The copy of a note image whose source is permitted, with its alt text; null otherwise.
+  function richNoteImage(node) {
+    const src = String(node.getAttribute('src') ?? '').trim(); // NOSONAR: reads attributes of the inert parse
+    if (!RICH_IMAGE.test(src)) return null;
+    const image = document.createElement('img');
+    image.setAttribute('src', src);
+    image.setAttribute('alt', node.getAttribute('alt') ?? ''); // NOSONAR: reads attributes of the inert parse
+    return image;
+  }
+  // An empty copy of a permitted note element with its permitted attributes: safe links and table cell spans.
+  function richNoteElement(node, tag) {
+    const element = document.createElement(tag);
+    const href = String(node.getAttribute('href') ?? '').trim(); // NOSONAR: reads attributes of the inert parse
+    if (tag === 'a' && RICH_LINK.test(href)) {
+      element.setAttribute('href', href);
+      element.setAttribute('rel', 'noopener noreferrer');
+      element.setAttribute('target', '_blank');
+    }
+    for (const name of ['colspan', 'rowspan']) {
+      const span = node.getAttribute(name) ?? ''; // NOSONAR: reads attributes of the inert parse
+      if ((tag === 'td' || tag === 'th') && /^\d{1,3}$/.test(span)) element.setAttribute(name, span);
+    }
+    return element;
+  }
+  function richNoteHtml(html, images = true) {
+    const source = new DOMParser().parseFromString(String(html ?? ''), 'text/html').body;
+    const out = document.createElement('div');
+    const copy = (from, to) => {
+      for (const node of from.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) to.append(document.createTextNode(node.data));
+        if (node.nodeType !== Node.ELEMENT_NODE || RICH_NOTE_DROPPED.has(node.localName)) continue;
+        const tag = node.localName;
+        if (tag === 'img') {
+          const image = images ? richNoteImage(node) : null;
+          if (image) to.append(image);
+          continue;
+        }
+        if (!RICH_NOTE_TAGS.has(tag)) {
+          copy(node, to);
+          continue;
+        }
+        const element = richNoteElement(node, tag);
+        copy(node, element);
+        to.append(element);
+      }
+    };
+    copy(source, out);
+    return out.innerHTML;
+  }
+
+  // The note field of a dialog: the rich text editor mounted on its textarea (Timeline/RTEEnabled), else the textarea.
+  function noteField(modal) {
+    const area = modal?.querySelector('textarea[name="text"]');
+    const editor = () => (area?.id ? globalThis.CKEDITOR?.instances?.[area.id] : null);
+    return {
+      get: () => (editor() ? editor().getData() : (area?.value ?? '')),
+      set(value) {
+        if (editor()) editor().setData(value ?? '');
+        else if (area) area.value = value ?? '';
+      },
+    };
+  }
+
+  // A timeline activity (EntityActivity/GetActivities): when, who, its type, subject and sanitized description.
+  function activityCard(activity, pattern, bs5) {
+    const created = activity.CreatedOnDisplay ? new Date(activity.CreatedOnDisplay) : null;
+    const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
+    const [left, right] = bs5 ? ['col-md-3', 'col-md-9'] : ['col-sm-3', 'col-sm-9'];
+    const postedBy = activity.PostedByName
+      ? `<div class="createdby text-muted">${esc(activity.PostedByName)}</div>`
+      : '';
+    return `<div class="note activity" data-id="${esc(activity.Id)}" data-entityname="${esc(activity.EntityName ?? '')}"><div class="row"><div class="${left} metadata"><div class="postedon"><abbr class="timeago" data-datetime="${esc(activity.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (activity.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (activity.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}<div class="activitytype text-muted">${esc(activity.ActivityTypeDisplay ?? activity.EntityName ?? '')}</div></div><div class="${right} content"><div class="subject"><strong>${esc(activity.Subject ?? '')}</strong></div><div class="text">${richNoteHtml(activity.Description, false)}</div></div></div></div>`;
+  }
+
   function bs5NoteToolbar(note) {
     if (!note.DisplayToolbar) return '';
     const editItem = note.CanWrite
@@ -2160,14 +2399,17 @@
     return `<div class="attachment alert alert-block clearfix">${thumbnail}<div class="link float-start"><span class="fa fa-file" aria-hidden="true"></span> <a href="${esc(url)}" target="_blank">${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`;
   }
 
-  function bs5NoteCard(note, pattern) {
+  function bs5NoteCard(note, pattern, rich = false) {
     const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
     const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
     const url = `${note.AttachmentUrl}?t=${Date.now()}`;
     const toolbar = bs5NoteToolbar(note);
     const attachment = bs5NoteAttachment(note, url);
+    const text = rich
+      ? richNoteHtml(note.UnformattedText)
+      : esc(note.UnformattedText).replaceAll(/\r\n?|\n/g, '<br />');
     const postedBy = note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : '';
-    return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${note.UnformattedText ?? ''}</div>${attachment}</div></div></div>`;
+    return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? '')}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? '')}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : (note.CreatedOnDisplay ?? ''))}">${esc(stamp ? timeAgo(stamp) : (note.CreatedOnDisplay ?? ''))}</abbr></div>${postedBy}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${text}</div>${attachment}</div></div></div>`;
   }
 
   function initNotes(container) {
@@ -2181,10 +2423,13 @@
       }
     })();
     const list = container.querySelector('.notes');
-    const state = { page: 1 };
+    const pager = container.querySelector('.notes-pagination');
+    const state = { page: 1, request: 0 };
     // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
     // its list only when it has notes.
     const bs5 = container.hasAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
+    const rich = container.getAttribute('data-rte-enabled') === 'True'; // NOSONAR: actual attributes exclude inherited dataset values
+    const timeline = container.getAttribute('data-is-timeline') === 'True'; // NOSONAR: actual attributes exclude inherited dataset values
     if (bs5)
       for (const name of ['.modal-editnote', '.modal-deletenote', '.modal-addnote']) {
         const modal = container.querySelector(`:scope > ${name}`);
@@ -2203,6 +2448,7 @@
       }
     };
     const load = (page = 1) => {
+      const request = ++state.request;
       state.page = page;
       show('.notes-loading');
       return post(
@@ -2217,11 +2463,11 @@
         bs5 ? { jsonType: 'application/json', global: false } : {},
       )
         .then((data) => {
+          if (request !== state.request) return;
+          const pages = Number(data.PageCount);
+          if (Number.isSafeInteger(pages) && pages >= 0 && page > Math.max(1, pages)) return load(Math.max(1, pages));
           show(data.Records?.length ? null : '.notes-empty');
-          // The Bootstrap 5 control hides its pager for a single page of notes; without notes the
-          // pager is left as rendered.
-          const pager = bs5 && container.querySelector('.notes-pagination');
-          if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = 'none'; // NOSONAR: operand can be NaN or undefined, the negated test differs
+          renderNotesPagination(pager, pages, page, data.Records?.length, bs5);
           const pattern = document.body?.getAttribute('data-datetimeformat'); // NOSONAR: actual attributes exclude inherited dataset values
           const legacyNoteCard = (note) => {
             const toolbar = note.DisplayToolbar
@@ -2230,19 +2476,26 @@
             const attachment = note.HasAttachment
               ? `<div class="attachment alert alert-block alert-info clearfix"><div class="link pull-left"><a href="${esc(note.AttachmentUrl)}?t=${Date.now()}"><span class="fa fa-file" aria-hidden="true"></span> ${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`
               : '';
-            return `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${toolbar}<div class="text">${note.Text ?? ''}</div>${attachment}</div></div></div>`;
+            return `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? '')}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? '')}" data-attachmenturl="${esc(note.AttachmentUrl ?? '')}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? '')}">${esc(note.CreatedOnDisplay ?? '')}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? '')}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ''}</div><div class="col-sm-9 content">${toolbar}<div class="text">${rich ? richNoteHtml(note.Text) : (note.Text ?? '')}</div>${attachment}</div></div></div>`;
           };
-          list.innerHTML = (data.Records ?? [])
-            .map((note) => (bs5 ? bs5NoteCard(note, pattern) : legacyNoteCard(note)))
-            .join('');
+          const card = (note) => {
+            if (timeline) return activityCard(note, pattern, bs5);
+            return bs5 ? bs5NoteCard(note, pattern, rich) : legacyNoteCard(note);
+          };
+          list.innerHTML = (data.Records ?? []).map(card).join('');
           trigger(container, 'loaded');
         })
         .catch((error) => {
+          if (request !== state.request) return;
           show('.notes-error');
           const details = container.querySelector('.notes-error .details');
           if (details) details.textContent = error.message;
         });
     };
+    pager?.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-page]');
+      if (button && !button.disabled) void load(Number(button.dataset.page));
+    });
     const readFile = (input) =>
       new Promise((resolve, reject) => {
         const file = input?.files?.[0];
@@ -2260,7 +2513,7 @@
       const input = modal.querySelector('input[type="file"]');
       const fields = {
         ...extra,
-        text: modal.querySelector('textarea[name="text"]')?.value ?? '',
+        text: noteField(modal).get(),
         isRequired: '',
         isPrivate: String(modal.querySelector('input[name="isPrivate"]')?.checked ?? false),
         attachmentSettings: container.getAttribute('data-attachmentsettings') ?? '', // NOSONAR: actual attributes exclude inherited dataset values
@@ -2278,7 +2531,7 @@
               url,
               {
                 ...extra,
-                text: modal.querySelector('textarea[name="text"]')?.value ?? '',
+                text: noteField(modal).get(),
                 isPrivate: modal.querySelector('input[name="isPrivate"]')?.checked ?? false,
                 file,
               },
@@ -2291,8 +2544,7 @@
           // The Bootstrap 5 add dialog is reset: an empty note and a fresh file input without
           // the label and tab stop the dialog markup gave the first one.
           if (bs5 && modal.matches('.modal-addnote')) {
-            const text = modal.querySelector('textarea[name="text"]');
-            if (text) text.value = '';
+            noteField(modal).set('');
             const input = modal.querySelector('input[type="file"]');
             if (input) {
               const fresh = document.createElement('input');
@@ -2317,7 +2569,7 @@
       event.preventDefault();
       const modal = dialog('.modal-addnote');
       if (!modal) return;
-      modal.querySelector('textarea')?.value && (modal.querySelector('textarea').value = '');
+      if (noteField(modal).get()) noteField(modal).set('');
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
@@ -2356,8 +2608,7 @@
       }
       const modal = dialog('.modal-editnote');
       if (!modal) return;
-      const textarea = modal.querySelector('textarea[name="text"]');
-      if (textarea) textarea.value = note.getAttribute('data-unformattedtext') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
+      noteField(modal).set(note.getAttribute('data-unformattedtext') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
@@ -2368,6 +2619,29 @@
       if (event.target === container) void load(Number(page) || state.page);
     });
     void load(1);
+  }
+
+  function notesPageButton(page, label, disabled, bs5) {
+    const item = bs5 ? ' class="page-item"' : '';
+    const css = bs5 ? 'page-link' : 'btn btn-default btn-sm';
+    return `<li${item}><button type="button" class="${css}" data-page="${page}"${disabled ? ' disabled' : ''}>${label}</button></li>`;
+  }
+
+  function renderNotesPagination(pager, pages, page, records, bs5) {
+    if (!pager) return;
+    // The Bootstrap 5 control hides its pager for one populated page and leaves the initial empty one alone.
+    if (Number.isSafeInteger(pages) && pages > 1 && records) {
+      pager.dataset.pages = String(pages);
+      pager.dataset.currentPage = String(page);
+      pager.style.removeProperty('display');
+      pager.innerHTML = `<ul class="pagination">${notesPageButton(page - 1, 'Previous page', page <= 1, bs5)}<li aria-current="page"><span class="${bs5 ? 'page-link' : ''}">Page ${page} of ${pages}</span></li>${notesPageButton(page + 1, 'Next page', page >= pages, bs5)}</ul>`;
+      return;
+    }
+    pager.replaceChildren();
+    pager.dataset.pages = '1';
+    pager.dataset.currentPage = '1';
+    if (records && bs5) pager.style.display = 'none';
+    else if (pager.style.display) pager.style.removeProperty('display');
   }
 
   // ---- metadata filter apply (serialized-query)
@@ -2396,6 +2670,257 @@
     location.assign(url.href);
   });
 
+  // ---- SharePoint document control (sharepoint-documents.mjs sharePointControlMarkup and its services)
+  // The list posts { regarding, sortExpression, page, pageSize, folderPath } and shows the access-denied, config-error,
+  // error or empty panel from the answer (hosted session F7); a failed Add files or New folder puts the answer's Message
+  // into the dialog. Folder navigation, the breadcrumbs, the size refusal text and the destination line are local: F7 could
+  // not record them with SharePoint on.
+  const SHAREPOINT_PANELS = [
+    '.sharepoint-empty',
+    '.sharepoint-access-denied',
+    '.sharepoint-config-error',
+    '.sharepoint-error',
+    '.sharepoint-loading',
+  ];
+  function initSharePoint(container) {
+    if (container.__ppSharePoint) return;
+    container.__ppSharePoint = true;
+    const read = (name) => container.getAttribute(name); // NOSONAR: actual attributes exclude inherited dataset values
+    let regarding = {};
+    try {
+      regarding = JSON.parse(read('data-bs-target') || '{}');
+    } catch {
+      regarding = {};
+    }
+    const canDelete = read('data-delete-enabled') === 'True';
+    const pageSize = Number(read('data-pagesize')) || 10;
+    const maxFile = Number(read('data-maxfileuploadsize')) || 10;
+    const maxTotal = Number(read('data-maxtotaluploadsize')) || 50;
+    const output = container.querySelector('.sharepoint-data');
+    const crumbs = container.querySelector('.sharepoint-breadcrumbs');
+    const pager = container.querySelector('.sharepoint-pagination');
+    const label = container.closest('td')?.querySelector('label.field-label')?.textContent?.trim() || 'Documents';
+    const state = { folderPath: '', page: 1, sort: 'FileLeafRef ASC', request: 0 };
+    const show = (selector) => {
+      for (const name of SHAREPOINT_PANELS) {
+        const node = container.querySelector(`:scope > ${name}`);
+        if (node) node.style.display = name === selector ? '' : 'none';
+      }
+    };
+    // A listed file's link stays on this portal (the local download route); any other address is dropped.
+    const sameOrigin = (value) => {
+      try {
+        const address = new URL(String(value ?? ''), location.href);
+        const local = address.pathname + address.search;
+        // A path that starts like a protocol-relative URL (/.//host normalises to //host) would leave the portal.
+        return address.origin === location.origin &&
+          ['http:', 'https:'].includes(address.protocol) &&
+          !/^\/[/\\]/.test(local)
+          ? local
+          : '#';
+      } catch {
+        return '#';
+      }
+    };
+    // A service URL outside this portal is refused before any request (the token never leaves the portal).
+    const service = (name) => {
+      const url = sameOrigin(read(name));
+      return url === '#' ? Promise.reject(new Error('Error completing request.')) : url;
+    };
+    const send = (name, body, options) => Promise.resolve(service(name)).then((url) => post(url, body, options));
+    const actionMenu = (last) => {
+      if (!canDelete) return '';
+      const menuClass = last ? ' dropup ' : ' dropdown ';
+      return `<td aria-label="action menu"><div class="${menuClass}"><button aria-expanded="false" aria-label="action menu" class="btn btn-default btn-sm" data-bs-toggle="dropdown" href="#" role="button"><span class='fa fa-chevron-circle-down fa-fw' aria-hidden='true'></span></button><ul class="dropdown-menu" role="menu"><li role="presentation"><a class="dropdown-item delete-link" href="#" role="menuitem" tabindex="-1"><span class='fa-solid fa-trash-can' aria-hidden='true'></span>Delete</a></li></ul></div></td>`;
+    };
+    const modified = (item) => {
+      const stamp = item.ModifiedOnDisplay ? new Date(item.ModifiedOnDisplay) : null;
+      const text = stamp && !Number.isNaN(stamp.getTime()) ? timeAgo(stamp) : (item.ModifiedOnDisplay ?? '');
+      return `<td class="postedon"><abbr class="timeago" data-datetime="${esc(item.ModifiedOnDisplay)}" title="${esc(item.ModifiedOnDisplay)}">${esc(text)}</abbr></td>`;
+    };
+    // The rows of the platform's list template (#sharepoint-template) for the answer's items.
+    const row = (item, index, items) => {
+      const last = index === items.length - 1;
+      if (item.IsFolder)
+        return `<tr class="sp-item" data-foldername="${esc(item.Name)}" data-folderpath="${esc(item.FolderPath)}" data-id="${esc(item.Id)}"><td data-type="System.String" data-value="${esc(item.Name)}"><a class="sharepoint-custom-icon folder-link" data-folderpath="${esc(item.FolderPath)}" href="#"><span class='fa fa-folder text-primary' aria-hidden='true'></span><span class='sharepoint-custom-underline' title='${esc(item.Name)}'><span> ${esc(item.Name)} </span></span></a></td>${modified(item)}${actionMenu(last)}</tr>`;
+      const url = sameOrigin(item.Url);
+      return `<tr class="sp-item" data-filename="${esc(item.Name)}" data-id="${esc(item.Id)}" data-url="${esc(url)}"><td data-type="System.String" data-value="${esc(item.Name)}"><a class="sharepoint-custom-icon" href="${esc(url)}" target="_blank"><span class='fa fa-file-o' aria-hidden='true'></span><span class='sharepoint-custom-underline' title='${esc(item.Name)} (${esc(item.FileSizeDisplay)})'><span>${esc(item.Name)} <small>(${esc(item.FileSizeDisplay)})</small></span></span></a></td>${modified(item)}${actionMenu(last)}</tr>`;
+    };
+    const head = () => {
+      const template = container.querySelector('#sharepoint-template')?.innerHTML ?? '';
+      return /<thead>[\s\S]*?<\/thead>/.exec(template)?.[0] ?? '';
+    };
+    function renderCrumbs() {
+      if (!crumbs) return;
+      if (!state.folderPath) {
+        crumbs.replaceChildren();
+        crumbs.style.display = 'none';
+        return;
+      }
+      const names = state.folderPath.split('/');
+      crumbs.innerHTML = [
+        `<li class="breadcrumb-item"><a href="#" data-folderpath="">${esc(label)}</a></li>`,
+        ...names.map((name, index) =>
+          index === names.length - 1
+            ? `<li class="breadcrumb-item active" aria-current="page">${esc(name)}</li>`
+            : `<li class="breadcrumb-item"><a href="#" data-folderpath="${esc(names.slice(0, index + 1).join('/'))}">${esc(name)}</a></li>`,
+        ),
+      ].join('');
+      crumbs.style.display = '';
+    }
+    function load(page = state.page) {
+      const request = ++state.request;
+      state.page = page;
+      output.replaceChildren();
+      show('.sharepoint-loading');
+      return send(
+        'data-url-get',
+        { regarding, sortExpression: state.sort, page, pageSize, folderPath: state.folderPath },
+        { jsonType: 'application/json', global: false },
+      )
+        .then((data) => {
+          if (request !== state.request) return;
+          if (!data || typeof data !== 'object') throw new Error('Error completing request.');
+          renderCrumbs();
+          if (data.AccessDenied) return show('.sharepoint-access-denied');
+          if (data.ConfigError) return show('.sharepoint-config-error');
+          const items = data.SharePointItems ?? [];
+          // A page past the last one (its last item was deleted) steps back to the last page that has items.
+          const last = Math.max(1, Math.ceil((Number(data.TotalCount) || 0) / pageSize));
+          if (!items.length && Number(data.TotalCount) > 0 && page > last) return load(last);
+          if (!items.length) {
+            renderNotesPagination(pager, 1, 1, 0, true);
+            if (pager) pager.style.display = 'none';
+            return show('.sharepoint-empty');
+          }
+          show(null);
+          output.innerHTML = `<div class="view-grid"><table aria-label="Document list" aria-live="polite" aria-relevant="additions" class="table-striped table">${head()}${items.map(row).join('')}</table></div>`;
+          renderNotesPagination(pager, Math.ceil((Number(data.TotalCount) || 0) / pageSize), page, items.length, true);
+          trigger(container, 'loaded');
+        })
+        .catch(() => {
+          if (request !== state.request) return;
+          if (pager) pager.style.display = 'none';
+          show('.sharepoint-error');
+        });
+    }
+    const open = (folderPath) => {
+      state.folderPath = folderPath;
+      void load(1);
+    };
+    const alertIn = (modal, text) => {
+      modal.querySelector('.modal-body > .alert')?.remove();
+      modal
+        .querySelector('.modal-body')
+        .insertAdjacentHTML(
+          'afterbegin',
+          `<div class="alert alert-block alert-danger error clearfix">${esc(text)}</div>`,
+        );
+    };
+    // Each dialog opens with a fresh primary handler, no earlier error and the current folder as its destination.
+    const prepare = (modal, run) => {
+      modal.querySelector('.modal-body > .alert')?.remove();
+      for (const group of modal.querySelectorAll('.destination-group')) {
+        group.style.display = state.folderPath ? '' : 'none';
+        const line = group.querySelector('.destination-folder');
+        if (line) line.textContent = state.folderPath ? `${label}/${state.folderPath}` : '';
+      }
+      const primary = modal.querySelector('.modal-footer .primary');
+      const replacement = primary.cloneNode(true);
+      primary.replaceWith(replacement);
+      replacement.addEventListener('click', () => run(replacement));
+      return replacement;
+    };
+    const finish = (modal, request) =>
+      request
+        .then(() => {
+          hideModal(modal);
+          void load(state.page);
+        })
+        .catch((error) => alertIn(modal, error.message));
+    container.querySelector('a.add-file')?.addEventListener('click', (event) => {
+      event.preventDefault();
+      const modal = container.querySelector('.modal-add-file');
+      if (!modal) return;
+      const input = modal.querySelector('input[name="file"]');
+      if (input) input.value = '';
+      prepare(modal, () => {
+        const files = [...(input?.files ?? [])];
+        if (!files.length) return;
+        const large = files.find((file) => file.size > maxFile * 1048576);
+        if (large) return alertIn(modal, `The file ${large.name} exceeds the maximum upload size of ${maxFile} MB.`);
+        if (files.reduce((sum, file) => sum + file.size, 0) > maxTotal * 1048576)
+          return alertIn(modal, `The files exceed the maximum total upload size of ${maxTotal} MB.`);
+        const body = new FormData();
+        body.append('regardingEntityLogicalName', regarding.LogicalName ?? '');
+        body.append('regardingEntityId', regarding.Id ?? '');
+        for (const file of files) body.append('files', file);
+        body.append('overwrite', String(Boolean(modal.querySelector('input[name="overwrite"]')?.checked)));
+        if (state.folderPath) body.append('folderPath', state.folderPath);
+        void finish(modal, send('data-url-add-files', body, { json: false, form: true }));
+      });
+      showModal(modal);
+    });
+    container.querySelector('a.add-folder')?.addEventListener('click', (event) => {
+      event.preventDefault();
+      const modal = container.querySelector('.modal-add-folder');
+      if (!modal) return;
+      const name = modal.querySelector('#FolderName');
+      if (name) name.value = '';
+      const primary = prepare(modal, () =>
+        finish(
+          modal,
+          send(
+            'data-url-add-folder',
+            { regarding, name: name?.value ?? '', folderPath: state.folderPath },
+            { json: false, jsonType: 'application/json' },
+          ),
+        ),
+      );
+      // Create folder stays disabled until the name has text.
+      primary.disabled = true;
+      if (name) name.onkeyup = () => (primary.disabled = !name.value.trim());
+      showModal(modal);
+    });
+    container.addEventListener('click', (event) => {
+      const crumb = event.target.closest('.sharepoint-breadcrumbs a[data-folderpath]');
+      const folder = event.target.closest('.sharepoint-data a.folder-link');
+      const sort = event.target.closest('.sharepoint-data th.sort-enabled');
+      const remove = event.target.closest('.sharepoint-data .delete-link');
+      const page = event.target.closest('.sharepoint-pagination button[data-page]');
+      if (!crumb && !folder && !sort && !remove && !page) return;
+      event.preventDefault();
+      if (crumb || folder) return open((crumb ?? folder).getAttribute('data-folderpath') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
+      if (page) return page.disabled ? undefined : void load(Number(page.getAttribute('data-page'))); // NOSONAR: actual attributes exclude inherited dataset values
+      if (sort) {
+        const name = sort.getAttribute('data-sort-name'); // NOSONAR: actual attributes exclude inherited dataset values
+        const ascending = `${name} ASC`;
+        state.sort = `${name} ${state.sort === ascending ? 'DESC' : 'ASC'}`;
+        return void load(1);
+      }
+      const item = remove.closest('tr.sp-item');
+      const modal = container.querySelector(
+        item.dataset.foldername === undefined ? '.modal-delete-file' : '.modal-delete-folder',
+      );
+      if (!modal) return;
+      prepare(modal, () =>
+        finish(
+          modal,
+          send(
+            'data-url-delete',
+            { regarding, id: item.getAttribute('data-id'), folderPath: state.folderPath }, // NOSONAR: actual attributes exclude inherited dataset values
+            { json: false, jsonType: 'application/json' },
+          ),
+        ),
+      );
+      showModal(modal);
+    });
+    on(container, 'refresh', (event) => {
+      if (event.target === container) void load(state.page);
+    });
+    void load(1);
+  }
+
   // ---- modal form completion
   window.addEventListener('message', (event) => {
     if (event.origin !== location.origin || event.data !== 'Success') return;
@@ -2416,6 +2941,7 @@
   function initialise(root = document) {
     // Notes load before the grids: the notes POST precedes the subgrid POST.
     for (const notes of root.querySelectorAll('.entity-notes')) initNotes(notes);
+    for (const documents of root.querySelectorAll('.sharepoint-grid')) initSharePoint(documents);
     for (const element of root.querySelectorAll('.entity-grid')) {
       if (element.__ppEntityGrid) continue;
       if (element.closest('.entity-lookup, .entity-associate')) continue;

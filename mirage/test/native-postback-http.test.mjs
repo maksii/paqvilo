@@ -7,6 +7,8 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { redactPayload } from '../lib/trace-store.mjs';
+import { client, formBody, hiddenFields } from './support/external-sign-in.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
@@ -16,8 +18,14 @@ async function fixture(
     redirect = false,
     readOnly = false,
     wizard = false,
+    actionSettings = null,
+    captcha = null,
+    captchaFixture = false,
+    registrationCaptcha = false,
+    allowLiveWrites = false,
     lookup = false,
     attachments = false,
+    maxFiles = 1,
     forms = ['Second'],
   } = {},
 ) {
@@ -39,7 +47,21 @@ async function fixture(
       '<!doctype html><html><body><form id="liquid_form">{% webform name: "Wizard" %}</form></body></html>';
     files['Wizard.advancedform.yml'] = 'adx_webformid: wizard\nadx_name: Wizard';
   }
+  if (actionSettings)
+    files['Second.basicform.yml'] += `\nadx_settings: ${JSON.stringify(JSON.stringify(actionSettings))}`;
+  const captchaFields = captcha
+    ? { adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: captcha === 'all' }
+    : undefined;
+  if (captchaFields)
+    for (const [key, value] of Object.entries(captchaFields)) files['Second.basicform.yml'] += `\n${key}: ${value}`;
+  if (registrationCaptcha)
+    files['sitesetting.yml'] = [
+      '- adx_sitesettingid: captcha\n  adx_name: Authentication/Registration/CaptchaEnabled\n  adx_value: "true"',
+      '- adx_sitesettingid: confirm\n  adx_name: Authentication/Registration/RequiresConfirmation\n  adx_value: "true"',
+    ].join('\n');
   if (attachments) files['Second.basicform.yml'] += '\nadx_attachfile: true\nadx_attachfilemaxsize: 8';
+  if (maxFiles > 1)
+    files['Second.basicform.yml'] += `\nadx_attachfileallowmultiple: true\nadx_maximumnooffiles: ${maxFiles}`;
   for (const [name, source] of Object.entries(files)) await fs.writeFile(path.join(root, name), source);
   const fields = [
     { name: 'title', type: 'text', label: 'Title', required: true },
@@ -47,9 +69,48 @@ async function fixture(
     { name: 'count', dataverseType: 'int', minimum: 0, maximum: 10 },
   ];
   if (lookup) fields.push({ name: 'customerid', type: 'lookup' });
+  const stateFields = actionSettings
+    ? {
+        statecode: {
+          dataverseType: 'state',
+          states: [
+            { value: 0, defaultStatus: 1 },
+            { value: 1, defaultStatus: 2 },
+          ],
+        },
+        statuscode: {
+          dataverseType: 'status',
+          statuses: [
+            { value: 1, state: 0 },
+            { value: 2, state: 1 },
+          ],
+        },
+      }
+    : {};
   const app = await createSimulator({
     sourceDir: root,
     watch: false,
+    ...(registrationCaptcha && { identityProvider: { localAccounts: true } }),
+    allowLiveWrites,
+    packs: captchaFixture
+      ? [
+          {
+            id: 'test-captcha',
+            name: 'Invented CAPTCHA fixture',
+            description: 'Loopback form fixture',
+            matches: () => true,
+            presets: () => ({}),
+            serviceFixtures: {
+              captcha: {
+                challenge:
+                  typeof captchaFixture === 'function'
+                    ? captchaFixture
+                    : () => ({ prompt: 'What is 2 + 3?', answer: '5' }),
+              },
+            },
+          },
+        ]
+      : [],
     initial: {
       mappings: {
         sample: {
@@ -59,6 +120,7 @@ async function fixture(
             title: { dataverseType: 'nvarchar' },
             description: { dataverseType: 'memo' },
             count: { dataverseType: 'int', minValue: 0, maxValue: 10 },
+            ...stateFields,
           },
           ...(lookup
             ? {
@@ -97,6 +159,7 @@ async function fixture(
               {
                 stepId: 'create',
                 nextStepId: 'edit',
+                metadata: captchaFields,
                 entity: 'sample',
                 mode: 100000000,
                 fields: [{ name: 'title', required: true }],
@@ -131,7 +194,7 @@ async function fixture(
         ...extra,
       ]),
     });
-  return { app, post, route, controls };
+  return { app, post, route, controls, root };
 }
 
 async function initializeFile(app, headers) {
@@ -344,6 +407,121 @@ test('a page whose second entityform tag is not rendered refuses a postback addr
   );
 });
 
+// @test-kind contract: the rendered local state button uses the form action endpoint and rechecks author-owned FetchXML before a write.
+test('a filtered state action refuses a stale button request and updates only the selected eligible record', async (t) => {
+  const { app, route } = await fixture(t, {
+    actionSettings: {
+      Actions: [
+        {
+          Type: 'DeactivateAction',
+          ButtonLabel: 'Close entry',
+          FilterCriteria:
+            '<fetch><entity name="sample"><attribute name="sampleid"/><filter><condition attribute="title" operator="eq" value="Second"/></filter></entity></fetch>',
+        },
+      ],
+    },
+  });
+  const page = await (await fetch(app.url + route)).text();
+  const button = page.match(/<button[^>]*data-pp-form-action="deactivate"[^>]*>/)?.[0];
+  assert.ok(button, 'the matching record has a form-bound button');
+  const submitUrl = button.match(/data-url="([^"]+)"/)[1];
+  assert.equal(submitUrl, '/__sim/forms/entityform/second/submit');
+  const script = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url), 'utf8');
+  const begin = script.indexOf('  function formActionClick(');
+  const end = script.indexOf("  document.addEventListener('click'", begin);
+  const handler = new Function('location', 'post', script.slice(begin, end) + '\nreturn formActionClick;');
+  const submit = async (recordId = 'second-row') => {
+    let response;
+    const location = new URL(route, app.url);
+    location.reload = () => {};
+    const click = handler(location, (url, body) => {
+      response = fetch(app.url + url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+        body: JSON.stringify(body),
+      });
+      return response;
+    });
+    const control = { querySelector: (selector) => ({ value: selector.includes('EntityName') ? 'sample' : recordId }) };
+    const rendered = {
+      closest: () => ({ closest: () => control }),
+      getAttribute: (name) => (name === 'data-url' ? submitUrl : null),
+      classList: { contains: () => false },
+      dataset: { ppFormAction: 'deactivate', ppActionIndex: button.match(/data-pp-action-index="([0-9]+)"/)[1] },
+    };
+    await click({ target: { closest: () => rendered }, preventDefault() {} });
+    return response;
+  };
+
+  await app.store.update('sample', 'second-row', { title: 'Ineligible after render' }, { admin: true });
+  const stale = await submit();
+  assert.equal(stale.status, 403);
+  assert.equal((await stale.json()).error.code, 'FormActionNotEnabled');
+  assert.doesNotMatch(await (await fetch(app.url + route)).text(), /data-pp-form-action="deactivate"/);
+  assert.notEqual(app.store.state.tables.sample[1].statecode, 1);
+
+  await app.store.update('sample', 'second-row', { title: 'Second' }, { admin: true });
+  const other = await submit('first-row');
+  assert.equal(other.status, 403);
+  assert.equal((await other.json()).error.code, 'FormRecordMismatch');
+  assert.equal((await submit()).status, 200);
+  assert.equal(app.store.state.tables.sample[1].statecode, 1);
+  assert.equal(app.store.state.tables.sample[1].statuscode, 2);
+  assert.notEqual(app.store.state.tables.sample[0].statecode, 1);
+});
+
+test('a local state action rolls back when a source publication starts during its write', async (t) => {
+  const { app, root } = await fixture(t, { actionSettings: { Actions: [{ Type: 'DeactivateAction' }] } });
+  const actionRequest = () =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.portalToken },
+      body: JSON.stringify({
+        action: 'deactivate',
+        recordId: 'second-row',
+        values: {},
+        query: { secondrow: 'second-row' },
+      }),
+    });
+  const wrote = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const publishing = Promise.withResolvers();
+  t.signal.addEventListener('abort', release.resolve, { once: true });
+  const records = app.store.recordPipeline;
+  const update = records.updateInternal.bind(records);
+  const updateMock = t.mock.method(records, 'updateInternal', async (...args) => {
+    const value = await update(...args);
+    wrote.resolve();
+    await release.promise;
+    return value;
+  });
+  const formSource = path.join(root, 'Second.basicform.yml');
+  const readFile = fs.readFile.bind(fs);
+  const readMock = t.mock.method(fs, 'readFile', (file, ...args) => {
+    if (path.resolve(String(file)).toLowerCase() === formSource.toLowerCase()) publishing.resolve();
+    return readFile(file, ...args);
+  });
+
+  const pending = actionRequest();
+  let reload;
+  try {
+    await Promise.race([wrote.promise, pending.then(() => assert.fail('The action never entered its write'))]);
+    reload = app.reload();
+    await Promise.race([publishing.promise, reload.then(() => assert.fail('Reload never read the form source'))]);
+  } finally {
+    release.resolve();
+  }
+  const response = await pending;
+  await reload;
+  updateMock.mock.restore();
+  readMock.mock.restore();
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, 'SourceRefreshConflict');
+  assert.notEqual(app.store.state.tables.sample[1].statecode, 1);
+  assert.equal((await actionRequest()).status, 200);
+  assert.equal(app.store.state.tables.sample[1].statecode, 1);
+});
+
 test('default JSON route and JSON profile remain unchanged', async (t) => {
   const { app, post, route } = await fixture(t, { transport: 'json' });
   assert.equal((await post({ title: 'Unaccepted transport' })).status, 405);
@@ -354,6 +532,319 @@ test('default JSON route and JSON profile remain unchanged', async (t) => {
   });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).outcome.message, 'Saved source message');
+});
+
+// @test-kind security: the selected form's CAPTCHA requirement applies on each submission transport.
+test('both basic form transports reject CAPTCHA-required saves and honor the configured signed-in exemption', async (t) => {
+  const { app, post, route } = await fixture(t, { captcha: 'anonymous' });
+  const native = await post({ title: 'Native attempt' });
+  assert.equal(native.status, 200);
+  assert.match(await native.text(), /Captcha is incorrect, please re-enter captcha/);
+
+  const submitJson = (title, headers = {}) =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, ...headers },
+      body: JSON.stringify({ recordId: 'second-row', values: { title }, pageUrl: route }),
+    });
+  const refused = await submitJson('JSON attempt');
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, 'CaptchaInvalid');
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+
+  const signedIn = { cookie: app.signIn('owned-contact').cookieHeader };
+  const accepted = await submitJson('Signed-in edit', signedIn);
+  assert.equal(accepted.status, 200);
+  assert.equal(app.store.state.tables.sample[1].title, 'Signed-in edit');
+});
+
+// @test-kind security: a CAPTCHA-enabled advanced step refuses saving when the exported setting requires it for authenticated visitors.
+test('JSON submissions to an advanced step enforce CAPTCHA when it is required for signed-in visitors', async (t) => {
+  const { app } = await fixture(t, { wizard: true, captcha: 'all' });
+  const response = await fetch(app.url + '/__sim/forms/webform/wizard/submit', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      __RequestVerificationToken: app.csrf,
+      cookie: app.signIn('owned-contact').cookieHeader,
+    },
+    body: JSON.stringify({ values: { title: 'Attempted create' } }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'CaptchaInvalid');
+  assert.equal(app.store.state.tables.sample.length, 2);
+  assert.equal(app.store.state.portalFormSessions?.length ?? 0, 0);
+});
+
+// @test-kind security: a trusted local CAPTCHA fixture requires a rendered visitor-bound one-time proof on either form transport.
+test('a trusted local CAPTCHA fixture accepts one solved challenge through either form transport', async (t) => {
+  for (const transport of ['postback', 'json']) {
+    await t.test(transport, async (sub) => {
+      const { app, post, route, controls } = await fixture(sub, {
+        captcha: 'anonymous',
+        captchaFixture: true,
+        transport,
+      });
+      const page = await fetch(app.url + route);
+      const cookie = page.headers.get('set-cookie').split(';')[0];
+      const html = await page.text();
+      assert.match(html, /What is 2 \+ 3\?/);
+      const challengeId = html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+      const submit = (title, browser = cookie) =>
+        transport === 'json'
+          ? fetch(app.url + '/__sim/forms/entityform/second/submit', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, cookie: browser },
+              body: JSON.stringify({
+                recordId: 'second-row',
+                values: { title },
+                captchaProofToken: { challengeId, answer: '5' },
+                pageUrl: route,
+              }),
+            })
+          : post(
+              { title },
+              [
+                [controls.names + 'captcha$FixtureChallengeToken', challengeId],
+                [controls.names + 'captcha$FixtureAnswerToken', '5'],
+              ],
+              undefined,
+              { cookie: browser },
+            );
+      const refuse = async (response) => {
+        if (transport === 'json') {
+          assert.equal(response.status, 400);
+          assert.equal((await response.json()).error.code, 'CaptchaInvalid');
+        } else {
+          assert.equal(response.status, 200);
+          assert.match(await response.text(), /Captcha is incorrect, please re-enter captcha/);
+        }
+      };
+      await refuse(await submit('Different visitor', ''));
+      assert.equal(app.store.state.tables.sample[1].title, 'Second');
+      const accepted = await submit('Solved');
+      assert.equal(accepted.status, 200);
+      assert.equal(app.store.state.tables.sample[1].title, 'Solved');
+      await accepted.arrayBuffer();
+      await refuse(await submit('Replayed'));
+      assert.equal(app.store.state.tables.sample[1].title, 'Solved');
+    });
+  }
+});
+
+// @test-kind security: a refused JSON-transport answer spends its challenge and carries the next one for the same visitor, which then saves; a postback refusal re-renders its own (the HEAD test counts one challenge per refusal)
+test('a refused JSON CAPTCHA answer carries the next challenge of the same visitor', async (t) => {
+  const { app, route } = await fixture(t, { captcha: 'anonymous', captchaFixture: true, transport: 'json' });
+  const page = await fetch(app.url + route);
+  const cookie = page.headers.get('set-cookie').split(';')[0];
+  const first = (await page.text()).match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  const submit = (title, challengeId, answer) =>
+    fetch(app.url + '/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: app.csrf, cookie },
+      body: JSON.stringify({
+        recordId: 'second-row',
+        values: { title },
+        captchaProofToken: { challengeId, answer },
+        pageUrl: route,
+      }),
+    });
+  const refused = await submit('Wrong', first, '4');
+  assert.equal(refused.status, 400);
+  const [error] = (await refused.json()).error.validationErrors;
+  assert.deepEqual([error.field, error.code, error.challenge.prompt], ['captcha', 'CaptchaInvalid', 'What is 2 + 3?']);
+  assert.notEqual(error.challenge.id, first);
+  assert.equal(Object.hasOwn(error.challenge, 'answer'), false);
+  assert.equal((await submit('Spent', first, '5')).status, 400);
+  const saved = await submit('Renewed', error.challenge.id, '5');
+  assert.equal(saved.status, 200);
+  await saved.arrayBuffer();
+  assert.equal(app.store.state.tables.sample[1].title, 'Renewed');
+});
+
+// @test-kind security: committed admin resets invalidate outstanding form and registration fixture challenges without discarding them on rollback.
+test('CAPTCHA challenges survive a failed reset and expire after a committed reset on both surfaces', async (t) => {
+  const { app, route, controls } = await fixture(t, {
+    captcha: 'anonymous',
+    captchaFixture: true,
+    registrationCaptcha: true,
+  });
+  const browser = client(app);
+  const registration = '/Account/Login/Register';
+  const reset = () => fetch(app.url + '/_sim/api/reset', { method: 'POST', headers: { 'x-sim-csrf': app.csrf } });
+  const formProof = async () => {
+    const page = await browser.request(route);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    return html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  };
+  const registrationProof = async () => {
+    const page = await browser.request(registration);
+    assert.equal(page.status, 200);
+    const { CaptchaChallengeToken } = hiddenFields(await page.text());
+    assert.match(CaptchaChallengeToken, /^[a-f0-9-]{36}$/);
+    return CaptchaChallengeToken;
+  };
+  const submitJson = async (title, challengeId) =>
+    browser.request('/__sim/forms/entityform/second/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', __RequestVerificationToken: await browser.token() },
+      body: JSON.stringify({
+        recordId: 'second-row',
+        values: { title },
+        captchaProofToken: { challengeId, answer: '5' },
+        pageUrl: route,
+      }),
+    });
+  const submitNative = async (title, challengeId) =>
+    browser.request(
+      route,
+      formBody({
+        __EVENTTARGET: controls.buttons + 'UpdateButton',
+        __EVENTARGUMENT: '',
+        __RequestVerificationToken: await browser.token(),
+        [controls.names + 'title']: title,
+        [controls.names + 'captcha$FixtureChallengeToken']: challengeId,
+        [controls.names + 'captcha$FixtureAnswerToken']: '5',
+      }),
+    );
+  // The registration page's WebForms controls (hosted session F4 AUTH-04g).
+  const control = 'ctl00$ctl00$ContentContainer$MainContent$MainContent$';
+  const register = async (username, challengeId) =>
+    browser.request(
+      registration,
+      formBody({
+        __RequestVerificationToken: await browser.token(),
+        [control + 'UserNameTextBox']: username,
+        [control + 'EmailTextBox']: `${username}@example.test`,
+        [control + 'PasswordTextBox']: 'Fixture-reset-14',
+        [control + 'ConfirmPasswordTextBox']: 'Fixture-reset-14',
+        CaptchaChallengeToken: challengeId,
+        CaptchaAnswerToken: '5',
+      }),
+    );
+
+  const initialContacts = app.store.state.tables.contact.length;
+  await app.store.update('sample', 'second-row', { title: 'Before reset' }, { admin: true });
+  const beforeFailedForm = await formProof();
+  const beforeFailedRegistration = await registrationProof();
+  const persist = app.store.save;
+  let failedSave = false;
+  app.store.save = async () => {
+    failedSave = true;
+    throw new Error('Synthetic reset persistence failure');
+  };
+  try {
+    const failed = await reset();
+    assert.equal(failed.status, 500);
+    await failed.arrayBuffer();
+  } finally {
+    app.store.save = persist;
+  }
+  assert.equal(failedSave, true);
+  assert.equal(app.store.state.tables.sample[1].title, 'Before reset');
+  assert.equal((await submitJson('Survived failure', beforeFailedForm)).status, 200);
+  const saved = await register('before-reset', beforeFailedRegistration);
+  assert.equal(saved.status, 200);
+  assert.match(await saved.text(), /Confirm your email before signing in/);
+  assert.equal(app.store.state.tables.contact.length, initialContacts + 1);
+
+  const beforeReset = { json: await formProof(), native: await formProof(), registration: await registrationProof() };
+  const committed = await reset();
+  assert.equal(committed.status, 200);
+  await committed.arrayBuffer();
+  const rejectedJson = await submitJson('Stale JSON challenge', beforeReset.json);
+  const rejectedNative = await submitNative('Stale native challenge', beforeReset.native);
+  const rejectedRegistration = await register('after-reset', beforeReset.registration);
+  const [json, native, registrationPage] = await Promise.all([
+    rejectedJson.json(),
+    rejectedNative.text(),
+    rejectedRegistration.text(),
+  ]);
+  // The registration page re-renders its CAPTCHA refusal with 200, as it does the platform's messages.
+  assert.deepEqual([rejectedJson.status, rejectedNative.status, rejectedRegistration.status], [400, 200, 200]);
+  assert.equal(json.error.code, 'CaptchaInvalid');
+  assert.match(native, /Captcha is incorrect, please re-enter captcha/);
+  assert.match(registrationPage, /CAPTCHA answer is incorrect or expired/);
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+  assert.equal(app.store.state.tables.contact.length, initialContacts);
+  assert.equal((await submitJson('Fresh challenge', await formProof())).status, 200);
+  assert.equal((await register('after-reset', await registrationProof())).status, 200);
+  assert.equal(app.store.state.tables.contact.length, initialContacts + 1);
+});
+
+// @test-kind security: HEAD requests do not allocate one-use fixture proofs for known visitors.
+test('CAPTCHA HEAD requests issue no challenge and native validation still renews it', async (t) => {
+  const issued = [];
+  const { app, route, controls } = await fixture(t, {
+    captcha: 'anonymous',
+    captchaFixture: ({ surface }) => {
+      issued.push(surface);
+      return { prompt: 'What is 2 + 3?', answer: '5' };
+    },
+    registrationCaptcha: true,
+  });
+  const browser = client(app);
+  const registration = '/Account/Login/Register';
+  const challengeId = (html) => html.match(/data-pp-captcha-challenge[^>]*value="([a-f0-9-]+)"/)[1];
+  const original = challengeId(await (await browser.request(route)).text());
+  const registrationPage = await browser.request(registration);
+  assert.equal(registrationPage.status, 200);
+  await registrationPage.arrayBuffer();
+  assert.deepEqual(issued, ['entityform', 'registration']);
+
+  for (const target of [route, registration]) {
+    const response = await browser.request(target, { method: 'HEAD' });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '');
+  }
+  assert.deepEqual(issued, ['entityform', 'registration']);
+
+  const submit = async (challenge, answer) =>
+    browser.request(
+      route,
+      formBody({
+        __EVENTTARGET: controls.buttons + 'UpdateButton',
+        __EVENTARGUMENT: '',
+        __RequestVerificationToken: await browser.token(),
+        [controls.names + 'title']: 'Solved with the renewed challenge',
+        [controls.names + 'captcha$FixtureChallengeToken']: challenge,
+        [controls.names + 'captcha$FixtureAnswerToken']: answer,
+      }),
+    );
+  const invalid = await submit(original, '7');
+  assert.equal(invalid.status, 200);
+  const body = await invalid.text();
+  assert.match(body, /Captcha is incorrect, please re-enter captcha/);
+  const renewed = challengeId(body);
+  assert.notEqual(renewed, original);
+  assert.deepEqual(issued, ['entityform', 'registration', 'entityform']);
+  assert.equal(app.store.state.tables.sample[1].title, 'Second');
+  const accepted = await submit(renewed, '5');
+  assert.equal(accepted.status, 200);
+  assert.match(await accepted.text(), /Saved source message/);
+  assert.equal(app.store.state.tables.sample[1].title, 'Solved with the renewed challenge');
+});
+
+// @test-kind security: trace capture treats both CAPTCHA transport fields as credentials.
+test('CAPTCHA fixture proofs are redacted from full request traces', () => {
+  const challenge = 'control$captcha$FixtureChallengeToken';
+  const answer = 'control$captcha$FixtureAnswerToken';
+  assert.deepEqual(redactPayload({ [challenge]: 'challenge', [answer]: 'answer' }).value, {
+    [challenge]: '[redacted]',
+    [answer]: '[redacted]',
+  });
+  assert.deepEqual(redactPayload({ captchaProofToken: { challengeId: 'challenge', answer: 'answer' } }).value, {
+    captchaProofToken: '[redacted]',
+  });
+});
+
+// @test-kind security: authorizing external writes prevents local fixture challenge issuance.
+test('a CAPTCHA fixture is unavailable when the runtime is authorized for live writes', async (t) => {
+  const { app, route } = await fixture(t, { captcha: 'anonymous', captchaFixture: true, allowLiveWrites: true });
+  const html = await (await fetch(app.url + route)).text();
+  assert.match(html, /pp-captcha/);
+  assert.doesNotMatch(html, /data-pp-captcha-challenge/);
 });
 
 // @test-kind security: the attach-file API stages nothing without the token
@@ -488,7 +979,7 @@ test('staging capacity rejects a new upload without evicting an existing visitor
 });
 
 test('staged attachments survive failed validation and are consumed only once by a committed postback', async (t) => {
-  const { app, post: postForm, controls } = await fixture(t, { attachments: true });
+  const { app, post: postForm, controls } = await fixture(t, { attachments: true, maxFiles: 2 });
   const headers = {
     __RequestVerificationToken: app.csrf,
     'x-ms-file-name': '<draft>.txt',
@@ -568,6 +1059,41 @@ test('staged attachments survive failed validation and are consumed only once by
     app.store.state.tables.annotation.length,
     2,
     'Concurrent postbacks cannot save the same staged file twice',
+  );
+});
+
+test('a second distinct staged attachment cannot exceed the existing record quota', async (t) => {
+  const { app, post, controls } = await fixture(t, { attachments: true });
+  const headers = {
+    __RequestVerificationToken: app.csrf,
+    'x-ms-file-size': '3',
+    'x-ms-file-type': 'text/plain',
+  };
+  const stage = async (name) => {
+    headers['x-ms-file-name'] = name;
+    const response = await initializeFile(app, headers);
+    assert.equal(response.status, 200);
+    const { AnnotationId, FileContinuationToken } = await response.json();
+    const part = await fetch(app.url + `/_api/file/UploadFileBlock/note?noteId=${AnnotationId}&offset=0`, {
+      method: 'PUT',
+      headers: { ...headers, 'x-ms-file-continuation-token': FileContinuationToken },
+      body: 'abc',
+    });
+    assert.equal(part.status, 204);
+    return [[controls.names + 'AttachFile_HiddenField_AnnotationIds', JSON.stringify([AnnotationId])]];
+  };
+  const postStaged = async (title, name) => post({ title }, await stage(name), undefined, { cookie: headers.cookie });
+  const accepted = await postStaged('One attachment saved', 'first.txt');
+  assert.equal(accepted.status, 200);
+  assert.match(await accepted.text(), /Saved source message/);
+
+  const refused = await postStaged('Would exceed attachment limit', 'second.txt');
+  assert.equal(refused.status, 200);
+  assert.match(await refused.text(), /You can upload a maximum of 0 more files/);
+  assert.equal(app.store.state.tables.sample[1].title, 'One attachment saved');
+  assert.deepEqual(
+    app.store.state.tables.annotation.map((note) => note.filename),
+    ['first.txt'],
   );
 });
 

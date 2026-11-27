@@ -206,3 +206,42 @@ test('duplicate views suppress missing-column and published-view conclusions', (
     ['PP-CONFIG-001', 'PP-CONFIG-001'],
   );
 });
+
+// @test-kind observation: hosted session F1 (2026-11-26, summary-F1.md AUTH-02e): the security role generated for a Custom Access permission dropped its link-entity joins on a disposable site and a partially migrated one.
+test('a Custom Access permission filtered through joins is reported as widened on the hosted site', () => {
+  const permission = (id, fields) => ({
+    kind: 'tablepermission',
+    id,
+    file: `${id}.tablepermission.yml`,
+    line: 1,
+    column: 1,
+    fields,
+  });
+  const joined =
+    '<fetch><entity name="sample_item"><link-entity name="contact" from="contactid" to="sample_contactid"/></entity></fetch>';
+  assert.deepEqual(findings([permission('custom', { scope: 756150005, permissionfetchxml: joined })]), [
+    { id: 'PP-PERM-001', file: 'custom.tablepermission.yml', field: 'permissionfetchxml' },
+  ]);
+  assert.deepEqual(
+    ids([
+      permission('root-only', {
+        scope: '756150005',
+        permissionfetchxml:
+          '<fetch><entity name="sample_item"><filter><condition attribute="sample_name" operator="eq" value="x"/></filter></entity></fetch>',
+      }),
+      permission('global', { scope: 756150000, permissionfetchxml: joined }),
+      permission('inactive', { scope: 756150005, permissionfetchxml: joined, statecode: 1 }),
+    ]),
+    [],
+  );
+});
+
+// @test-kind observation: hosted session F1 (2026-11-26, summary-F1.md AUTH-03c, runs a2 and b2): with Webapi/mspp_webrole enabled, /_api/mspp_webroles returned the web roles of every site in the environment and columns outside the fields list.
+test('an enabled web role table is reported as a hosted disclosure', () => {
+  assert.deepEqual(ids([setting('Webapi/mspp_webrole/enabled', 'true')]), ['PP-SEC-004', 'PP-API-002']);
+  assert.deepEqual(
+    ids([setting('Webapi/mspp_webrole/enabled', 'true'), setting('Webapi/mspp_webrole/fields', 'mspp_name')]),
+    ['PP-SEC-004'],
+  );
+  assert.deepEqual(ids([setting('Webapi/mspp_webrole/enabled', 'false')]), []);
+});

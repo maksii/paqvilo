@@ -1,4 +1,5 @@
 // CI publishes only known synthetic outputs, never the complete development state directory.
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -305,7 +306,7 @@ export function collectSyntheticEvidence(stateDir) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   answerHelp(process.argv.slice(2), {
     name: 'collect-evidence',
     usage: `Usage: npm run ci:evidence   (node scripts/collect-evidence.mjs)

@@ -9,7 +9,7 @@ import { DataStore } from '../lib/data.mjs';
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { fromBulkDeleteJson, toFetchXml } from '../lib/dataverse-soap-query.mjs';
-import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { CLR_SKIP, clrSdk, compileClr, hostCommand } from './fixtures/clr-sdk.mjs';
 
 // hang guard only: a blocked synchronous child cannot be ended by the test runner
 const CLI_HANG_GUARD_MS = 170_000;
@@ -89,7 +89,7 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
       'byattribute-nil',
     ]) {
       const beforeCalls = calls;
-      const written = spawnSync(executable, [mode], {
+      const written = spawnSync(...hostCommand(executable, [mode]), {
         encoding: 'utf8',
         windowsHide: true,
         timeout: CLI_HANG_GUARD_MS,

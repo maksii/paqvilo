@@ -269,6 +269,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/dom-provenance-transport.mjs:changeWords",
+      "file": "lense/dom-provenance-transport.mjs",
+      "type": "exports",
+      "name": "changeWords",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/element-provenance.mjs:elementSourceHintCacheStats",
       "file": "lense/element-provenance.mjs",
       "type": "exports",
@@ -353,6 +360,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:lense/pcf-resources.mjs:decodeHtmlAttribute",
+      "file": "lense/pcf-resources.mjs",
+      "type": "exports",
+      "name": "decodeHtmlAttribute",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/pcf-resources.mjs:joinPcfDeclaration",
+      "file": "lense/pcf-resources.mjs",
+      "type": "exports",
+      "name": "joinPcfDeclaration",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:lense/portal-model.mjs:yamlKeyStyle",
       "file": "lense/portal-model.mjs",
       "type": "exports",
@@ -385,6 +406,69 @@
       "file": "lense/project-check.mjs",
       "type": "exports",
       "name": "scaffoldMarkers",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/request-classes.mjs:platformAssetName",
+      "file": "lense/request-classes.mjs",
+      "type": "exports",
+      "name": "platformAssetName",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/request-classes.mjs:REQUEST_CLASSES",
+      "file": "lense/request-classes.mjs",
+      "type": "exports",
+      "name": "REQUEST_CLASSES",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/response-alignment.mjs:alignResponse",
+      "file": "lense/response-alignment.mjs",
+      "type": "exports",
+      "name": "alignResponse",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/response-alignment.mjs:indexPrepared",
+      "file": "lense/response-alignment.mjs",
+      "type": "exports",
+      "name": "indexPrepared",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/response-alignment.mjs:prepareAlignment",
+      "file": "lense/response-alignment.mjs",
+      "type": "exports",
+      "name": "prepareAlignment",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/response-alignment.mjs:sourceItems",
+      "file": "lense/response-alignment.mjs",
+      "type": "exports",
+      "name": "sourceItems",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/session.mjs:byteRange",
+      "file": "lense/session.mjs",
+      "type": "exports",
+      "name": "byteRange",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/session.mjs:integrityCheck",
+      "file": "lense/session.mjs",
+      "type": "exports",
+      "name": "integrityCheck",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:lense/session.mjs:integrityUrls",
+      "file": "lense/session.mjs",
+      "type": "exports",
+      "name": "integrityUrls",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
@@ -1107,6 +1191,13 @@
       "type": "exports",
       "name": "fileDigest",
       "reason": "Test seam: the CLR SDK fixture (mirage/test/fixtures/clr-sdk.mjs) forms its cache keys with this digest; the module also uses it to identify compilers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/component-provenance.mjs:platformComponentIntervals",
+      "file": "mirage/lib/component-provenance.mjs",
+      "type": "exports",
+      "name": "platformComponentIntervals",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
       "key": "runtime:exports:mirage/lib/connection-settings.mjs:connectionSettings",
@@ -2376,6 +2467,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/render-provenance.mjs:scanStartTags",
+      "file": "mirage/lib/render-provenance.mjs",
+      "type": "exports",
+      "name": "scanStartTags",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/lib/response-headers.mjs:rfc5987",
       "file": "mirage/lib/response-headers.mjs",
       "type": "exports",
@@ -2730,6 +2828,41 @@
       "file": "mirage/lib/webapi-handler.mjs",
       "type": "exports",
       "name": "webApiErrorResponse",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:controlRelativePath",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "controlRelativePath",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:liquidControlProperty",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "liquidControlProperty",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/code-components.mjs:nativeColumnPcfType",
+      "file": "mirage/lib/code-components.mjs",
+      "type": "exports",
+      "name": "nativeColumnPcfType",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/pcf-field-host.mjs:NATIVE_FIELD_ADMISSION",
+      "file": "mirage/lib/pcf-field-host.mjs",
+      "type": "exports",
+      "name": "NATIVE_FIELD_ADMISSION",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/portal-entity-definitions.mjs:portalEntityDefinitionColumns",
+      "file": "mirage/lib/portal-entity-definitions.mjs",
+      "type": "exports",
+      "name": "portalEntityDefinitionColumns",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {

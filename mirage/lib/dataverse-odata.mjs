@@ -625,7 +625,13 @@ const API_ERRORS = {
   '0x80044330': ['DecimalValueOutOfRange', VALIDATION_PLUGIN],
   '0x8004431a': ['PicklistValueOutOfRange', VALIDATION_PLUGIN],
   '0x8004432f': ['IntegerValueOutOfRange', VALIDATION_PLUGIN],
+  // A sharepointdocument read with a regarding condition while the SharePoint integration is off (hosted session F7,
+  // dv-reads documents-by-regarding, runs a and b).
+  '0x80071017': ['SharePointS2SIsDisabled', 'Microsoft.Crm.ObjectModel.SharePointDocumentService'],
 };
+// Tables whose Retrieve and RetrieveMultiple a platform service plug-in answers instead of CustomBusinessEntityService
+// (hosted session F7, dv-reads documents-by-id: 404 0x80040217 raised by SharePointDocumentService).
+const TABLE_SERVICE_PLUGINS = { sharepointdocument: 'Microsoft.Crm.ObjectModel.SharePointDocumentService' };
 const ERROR_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 // Stable generated step ids, so no real organization's step ids are reproduced.
 const validationStep = (method) =>
@@ -643,7 +649,10 @@ function platformAnnotations({ code, message, status, method, logical, requestId
   if (api && (method === 'POST' || method === 'GET')) {
     // A plug-in step is stable per operation; a service step is an org-specific id, so it is derived from the table and message.
     const step = validation ? validationStep('POST') : uuidV5(ERROR_NAMESPACE, `${logical ?? ''}:${message}`);
-    named('ApiExceptionSourceKey', `Plugin/${api[1]}`);
+    // A missing row names its table in the message only.
+    const table = logical ?? /^Entity '([a-z_][a-z0-9_]*)' With Id = /.exec(message)?.[1];
+    const plugin = api[1] === SERVICE_PLUGIN ? (TABLE_SERVICE_PLUGINS[table] ?? api[1]) : api[1];
+    named('ApiExceptionSourceKey', `Plugin/${plugin}`);
     named('ApiStepKey', step);
     named('ApiDepthKey', '1');
     named('ApiActivityIdKey', requestId);

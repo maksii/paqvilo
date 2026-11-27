@@ -27,6 +27,9 @@ import { internalStageContext, internalStageSource, internalStepReference } from
 import { standardFieldDefinition } from './dataverse-standard.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { inspectAssembly } from './clr-assembly-reader.mjs';
+import { clrToolchain, DOTNET_MIN_MAJOR } from './clr-toolchain.mjs';
+import { dotnetBuildInputs, dotnetCompile, writeDotnetRuntimeConfig } from './clr-dotnet.mjs';
+import { systemLink } from './system-link.mjs';
 import { compileCached, compileCacheKey, compilerIdentity } from './compile-cache.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -354,10 +357,11 @@ function readClrBytesSync(fd) {
   }
   return Buffer.concat(chunks, total);
 }
-/** Canonical spelling may differ on Windows; actual link components remain forbidden. */
+/** Canonical spelling may differ on Windows; link components other than system links remain forbidden. */
 export async function canonicalClrDirectory(directory) {
   for (const part of pathParts(directory)) {
     const stat = await fs.lstat(part);
+    if (systemLink(part, stat)) continue;
     if (stat.isSymbolicLink() || !stat.isDirectory()) fail('CLR cache root cannot use a symlink.');
   }
   return fs.realpath(directory);
@@ -365,6 +369,7 @@ export async function canonicalClrDirectory(directory) {
 function canonicalClrDirectorySync(directory) {
   for (const part of pathParts(directory)) {
     const stat = syncFs.lstatSync(part);
+    if (systemLink(part, stat)) continue;
     if (stat.isSymbolicLink() || !stat.isDirectory())
       fail('CLR cache directory or dependencies changed.', 'LocalPluginSourceChanged', 409);
   }
@@ -564,13 +569,20 @@ async function prepareSharedClrRuntime(sharedRuntimes, descriptor, options) {
   sharedRuntimes.set(key, runtime);
   return runtime;
 }
+// The command that starts a runtime's host: the one it was prepared with, else (a runtime assembled elsewhere) the
+// installed toolchain's.
+const hostLauncher = (runtime) =>
+  runtime.launcher !== undefined ? runtime.launcher : (clrToolchain()?.launcher ?? null);
+/** The toolchain that builds and starts the host: .NET Framework on Windows, a .NET SDK on macOS and Linux. */
 function requireClrPlatform() {
-  if (process.platform !== 'win32')
+  const toolchain = clrToolchain();
+  if (!toolchain)
     fail(
-      'The built-in CLR host requires Windows .NET Framework; configure mocks on other platforms.',
+      `The built-in CLR host needs the .NET Framework on Windows, or the .NET ${DOTNET_MIN_MAJOR} SDK or later on macOS and Linux (https://dot.net); configure mocks otherwise.`,
       'LocalPluginClrUnavailable',
       501,
     );
+  return toolchain;
 }
 function validateClrSymbolFiles(descriptor, symbols) {
   const nameOf = (file) => file.name ?? path.basename(file.path);
@@ -582,6 +594,113 @@ function validateClrSymbolFiles(descriptor, symbols) {
       fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
   }
 }
+/** Writes each original (assembly, SDK, dependencies, symbols) into the new runtime directory: its runtime file entries. */
+function snapshotClrOriginals(directory, originals, nameOf) {
+  return originals.map((original) => {
+    const destination = path.join(directory, nameOf(original));
+    syncFs.writeFileSync(destination, original.bytes, { flag: 'wx' });
+    return {
+      path: destination,
+      ...(original.path ? { sourcePath: original.path } : {}),
+      sha256: sha(original.bytes),
+    };
+  });
+}
+// VS Code attaches its .NET Framework debugger to the Windows host process; the .NET host on macOS and Linux has no such
+// attach configuration yet.
+function refuseClrDebugOffWindows(descriptor, toolchain) {
+  if (descriptor.debug === true && toolchain.kind !== 'netfx')
+    fail(
+      'CLR plug-in debugging needs Windows; run the step without debug on macOS and Linux.',
+      'LocalPluginClrUnavailable',
+      501,
+    );
+}
+/**
+ * .NET (macOS, Linux): copies the package assemblies the host binds (the WCF client of the SDK's fault types) beside it,
+ * registered and verified against their NuGet source like every other runtime file, and marked as the toolchain's rather
+ * than the plug-in's. The write is exclusive: a plug-in dependency of the same name is never replaced.
+ */
+function copyClrToolchainAssemblies(directory, inputs, files) {
+  for (const file of inputs?.runtime ?? []) {
+    const destination = path.join(directory, path.basename(file)),
+      bytes = readClrFileSync(file);
+    try {
+      syncFs.writeFileSync(destination, bytes, { flag: 'wx' });
+    } catch (error) {
+      if (error.code === 'EEXIST') fail('CLR dependency filenames must be unique.');
+      throw error;
+    }
+    files.push({ path: destination, sourcePath: file, sha256: sha(bytes), toolchain: true });
+  }
+}
+/** The host compiler run for `defines` into `folder`: the SDK's csc under .NET, else the .NET Framework compiler. */
+function clrHostCompiler({ toolchain, inputs, compilerFile, run, timeout, sourceFile, sdkFile, hostName }) {
+  if (inputs)
+    return (defines, folder) =>
+      dotnetCompile({ ...toolchain, dotnet: compilerFile }, inputs, {
+        out: path.join(folder, hostName),
+        target: 'exe',
+        sources: [sourceFile],
+        references: [sdkFile],
+        defines: ['PAQVILO_CORECLR', ...defines],
+        run,
+        timeout,
+      });
+  return (defines, folder) =>
+    run(
+      compilerFile,
+      [
+        '/nologo',
+        '/target:exe',
+        ...defines.map((name) => '/define:' + name),
+        '/out:' + path.join(folder, hostName),
+        '/reference:' + sdkFile,
+        '/reference:System.Web.Extensions.dll',
+        '/reference:System.Runtime.Serialization.dll',
+        '/reference:System.ServiceModel.dll',
+        sourceFile,
+      ],
+      { shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout },
+    );
+}
+/** The compile-cache key of a host: the compiler, its references, the host source, the SDK bytes and its services. */
+function clrHostCacheKey({ toolchain, inputs, compilerFile, source, sdkSha256, services }) {
+  return compileCacheKey(
+    inputs
+      ? [
+          'clr-plugin-host-dotnet/1',
+          compilerIdentity(inputs.csc),
+          toolchain.sdkVersion,
+          ...inputs.compile,
+          sha(source),
+          sdkSha256,
+          services.join(','),
+        ]
+      : ['clr-plugin-host/1', compilerIdentity(compilerFile), sha(source), sdkSha256, services.join(',')],
+  );
+}
+/**
+ * The cached build of a host: IPluginExecutionContext7 when the installed SDK declares it (current online contract),
+ * else the Context4 class. Returns the context interface version.
+ */
+function buildClrHostVersion(compile, services, { compilerFile, compileGuardMs, hostName }) {
+  return (folder) => {
+    let version = 7,
+      build = compile(['PAQVILO_CONTEXT7', ...services], folder);
+    if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
+      version = 4;
+      build = compile(services, folder);
+    }
+    if (build.error || build.status !== 0)
+      fail(
+        clrCompileFailure(build, compilerFile, compileGuardMs, path.join(folder, hostName)),
+        'LocalPluginClrBuild',
+        501,
+      );
+    return version;
+  };
+}
 // A hang guard, not a deadline: the compiler runs synchronously, so a compiler that never exits is stopped after this long.
 const CLR_COMPILE_GUARD_MS = 600_000;
 /**
@@ -591,7 +710,7 @@ const CLR_COMPILE_GUARD_MS = 600_000;
  */
 export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], symbols = [] }, options = {}) {
   validateClrDescriptor(descriptor);
-  requireClrPlatform();
+  const toolchain = requireClrPlatform();
   syncFs.mkdirSync(path.resolve(descriptor.cacheRoot), { recursive: true });
   // No link components; the native spelling is the canonical one (as prepareClrRuntime's fs.realpath gives it).
   canonicalClrDirectorySync(descriptor.cacheRoot);
@@ -609,75 +728,48 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
   validateClrSymbolFiles(descriptor, symbols);
+  refuseClrDebugOffWindows(descriptor, toolchain);
   const names = originals.map((f) => nameOf(f).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = readClrFileSync(hostSource),
     signature = sha(Buffer.concat([source, ...originals.map((f) => f.bytes)]));
   const directory = syncFs.mkdtempSync(path.join(cacheParent, 'clr-' + signature + '-'));
   try {
-    const files = [];
-    for (const original of originals) {
-      const destination = path.join(directory, nameOf(original));
-      syncFs.writeFileSync(destination, original.bytes, { flag: 'wx' });
-      files.push({
-        path: destination,
-        ...(original.path ? { sourcePath: original.path } : {}),
-        sha256: sha(original.bytes),
-      });
-    }
+    const files = snapshotClrOriginals(directory, originals, nameOf);
     const executable = path.join(directory, 'paqvilo-plugin-host.exe'),
       sourceFile = path.join(directory, 'paqvilo-plugin-host.cs');
     syncFs.writeFileSync(sourceFile, source, { flag: 'wx' });
-    const compilerFile =
-      compiler ?? path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
-    // online contract); an older SDK gets the Context4 class instead.
-    const hostName = path.basename(executable);
-    const compile = (defines, folder) =>
-      run(
-        compilerFile,
-        [
-          '/nologo',
-          '/target:exe',
-          ...defines.map((name) => '/define:' + name),
-          '/out:' + path.join(folder, hostName),
-          '/reference:' + files[1].path,
-          '/reference:System.Web.Extensions.dll',
-          '/reference:System.Runtime.Serialization.dll',
-          '/reference:System.ServiceModel.dll',
-          sourceFile,
-        ],
-        { shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout: compileGuardMs },
-      );
+    const hostName = path.basename(executable),
+      compilerFile = compiler ?? toolchain.compiler,
+      dotnet = toolchain.kind === 'dotnet';
+    // An injected compiler or run replaces the host compilation only; the .NET build inputs are always resolved.
+    const inputs = dotnet ? dotnetBuildInputs(toolchain) : null;
+    copyClrToolchainAssemblies(directory, inputs, files);
+    const compile = clrHostCompiler({
+      toolchain,
+      inputs,
+      compilerFile,
+      run,
+      timeout: compileGuardMs,
+      sourceFile,
+      sdkFile: files[1].path,
+      hostName,
+    });
     // The ILogger, IFeatureControlService(2) and IManagedIdentityService classes compile when the SDK declares them.
     const services = clrServiceDefines(sdk.bytes);
     const { meta: contextInterfaceVersion } = compileCached({
       ...(compileCache === undefined ? {} : { root: compileCache }),
-      key: compileCacheKey([
-        'clr-plugin-host/1',
-        compilerIdentity(compilerFile),
-        sha(source),
-        files[1].sha256,
-        services.join(','),
-      ]),
+      key: clrHostCacheKey({ toolchain, inputs, compilerFile, source, sdkSha256: files[1].sha256, services }),
       files: [hostName],
       into: directory,
-      build(folder) {
-        let version = 7,
-          build = compile(['PAQVILO_CONTEXT7', ...services], folder);
-        if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
-          version = 4;
-          build = compile(services, folder);
-        }
-        if (build.error || build.status !== 0)
-          fail(
-            clrCompileFailure(build, compilerFile, compileGuardMs, path.join(folder, hostName)),
-            'LocalPluginClrBuild',
-            501,
-          );
-        return version;
-      },
+      build: buildClrHostVersion(compile, services, { compilerFile, compileGuardMs, hostName }),
     });
+    if (dotnet) {
+      // dotnet starts the host with .NET 10 or any later runtime.
+      const config = writeDotnetRuntimeConfig(executable);
+      files.push({ path: config, sha256: sha(readClrFileSync(config)), toolchain: true });
+    }
+    // The compiled host is always the last runtime file.
     files.push({ path: executable, sha256: sha(readClrFileSync(executable)) });
     const allowed = new Set([...files.map((f) => path.basename(f.path)), path.basename(sourceFile)]);
     if (syncFs.readdirSync(directory).some((name) => !allowed.has(name)))
@@ -685,6 +777,8 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
     return {
       descriptor,
       executable,
+      // The command that starts the executable (dotnet), or null when it runs on its own.
+      launcher: toolchain.launcher,
       assembly: files[0].path,
       files,
       directory,
@@ -825,6 +919,18 @@ const storedRowById = (store, mapping, id, partitionId) => {
     const type = String(field.dataverseType ?? field.type ?? '').toLowerCase();
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`], key);
+    else if (
+      Array.isArray(value) &&
+      (type === 'partylist' || (type === '' && value.length > 0 && value.every((item) => item?.partyid)))
+    )
+      // A party list in a Target is an Entity[] of activityparty entities (hosted F2 basic form Create Target).
+      attributes[key] = {
+        $type: 'SdkArray',
+        elementType: 'Entity',
+        values: value.map((party) =>
+          recordToSdkEntity(store, 'activityparty', party, { allColumns: true, target: true }),
+        ),
+      };
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
       // A thin mapping field ({ dataverseType } only, a standard table's stand-in) takes its targets from the
       // organization's attribute metadata (account masterid: account, native mergeAccount read-back).
@@ -2022,7 +2128,7 @@ function verifyClrRuntimeFiles(runtime) {
       if (sha(readClrFileSync(file.sourcePath)) !== file.sha256)
         fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
     }
-    verified.push({ name: path.basename(file.path), bytes, sha256: file.sha256 });
+    verified.push({ name: path.basename(file.path), bytes, sha256: file.sha256, toolchain: file.toolchain === true });
   }
   if (sha(readClrFileSync(hostSource)) !== runtime.provenance.hostSourceSha256)
     fail('CLR host source changed; restart to prepare the new host.', 'LocalPluginSourceChanged', 409);
@@ -2059,8 +2165,14 @@ export function executeClrPlugin(
       assembly: path.join(directory, path.basename(runtime.assembly)),
     };
   try {
+    // The fresh host runs from the runtime directory: its snapshot holds the plug-in's files, not the host, its toolchain
+    // files or the SDK.
     for (const file of verified)
-      if (file.name !== path.basename(runtime.executable) && file.sha256 !== runtime.provenance.sdkSha256)
+      if (
+        file.name !== path.basename(runtime.executable) &&
+        !file.toolchain &&
+        file.sha256 !== runtime.provenance.sdkSha256
+      )
         syncFs.writeFileSync(path.join(directory, file.name), file.bytes, { flag: 'wx' });
     return executeClrSnapshot(runtime, input, { store, diagnostic, hostExitGuardMs }, snapshot);
   } finally {
@@ -2303,6 +2415,7 @@ function executePooledClr(runtime, input, options, verified) {
         port: port2,
         signal,
         executable: snapshot.executable,
+        launcher: hostLauncher(runtime),
         parentProcessId: process.pid,
         label: runtime.hostLabel?.() ?? null,
       },
@@ -2375,6 +2488,7 @@ function executePooledClr(runtime, input, options, verified) {
         port: port2,
         signal,
         executable: snapshot.executable,
+        launcher: hostLauncher(runtime),
         input: invocation,
         timeout,
         parentProcessId: process.pid,
@@ -2854,14 +2968,15 @@ export function deleteExecutionUser(store, operation, stage) {
         },
       }
     : {};
-  const portalRequest = frame.portalRequest === true && !parent,
+  // A nested context clears the portal facts, except a real-time workflow's operation, which keeps its portal call's.
+  const portalRequest = frame.portalRequest === true && (!parent || frame.portalInherited === true),
     portalContactId =
       portalRequest && uuid.test(frame.portalContactId ?? '')
         ? frame.portalContactId
         : '00000000-0000-0000-0000-000000000000';
   // Identities as the platform reports them. UserId is the executing principal: an impersonating step, a nested
-  // SDK service's user, else the Dataverse caller (the descriptor's identity stands in for portal and replay
-  // callers). The initiating/authenticated values belong to the original caller and pass down nested contexts.
+  // SDK service's user, else the Dataverse caller (a portal request's is the site's host application user when it
+  // exists; the descriptor's identity stands in for replay callers and a portal without one). The initiating/authenticated values belong to the original caller and pass down nested contexts.
   const caller = frame.callerIdentity?.dataverse ? frame.callerIdentity : null,
     user = (id) =>
       id
@@ -2877,6 +2992,8 @@ export function deleteExecutionUser(store, operation, stage) {
       store.pluginPlatformUserId ??
       store.pluginExecutionUserId ??
       caller?.systemUserId ??
+      // A portal request: the site's host application user (plugin-portal-caller.mjs, hosted F2).
+      frame.portalCallerUserId ??
       context.executionUserId ??
       descriptor.serviceProfile.userId,
     executionUserId = step.impersonatingUserId ?? callerUserId,
@@ -2886,12 +3003,15 @@ export function deleteExecutionUser(store, operation, stage) {
       store.pluginExecutionUserId ??
       guidOf(inherited('InitiatingUserId')) ??
       caller?.systemUserId ??
+      frame.portalCallerUserId ??
       context.initiatingUserId ??
       executionUserId,
     authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
     businessUnitId =
       guidOf(inherited('BusinessUnitId')) ??
-      (caller ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid) : null) ??
+      (caller || frame.portalCallerUserId
+        ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid)
+        : null) ??
       context.businessUnitId,
     objectId = (id) => user(id)?.azureactivedirectoryobjectid ?? empty,
     sameUser = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();

@@ -9,11 +9,13 @@ import { boundedCommand, COMMAND_HANG_GUARD_MS } from './helpers/bounded-command
 import { operationBudget } from './helpers/operation-budget.mjs';
 import { hintCommands } from './helpers/mirage-in-process.mjs';
 import { tempDirSync } from './fixture.mjs';
+import { writeRecorder } from './helpers/write-recorder.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const bin = path.join(root, 'bin', 'paqvilo.mjs');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
-const run = (t, cwd, args) => boundedCommand(t, process.execPath, [bin, ...args], { cwd, env });
+const run = (t, cwd, args, toolkit) =>
+  boundedCommand(t, process.execPath, [bin, ...args], { cwd, env: toolkit ? toolkit.env(env) : env });
 // Every command has its own hang guard, counted from the moment it holds a process slot. A test that runs a batch
 // declares the batch's finite budget: on a small loaded host the commands run one at a time, each slow but none hung,
 // and the lane's 180 s hang guard would otherwise cut the queue.
@@ -25,15 +27,12 @@ function folder(t) {
   return directory;
 }
 
-/** The toolkit checkout's own settings and state: what a command run elsewhere must never touch. */
-function toolkitState() {
-  const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
-  const state = path.join(root, '.paqvilo');
-  return {
-    env: read(path.join(root, '.env')),
-    state: fs.existsSync(state) ? fs.readdirSync(state).sort((a, b) => a.localeCompare(b)) : null,
-  };
-}
+/**
+ * Records what the commands write to the toolkit checkout's own settings and state, which a command run elsewhere must
+ * never touch. The checkout's .paqvilo is also written by the validation lanes running beside this test, so a listing
+ * of it before and after cannot tell whose write it was: the commands' own writes are recorded instead.
+ */
+const toolkitWrites = (t) => writeRecorder(t, [path.join(root, '.env'), path.join(root, '.paqvilo')]);
 
 const escape = (text) => text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 const mirageHint = '--config <catalogue>, --project <file> or --runtime <kind>';
@@ -65,8 +64,8 @@ test(
   commandBatch(COMMANDS.length),
   async (t) => {
     const empty = folder(t);
-    const before = toolkitState();
-    const results = await Promise.all(COMMANDS.map(([args]) => run(t, empty, args)));
+    const toolkit = toolkitWrites(t);
+    const results = await Promise.all(COMMANDS.map(([args]) => run(t, empty, args, toolkit)));
     for (const [index, [args, alternatives]] of COMMANDS.entries()) {
       const { status, stdout, stderr } = results[index];
       const label = args.join(' ');
@@ -81,7 +80,7 @@ test(
       assert.doesNotMatch(stdout + stderr, /portal\.example\.test|now working on/, label);
     }
     assert.deepEqual(fs.readdirSync(empty), [], 'nothing is written in the folder either');
-    assert.deepEqual(toolkitState(), before, 'the toolkit checkout .env and .paqvilo are unchanged');
+    assert.deepEqual(toolkit.writes(), [], 'no command writes the toolkit checkout .env or .paqvilo');
   },
 );
 
@@ -111,8 +110,8 @@ test(
   async (t) => {
     const empty = folder(t);
     const missing = path.join(empty, 'missing.yml');
-    const before = toolkitState();
-    const results = await Promise.all(EXPLICIT.map((args) => run(t, empty, [...args, '--config', missing])));
+    const toolkit = toolkitWrites(t);
+    const results = await Promise.all(EXPLICIT.map((args) => run(t, empty, [...args, '--config', missing], toolkit)));
     for (const [index, args] of EXPLICIT.entries()) {
       const { status, stdout, stderr } = results[index];
       const label = args.join(' ');
@@ -125,7 +124,7 @@ test(
       assert.doesNotMatch(stdout + stderr, /ENOENT|\n\s+at /, label);
     }
     assert.deepEqual(fs.readdirSync(empty), []);
-    assert.deepEqual(toolkitState(), before);
+    assert.deepEqual(toolkit.writes(), []);
   },
 );
 
@@ -133,23 +132,28 @@ test('a --source run without a catalogue borrows only the sample site defaults; 
   const empty = folder(t);
   fs.mkdirSync(path.join(empty, 'portal', 'web-files'), { recursive: true });
   fs.mkdirSync(path.join(empty, 'solution'));
-  const before = toolkitState();
+  const toolkit = toolkitWrites(t);
   const state = path.join(empty, 'smoke.json');
-  const init = await run(t, empty, [
-    'mirage',
-    'init',
-    '--source',
-    'portal',
-    '--solution-root',
-    'solution',
-    '--port',
-    '0',
-    '--state',
-    'smoke.json',
-    '--preset',
-    'smoke',
-    '--json',
-  ]);
+  const init = await run(
+    t,
+    empty,
+    [
+      'mirage',
+      'init',
+      '--source',
+      'portal',
+      '--solution-root',
+      'solution',
+      '--port',
+      '0',
+      '--state',
+      'smoke.json',
+      '--preset',
+      'smoke',
+      '--json',
+    ],
+    toolkit,
+  );
   assert.equal(init.status, 0, init.stdout + init.stderr);
   const report = JSON.parse(init.stdout);
   // The project and its state are written in this folder, never in the toolkit checkout.
@@ -170,8 +174,8 @@ test('a --source run without a catalogue borrows only the sample site defaults; 
   ])
     assert.equal(next[next.indexOf(option) + 1], value, option);
   // --source with --site names a catalogue site: there is none here.
-  const site = await run(t, empty, ['lense', 'list', '--source', 'portal', '--site', 'portal']);
+  const site = await run(t, empty, ['lense', 'list', '--source', 'portal', '--site', 'portal'], toolkit);
   assert.equal(site.status, 1);
   assert.match(site.stderr, /^paqvilo: No catalogue: .+paqvilo\.config\.yml does not exist\./);
-  assert.deepEqual(toolkitState(), before);
+  assert.deepEqual(toolkit.writes(), []);
 });

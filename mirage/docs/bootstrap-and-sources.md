@@ -1,9 +1,14 @@
 # Sources and bootstrap
 
-The importer accepts standard portal exports, enhanced unpacked component XML and short-key `.powerpages-site` code-site
-exports. It uses record types and IDs, exported page/template relationships, languages, settings, snippets, forms/lists,
-permissions and web-file metadata. Ambiguous or incomplete inputs produce diagnostics; `serve` rejects sources with no
-recognized pages.
+The importer accepts portal YAML records with `adx_` or `mspp_` keys, enhanced unpacked component XML, and short-key
+`.powerpages-site` exports. PAC 2.13.1 `pac pages download` writes `adx_` keys for both data models (`--modelVersion 2`
+or `Enhanced` included), so an `adx_` export does not record its data model: it imports as the standard data model
+unless `dataModel` is set. The `mspp_` layout, read as the enhanced data model, is not written by PAC 2.13.1.
+The importer resolves record IDs, relationships, languages, settings, snippets, forms, lists, permissions and web files. Use a separate source folder for each site. An enhanced Solution with records owned by different sites is
+refused. Its site and language records (`powerpagesites.xml`, `powerpagesitelanguages.xml`) are read only from
+`Assets/` (or the root) of the folder that holds `powerpagecomponents/`, which may sit below the source folder, as Lense
+reads them; a copy elsewhere is ignored and reported as `ENHANCED_SITE_METADATA_IGNORED`. A component file that cannot
+be parsed is skipped with a diagnostic and the rest of the Solution loads. `serve` also requires a recognized page.
 
 Solution roots contribute table/entity-set identities, columns, relationships, views, system forms, choices, environment
 variables and permission relationships. Roots are a set layered in dependency order; explicit ordering is an opt-in and

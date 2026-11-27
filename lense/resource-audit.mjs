@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
+import { isSourceFile, isEnhancedSiteMetadata, isServerLogicPath, isPageSource } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
 import { hasDelimitedText } from '../mirage/lib/text-scanning.mjs';
@@ -17,16 +17,8 @@ const compare = (a, b) => {
   return a > b ? 1 : 0;
 };
 const normalize = (file) => file.replaceAll('\\', '/');
-const SOURCE_FIELDS = new Set([
-  'adx_copy',
-  'adx_summary',
-  'adx_source',
-  'adx_value',
-  'copy',
-  'summary',
-  'source',
-  'value',
-]);
+const SOURCE_FIELDS = new Set(['copy', 'summary', 'source', 'value']);
+const barePortalField = (key) => key.replace(/^(?:adx|mspp)_/, '');
 
 // Recognize standard content fields even when empty. Unknown nonempty HTML/code fields
 // remain gaps until a handler or a precise deployment-only classification is supplied.
@@ -40,7 +32,8 @@ function languageOf(key, value, context) {
     hasDelimitedText(value, '{{', '}}')
   )
     return 'html';
-  if (SOURCE_FIELDS.has(key) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context)) return 'html';
+  if (SOURCE_FIELDS.has(barePortalField(key)) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context))
+    return 'html';
   return null;
 }
 
@@ -85,14 +78,116 @@ function yamlStrings(node, document, visit, parts = [], ancestors = new Set()) {
   ancestors.delete(node);
 }
 
+const PROFILE_PATH = /^deployment-profiles\//i;
+
 function metadataReason(rel, key) {
-  if (/^deployment-profiles\//i.test(rel))
-    return 'Environment-specific deployment-profile override; the overlay does not apply deployment transformations.';
+  if (PROFILE_PATH.test(rel))
+    return {
+      code: 'deployment-profile',
+      reason:
+        'Environment-specific deployment-profile override; the overlay does not apply deployment transformations.',
+    };
   if (key === 'notetext' && /\.webfile\.ya?ml$/i.test(rel))
-    return 'Attachment annotation metadata, not the web-file response body.';
-  if (/^(?:adx_)?(?:filter_definition|subgrid_settings|settings)$/i.test(key))
-    return 'Serialized server-interpreted configuration; changing its rendering or queries requires deployment.';
+    return { code: 'portal-metadata', reason: 'Attachment annotation metadata, not the web-file response body.' };
+  if (/^(?:filter_definition|subgrid_settings|settings)$/i.test(barePortalField(key)))
+    return {
+      code: 'portal-metadata',
+      reason: 'Serialized server-interpreted configuration; changing its rendering or queries requires deployment.',
+    };
   return null;
+}
+
+/** The metadata sidecar stem of a source file (`<stem>.yml` or `<stem>.yaml`), or null. */
+function metadataStemOf(file) {
+  if (/[\\/]web-files[\\/]/.test(file)) return `${file}.webfile`;
+  if (/\.[^./\\]+\.[^./\\]+$/.test(file)) return file.replace(/\.[^./\\]+\.[^./\\]+$/, '');
+  return null;
+}
+
+function inactiveRecordText(file, text) {
+  if (/\.xml$/i.test(file)) return /<statecode>\s*1\s*<\/statecode>/.test(text);
+  try {
+    const record = YAML.parse(text);
+    return Boolean(
+      record &&
+      typeof record === 'object' &&
+      Number(record.statecode ?? record.mspp_statecode ?? record.adx_statecode) === 1,
+    );
+  } catch {
+    return false;
+  }
+}
+
+// `rel` without its `#field` suffix: from the first # that no line terminator follows, as /#.*$/ removes it, in
+// linear time.
+function withoutFieldSuffix(rel) {
+  const lineStart = Math.max(...['\n', '\r', '\u2028', '\u2029'].map((terminator) => rel.lastIndexOf(terminator))) + 1;
+  const hash = rel.indexOf('#', lineStart);
+  return hash < 0 ? rel : rel.slice(0, hash);
+}
+
+// The metadata files that can hold the record of `file`: the file itself when it is metadata, else its sidecars.
+function recordMetadataCandidates(file) {
+  if (/\.(?:ya?ml|xml)$/i.test(file)) return [file];
+  const stem = metadataStemOf(file);
+  return stem ? [`${stem}.yml`, `${stem}.yaml`] : [];
+}
+
+/** Whether the record that holds `rel` (its own metadata, or the sidecar of a payload) is inactive on disk. */
+function inactiveRecordSource(root, rel) {
+  const file = path.resolve(root, withoutFieldSuffix(rel));
+  for (const candidate of recordMetadataCandidates(file)) {
+    try {
+      if (!isSourceFile(root, candidate)) continue;
+      return inactiveRecordText(candidate, fs.readFileSync(candidate, 'utf8'));
+    } catch {
+      /* unreadable or absent metadata: not established as inactive */
+    }
+  }
+  return false;
+}
+
+// Live needsDeploy rows carry free-text reasons (lense/portal-model.mjs deploymentChanges, lense/html-rewriter.mjs,
+// lense/pcf-resources.mjs). Each pattern below names the producer text it classifies; test/deployment-diagnostics
+// drives every producer, so a reworded reason fails there instead of losing its code.
+/** @type {Array<[RegExp, string]>} */
+const LIVE_REASONS = [
+  [/^Server logic runs on the Power Pages server\b/, 'server-logic'],
+  [/^Site or language settings changed\b/, 'site-metadata'],
+  [/^(?:new|deleted) portal metadata requires deployment\b/, 'record-lifecycle'],
+  [/^This record is deleted, inactive or not indexed\b/, 'record-lifecycle'],
+  [/^Metadata changed\. /, 'portal-metadata'],
+  [/^component metadata changed\b/, 'portal-metadata'],
+  [/^component metadata cannot be compared because its <content> is not a JSON object/, 'component-metadata-unparsed'],
+  [/^the record or its parent is inactive\b/, 'inactive-record'],
+  [/^the page URL cannot be resolved from local metadata\b/, 'unresolved-page-url'],
+  [/^[\w-]+ preview is disabled in this site's (?:inline|markup) settings\b/, 'preview-disabled'],
+  [/^new [\w-]+: it does not exist online yet\b/, 'new-source'],
+  [/^the source field cannot be read from its metadata\b/, 'unreadable-field'],
+  [/^line \d+: the (?:change touches Liquid tags|line holds Liquid code)\b/, 'liquid-change'],
+  [/^line \d+: /, 'unlocatable-change'],
+];
+
+/**
+ * The deployment diagnostic code (docs/lense.md) of one live needsDeploy row ({ rel, reason, pcfDeployment? }), or null when no kind
+ * matches. With `sourceDir`, a metadata change or unindexed source of a record that is inactive on disk is
+ * `inactive-record`, as the offline audit classifies it.
+ */
+export function deploymentDiagnosticCode(row, { sourceDir } = {}) {
+  if (row?.pcfDeployment) return 'pcf-manifest';
+  const rel = typeof row?.rel === 'string' ? row.rel : '';
+  const reason = typeof row?.reason === 'string' ? row.reason : '';
+  const code = LIVE_REASONS.find(([pattern]) => pattern.test(reason))?.[1] ?? null;
+  if (!code) return null;
+  if (PROFILE_PATH.test(rel)) return 'deployment-profile';
+  if (
+    sourceDir &&
+    rel &&
+    (code === 'portal-metadata' || reason.startsWith('This record is deleted, inactive')) &&
+    inactiveRecordSource(sourceDir, rel)
+  )
+    return 'inactive-record';
+  return code;
 }
 
 function addAuditEntry(state, file, field, extra = {}) {
@@ -178,7 +273,8 @@ function parseAuditYamlFile(file, rel, state) {
       code: error.code,
       reason: 'Duplicate YAML key; every occurrence was inventoried, but deployment interpretation is ambiguous.',
     });
-  const inactive = YAML.isMap(document.contents) && Number(document.get('statecode')) === 1;
+  const inactive =
+    YAML.isMap(document.contents) && Number(document.get('statecode') ?? document.get('mspp_statecode')) === 1;
   return { document, record: undefined, context: rel, inactive };
 }
 function parseAuditComponentFile(file, rel, state) {
@@ -212,15 +308,24 @@ function auditValueIsInactive(parts, state, source) {
       parts.some((_part, index) => {
         const prefix = parts.slice(0, index);
         return (
-          Number(source.document.getIn([...prefix, 'statecode'])) === 1 ||
-          ['adx_entityform', 'adx_webform', 'entityform', 'webform'].some((formKey) =>
-            state.model.inactiveForms?.has(String(source.document.getIn([...prefix, formKey]) ?? '').toLowerCase()),
+          Number(
+            source.document.getIn([...prefix, 'statecode']) ?? source.document.getIn([...prefix, 'mspp_statecode']),
+          ) === 1 ||
+          ['adx_entityform', 'adx_webform', 'mspp_entityform', 'mspp_webform', 'entityform', 'webform'].some(
+            (formKey) =>
+              state.model.inactiveForms?.has(String(source.document.getIn([...prefix, formKey]) ?? '').toLowerCase()),
           )
         );
       }),
     )
   );
 }
+const SERIALIZED_CONTAINER = {
+  code: 'portal-metadata',
+  reason: 'Serialized metadata container; literal text values are inventoried separately from server configuration.',
+};
+
+// `inheritedReason` is the { code, reason } deployment classification of the enclosing field, or null.
 function nestedAuditStrings(parts, value, inheritedReason, depth, state, source) {
   let count = 0;
   try {
@@ -243,12 +348,7 @@ function nestedAuditStrings(parts, value, inheritedReason, depth, state, source)
     yamlStrings(nestedDocument.contents, nestedDocument, (keys, text) => {
       count += visitAuditValue([...parts, ...keys], text, state, source, inheritedReason, depth + 1);
     });
-    return {
-      count,
-      reason:
-        inheritedReason ??
-        'Serialized metadata container; literal text values are inventoried separately from server configuration.',
-    };
+    return { count, reason: inheritedReason ?? SERIALIZED_CONTAINER };
   } catch {
     /* not JSON: retain as a candidate, never silently ignore it */
     return { count, reason: inheritedReason };
@@ -268,12 +368,18 @@ function visitAuditValue(parts, value, state, source, inheritedReason = null, de
     nestedCount = nested.count;
     reason = nested.reason;
   }
-  if (!nestedCount && (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(key)))) return 0;
+  if (
+    !nestedCount &&
+    (!language || (!value.trim() && !CODE_FIELD.test(key) && !SOURCE_FIELDS.has(barePortalField(key))))
+  )
+    return 0;
   addAuditEntry(state, source.file, parts.join('.'), {
     language: language ?? 'container',
     empty: !value.trim(),
-    ...(reason ? { status: 'deployment', reason } : {}),
-    ...(entryInactive ? { status: 'inactive', reason: 'Inactive portal record is not rendered.' } : {}),
+    ...(reason ? { status: 'deployment', reason: reason.reason, deploymentCode: reason.code } : {}),
+    ...(entryInactive
+      ? { status: 'inactive', reason: 'Inactive portal record is not rendered.', deploymentCode: 'inactive-record' }
+      : {}),
   });
   return nestedCount + 1;
 }
@@ -287,6 +393,7 @@ function scanAuditFile(file, state) {
       status: 'deployment',
       reason:
         'Enhanced site and language configuration document; the overlay cannot apply its fields. This file classification does not attest field parsing or runtime behavior.',
+      deploymentCode: 'site-metadata',
     });
     return;
   }
@@ -310,16 +417,15 @@ function applyInactiveEntries(state) {
   const inactiveSources = new Set((state.model.inactiveSources ?? []).map((source) => source.file));
   for (const item of state.entries.values()) {
     const file = path.join(state.root, item.relativePath);
-    let mirage = null;
-    if (/[\\/]web-files[\\/]/.test(file)) mirage = `${file}.webfile.yml`;
-    else if (/\.[^./\\]+\.[^./\\]+$/.test(file)) mirage = file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml');
-    if (
-      ((!item.field || state.model.format === 'enhanced') && inactiveSources.has(file)) ||
-      state.metadata.get(mirage)?.inactive
-    )
+    const metadataStem = metadataStemOf(file);
+    const metadata = metadataStem
+      ? (state.metadata.get(`${metadataStem}.yml`) ?? state.metadata.get(`${metadataStem}.yaml`))
+      : null;
+    if (((!item.field || state.model.format === 'enhanced') && inactiveSources.has(file)) || metadata?.inactive)
       Object.assign(item, {
         status: 'inactive',
         reason: 'Inactive portal record or inactive language root is not rendered.',
+        deploymentCode: 'inactive-record',
       });
   }
 }
@@ -333,19 +439,24 @@ function applyInactiveEntries(state) {
     // They are capabilities, not additional code occurrences found on disk.
     if (field && !state.entries.has(`${state.relative(file)}#${field}`)) continue;
     const item = addAuditEntry(state, file, field, { kind: source.kind });
-    const supported = isSourceFile(state.root, file) && (!source.kind.startsWith('page-') || source.pageUrl != null);
+    const supported = isSourceFile(state.root, file) && (!isPageSource(source) || source.pageUrl != null);
     const settings = source.mode === 'block' ? site.inline : site.markup;
     let reason = 'Source is missing, unsafe, or its page URL cannot be resolved.';
     if (supported && source.mode === 'block')
       reason = 'Inline block handler; rendered-page matching still requires verification.';
     else if (supported) reason = 'Literal baseline patch handler; Liquid execution and runtime matching remain online.';
+    const enabled = Boolean(settings?.enabled && settings.kinds.includes(source.kind));
     Object.assign(item, {
       status: supported ? 'mapped' : 'blocked',
       reason,
       strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch',
-      enabled: Boolean(settings?.enabled && settings.kinds.includes(source.kind)),
+      enabled,
       pageUrl: source.pageUrl ?? null,
     });
+    // The conditions under which `lense verify` lists a change to this source as needing deployment.
+    delete item.deploymentCode;
+    if (isPageSource(source) && source.pageUrl == null) item.deploymentCode = 'unresolved-page-url';
+    else if (supported && !enabled) item.deploymentCode = 'preview-disabled';
   }
 }
 function applyWebFiles(state, resolver) {
@@ -366,6 +477,7 @@ function applyWebFiles(state, resolver) {
     item.mappings ??= [];
     item.mappings.push({ metadataPath: state.relative(resource.yml), url: resource.url, supported, reason });
     const blocked = item.mappings.some((mapping) => !mapping.supported);
+    delete item.deploymentCode;
     Object.assign(item, {
       status: blocked ? 'blocked' : 'mapped',
       reason: blocked ? item.mappings.find((mapping) => !mapping.supported).reason : reason,
@@ -413,11 +525,12 @@ function applyExplicitRoutes(state, site, resolver) {
       });
     // Server logic code (.powerpages-site server-logic/<name>/<name>.js) runs on the Power Pages server,
     // never in a page response: the overlay cannot apply it and changes need deployment.
-    if (item.status === 'gap' && /^server-logics?\//i.test(item.relativePath))
+    if (item.status === 'gap' && isServerLogicPath(item.relativePath))
       Object.assign(item, {
         status: 'deployment',
         reason:
           'Server logic runs on the Power Pages server; changes require deployment. Mirage provides separately configured local operation models.',
+        deploymentCode: 'server-logic',
       });
   }
 }
@@ -484,7 +597,12 @@ export function auditResources(model, site) {
       accountedPercent: state.errors.length ? null : accountedPercent,
       mappedPercent: state.errors.length ? null : mappedPercent,
       complete:
-        state.errors.length === 0 && state.diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0,
+        state.errors.length === 0 &&
+        state.diagnostics.length === 0 &&
+        model.warnings.length === 0 &&
+        totals.gaps === 0 &&
+        totals.blocked === 0 &&
+        totals.disabled === 0,
       runtimeVerified: false,
     },
     scope:

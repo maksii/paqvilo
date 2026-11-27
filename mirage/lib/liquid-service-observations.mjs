@@ -30,7 +30,10 @@ const attr = (value) =>
     (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character],
   );
 
-/** Chart placeholder markup is not chart execution or a successful service response. */
+/**
+ * The chart tag's markup (captured, hosted session F3 PAGE-06b). The platform chart script draws it from
+ * /_services/visualizations/get-chart-builder (portal-chart-builder.mjs); Mirage ships no chart script of its own.
+ */
 export function observedChartMarkup(args, context, options) {
   if (!observedLiquidServiceTags(options) || args?.id == null || args?.viewid == null) return null;
   const portal = options.portal;
@@ -48,7 +51,7 @@ export function observedChartMarkup(args, context, options) {
     severity: 'warning',
     component: 'chart',
     message:
-      'The observed chart tag emits its source-derived placeholder; chart data execution is unavailable locally.',
+      'The observed chart tag emits the chart markup only. The platform chart script, when the page loads it (a captured platform shell), draws it from /_services/visualizations/get-chart-builder; Mirage draws no chart itself.',
   });
   return `<div class="crm-chart" data-chartid="${attr(args.id)}" data-lang="${attr(language)}" data-serviceurl="${attr('/_services/visualizations/get-chart-builder?__portalScopeId__=' + websiteId)}" data-viewid="${attr(args.viewid)}"></div>`;
 }

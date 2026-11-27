@@ -175,6 +175,7 @@ async function fixture(t, { isolateFramework = true, moduleTransport = null } = 
   return { page, errors, scriptCount: () => scripts };
 }
 
+// @test-kind tooling: browser-fixture transport isolation of the PCF framework modules in the test harness
 test('PCF framework initialization is independent of module HTTP resets while component bundles remain real HTTP', async (t) => {
   const legacy = { reset: true, requests: [] };
   await assert.rejects(
@@ -191,6 +192,7 @@ test('PCF framework initialization is independent of module HTTP resets while co
   assert.deepEqual(errors, []);
 });
 
+// @test-kind tooling: the browser fixture ends speculative loopback connections at teardown
 test('PCF fixture teardown closes speculative HTTP connections after its browser context', async (t) => {
   const { page } = await fixture(t);
   const address = new URL(page.url());
@@ -212,6 +214,7 @@ test('PCF fixture teardown closes speculative HTTP connections after its browser
   });
 });
 
+// @test-kind unproven: local model of the model-driven standard-control context, dirty outputs and cleanup; no recorded replay case
 test('trusted standard PCF uses compiled exports, typed context, dirty outputs and deterministic cleanup', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   await page.evaluate(() => {
@@ -265,6 +268,7 @@ test('trusted standard PCF uses compiled exports, typed context, dirty outputs a
   assert.deepEqual(errors, []);
 });
 
+// @test-kind unproven: local model of bound-column attributes (RequiredLevel) independent of disabled presentation
 test('bound PCF column metadata preserves all exported requirement levels independently of disabled presentation', async (t) => {
   const { page, errors } = await fixture(t);
   const states = await page.evaluate(async () => {
@@ -293,6 +297,7 @@ test('bound PCF column metadata preserves all exported requirement levels indepe
   assert.deepEqual(errors, []);
 });
 
+// @test-kind unproven: local model of DateOnly raw values and choice formatted labels in the model-driven host
 test('PCF date-only raw values preserve local calendar dates and choices expose exported formatted labels', async (t) => {
   const { page, errors } = await fixture(t);
   const values = await page.evaluate(async () => {
@@ -322,6 +327,7 @@ test('PCF date-only raw values preserve local calendar dates and choices expose 
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: both compiled export styles load through the same bounded Mirage host (loader design)
 test('namespace and registerControl compiled exports use the same bounded standard host', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   for (const file of ['namespace', 'registered']) {
@@ -343,6 +349,7 @@ test('namespace and registerControl compiled exports use the same bounded standa
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: Mirage refuses unsupported declarations and bindings before control code runs (diagnostic design)
 test('PCF unsupported features, property types, missing bindings and incompatible columns fail before code runs', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   for (const [kind, reason] of [
@@ -373,6 +380,7 @@ test('PCF unsupported features, property types, missing bindings and incompatibl
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: the optional webAPI feature uses the project-configured staff adapter and unsupported helpers reject explicitly
 test('PCF optional Web API uses the configured local staff adapter and unsupported helpers reject explicitly', async (t) => {
   const { page, errors } = await fixture(t);
   await page.evaluate(() =>
@@ -420,6 +428,7 @@ test('PCF optional Web API uses the configured local staff adapter and unsupport
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: a required WebAPI feature is admitted only with a configured staff adapter (Paqvilo host configuration)
 test('required PCF WebAPI feature admits the configured staff adapter and rejects missing or unsupported host features', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   await page.evaluate(async () => {
@@ -470,6 +479,7 @@ test('required PCF WebAPI feature admits the configured staff adapter and reject
   assert.deepEqual(errors, []);
 });
 
+// @test-kind security: untrusted controls and remote resource URLs fail visibly without executing code
 test('PCF trust, unsupported contracts and remote URLs fail visibly without executing code', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   await page.evaluate(() =>
@@ -508,6 +518,7 @@ test('PCF trust, unsupported contracts and remote URLs fail visibly without exec
   assert.deepEqual(errors, []);
 });
 
+// @test-kind unproven: local model of invalid output handling (column kept, component destroyed); not compared with the native host
 test('invalid PCF output preserves the column and destroys the failing component', async (t) => {
   const { page, errors } = await fixture(t);
   await page.evaluate(() => window.mount());
@@ -519,6 +530,7 @@ test('invalid PCF output preserves the column and destroys the failing component
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: Mirage lifecycle guarantee that a disposed form never initializes late components
 test('a disposed form cannot initialize a component after asynchronous resources finish', async (t) => {
   const { page, errors } = await fixture(t);
   await page.evaluate(async () => {
@@ -540,6 +552,7 @@ test('a disposed form cannot initialize a component after asynchronous resources
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: Mirage lifecycle guarantee that disposal stops resource loads and resize observers
 test('disposal stops later PCF resource loads and retained contexts cannot restart resize observers', async (t) => {
   const { page, errors, scriptCount } = await fixture(t);
   let requested, release;
@@ -596,6 +609,7 @@ test('disposal stops later PCF resource loads and retained contexts cannot resta
   assert.deepEqual(errors, []);
 });
 
+// @test-kind unproven: local model of an exported Solution control editing and saving through the Mirage model-driven shell
 test('an exported Solution PCF edits and saves through the actual model-driven shell', async (t) => {
   const source = await modelDrivenFixture(t, { defer: true });
   const controlDir = path.join(source.solutionDir, 'Controls', 'publisher.InventedInput');
@@ -698,6 +712,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract: virtual controls need project-supplied platform libraries and are refused without them (Paqvilo configuration design)
 test('a virtual PCF mounts through project-supplied React platform libraries and is refused without them', async (t) => {
   const { page, errors } = await fixture(t);
   const virtual = {

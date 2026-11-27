@@ -1,10 +1,10 @@
+import { isEntryPoint } from '../lense/entry-point.mjs';
 import { requiredArgument } from './lib/required-argument.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseToolArgs } from './tool-options.mjs';
 import { assertToolOptions } from './tool-registry.mjs';
-import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
 import { fetchLocalState } from './lib/local-state-fetch.mjs';
@@ -323,7 +323,8 @@ export function normalizeContract(body, contract) {
   return report;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && isEntryPoint(import.meta.url)) {
+  // `process.argv[1] &&` stays: a dismissed CodeQL alert above is matched by the text that follows its line.
   try {
     const values = parseToolArgs('reference-parity', process.argv.slice(2));
     assertToolOptions('reference-parity', values, ['local', 'origin', 'cdp']);

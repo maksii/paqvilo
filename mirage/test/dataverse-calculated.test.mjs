@@ -1,5 +1,6 @@
+// @test-kind unproven: the local evaluator of the documented calculated-column FormulaDefinition subset; its results are not each checked against native
 // Calculated columns (lib/dataverse-calculated.mjs): computed on read from the FormulaDefinition subset, one parent hop,
-// unsupported formulas read null with one diagnostic, writes refused, pack override wins.
+// unsupported formulas read null with one diagnostic, written values ignored as natively, pack override wins.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION, parseCalculatedFormula, validateCalculatedColumns } from '../lib/dataverse-calculated.mjs';
@@ -125,18 +126,34 @@ test('an unsupported formula reads null and reports CALCULATED_UNSUPPORTED once 
   assert.equal(reported[0].column, 'x_native');
 });
 
-test('a write to a calculated column is refused and nothing is stored', async (t) => {
-  const { request, json, store } = await setup(t);
-  const created = await request('POST', '/x_items', { x_name: 'Refused', x_total: 1 });
-  const body = await json(created, 400);
-  assert.equal(body.error.code, '0x80048d19');
-  assert.match(body.error.message, /x_total/);
-  assert.equal(
-    store.state.tables.x_item.some((row) => row.x_name === 'Refused'),
-    false,
-  );
-  const updated = await json(await request('PATCH', `/x_items(${ITEM})`, { x_band: 'low' }), 400);
-  assert.equal(updated.error.code, '0x80048d19');
+// @test-kind observation: native capture 2026-11-23 (paqvilo-developer feedback-251-252-parity q1-webapi-1795451274669.json, q1-webapi-empty-patch-1795451318078.json, q1-portal-q1-lookup-set-by-backend-1795452046769.json): a write that includes a calculated column answers 204 and ignores its value; an update with only it advances modifiedon and versionnumber like an empty update
+test('a write that includes a calculated column ignores its value, as the platform does', async (t) => {
+  const { request, json, store, diagnostics } = await setup(t);
+  const control = await request('POST', '/x_items', { x_name: 'Control' });
+  const created = await request('POST', '/x_items', { x_name: 'Ignored', x_total: 1 });
+  assert.equal(created.status, control.status, await created.clone().text());
+  const row = store.state.tables.x_item.find((entry) => entry.x_name === 'Ignored');
+  assert.ok(row, 'the row was created');
+  assert.equal(Object.hasOwn(row, 'x_total'), false, 'the written value was not stored');
+  const rowOf = () => structuredClone(store.state.tables.x_item.find((entry) => entry.x_itemid === ITEM));
+  const empty = await request('PATCH', `/x_items(${ITEM})`, {});
+  const afterEmpty = rowOf();
+  const updated = await request('PATCH', `/x_items(${ITEM})`, { x_band: 'low' });
+  assert.equal(updated.status, empty.status, await updated.clone().text());
+  const after = rowOf();
+  assert.ok(Number(after.versionnumber) > Number(afterEmpty.versionnumber), 'the update takes the next row version');
+  const unchanged = (value) =>
+    Object.fromEntries(
+      Object.entries(value).filter(([key]) => !['versionnumber', 'modifiedon', 'modifiedby'].includes(key)),
+    );
+  assert.deepEqual(unchanged(after), unchanged(afterEmpty), 'no stored column changed');
+  const read = await json(await request('GET', `/x_items(${ITEM})?$select=x_band`), 200);
+  assert.notEqual(read.x_band, 'low', 'the read is computed, not the written value');
+  const ignored = diagnostics.filter((entry) => entry.code === 'CALCULATED_WRITE_IGNORED');
+  assert.deepEqual(ignored.map(({ table, column }) => [table, column]).sort(), [
+    ['x_item', 'x_band'],
+    ['x_item', 'x_total'],
+  ]);
 });
 
 test('a pack calculatedColumns function wins over the evaluator', async (t) => {

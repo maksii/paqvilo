@@ -43,6 +43,7 @@ test('OpenID Connect options and userinfo claim mappings come from the documente
     tokenAuthMethod: 'client_secret_post',
     certificateKid: null,
     useUserInfo: false,
+    useTokenLifetime: false,
     userInfoEndpoint: null,
     prompt: null,
     acrValues: null,
@@ -54,6 +55,7 @@ test('OpenID Connect options and userinfo claim mappings come from the documente
     TokenEndPointAuthenticatedMethod: 'Private_Key_JWT',
     'PrivateKeyJwt/CertificateObject': '{"kid":"ABC123"}',
     useuserinfoendpointforclaims: 'True',
+    usetokenlifetime: 'True',
     UserInfoEndpoint: 'https://idp.example.test/userinfo',
     Prompt: 'Select_Account',
     AcrValues: 'mfa phr',
@@ -81,6 +83,7 @@ test('OpenID Connect options and userinfo claim mappings come from the documente
       ['tenant_hint', 'region'],
     ],
   );
+  assert.equal(options.useTokenLifetime, true);
   assert.deepEqual(options.problems, [
     'AllowedDynamicAuthorizationParameters lists "bad name", which is not a parameter name.',
   ]);

@@ -58,7 +58,7 @@ recognition and limitations per domain.
 
 | Source domain                       | Inspection boundary                                                                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Power Pages and web content         | Standard/enhanced records, settings and roles; parsed HTML, CSS and Liquid/FetchXML patterns                                         |
+| Power Pages and web content         | Standard/enhanced records, settings, roles and table permissions; parsed HTML, CSS and Liquid/FetchXML patterns                      |
 | Dataverse and ALM                   | Solution metadata, declared dependencies, schema/registrations and environment/connection configuration; literal query contracts     |
 | Model-driven apps                   | Exported forms, event/resource bindings and metadata associations; published/runtime state remains separate                          |
 | PCF                                 | Control manifests, properties/resources/features and package/build contracts; requirements stay host-specific                        |
@@ -82,8 +82,18 @@ field allowlists are not universal contracts.
 ## Bounded local inventory
 
 Default ceilings, shared by all roots: 128 roots; 10,000 files, directories, records, content units and
-findings; 100,000 directory entries; 2 MiB per file; 64 MiB processed in total. API callers may lower
-them. Reads are descriptor-based and confined to their roots.
+findings; 100,000 directory entries; 2 MiB per file; 64 MiB processed in total. Reads are
+descriptor-based and confined to their roots.
+
+A site with larger sources raises the ceilings it needs, in the catalogue (`sites.<id>.analysis.limits`,
+for example `files: 50000`) or for one run (`--analysis-limit files=50000`, repeatable; it overrides the
+catalogue). The names are `roots`, `files` (also records, content units and findings), `directories`,
+`entries`, `fileBytes` and `totalBytes`. Each has a maximum: 1,024 roots; 500,000 files and directories;
+5,000,000 entries; 16 MiB per file; 1 GiB in total; a larger value is refused before any source is
+read. API callers pass `limits` (lower or higher, up to the same maximums). The report lists every
+ceiling that differs from its default in `coverage.limitOverrides` (`{ limit, value, default, source }`),
+and a source tree that exhausts a ceiling, raised or not, is incomplete with the ceiling named in
+`coverage.exhaustedLimits` and in each skipped entry's reason.
 
 With several roots, a file is labelled relative to the roots' common folder (a project file does not
 count); a root nested in another is read as its own root; a root outside that folder, or roots without
@@ -97,7 +107,11 @@ Solution's packed app (the folder name, case-insensitive; see [Canvas apps](../m
 the packed copy is listed under the Canvas domain's `superseded` instead of being inspected.
 
 Hidden state, discovery files, dependencies, deployment-profile directories and build outputs are
-excluded; `.powerpages-site` is the export-source exception. Links/junctions, unreadable or unsupported
+excluded; `.powerpages-site` is the export-source exception. Dependencies are `node_modules` and
+restored NuGet packages (a folder that holds a `.nupkg`, as `packages.config` restores and the
+global packages folder keep one); an authored folder named `packages` is inventoried. Build outputs
+are `bin`, `obj`, `dist`, `build`, `out`, `coverage`, `artifacts`, `logs`, `metrics` and `tmp`,
+except under exported portal content folders. Links/junctions, unreadable or unsupported
 sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Ribbon
 definitions, formula definitions, web resource content, Custom API request parameters and response
 properties, and table chart definitions are recognized without rules: they are listed as limitations

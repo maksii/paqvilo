@@ -71,12 +71,17 @@ function addOperationRequirements(operations, push) {
       source: { file: item.sourceFile ?? null },
       status,
       resolution: {
+        // item.resolver: what runs a registered item when it is not a pack (interpreted classic workflow XAML).
         by: chooseLazily(
           () => item.registered,
-          () => 'pack',
+          () => item.resolver ?? 'pack',
           () => (item.mode === 'exported' ? 'source' : null),
         ),
         mode: item.mode,
+        // What set the mode when a project setting chose the default (uploadedAssemblies), or a /_sim/ choice over it.
+        ...(item.defaultModeSource
+          ? { modeSource: item.configuration ? 'runtime state' : item.defaultModeSource }
+          : {}),
       },
       message: chooseLazily(
         () => item.unsupported,

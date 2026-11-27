@@ -1,13 +1,17 @@
-import { NativePostbackError, parseNativePostback, decodeNativeViewState } from './native-postback.mjs';
-import { nativeFormSubmissionContext, submitPortalForm } from './form-service.mjs';
+import {
+  NativePostbackError,
+  parseNativePostback,
+  decodeNativeViewState,
+  numberCultureMarks,
+} from './native-postback.mjs';
+import { nativeFormSubmissionContext, submitPortalForm, validateFormCaptcha } from './form-service.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
-import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
+import { formRichTextField, nativeControlKind, schemaFromFormXml } from './platform.mjs';
 import { parseNumericLiteral } from './exact-numeric.mjs';
 import { formWriteError } from './form-error-presentation.mjs';
-import { portalField } from './importer.mjs';
-
-const truthy = (value) => value === true || value === 1 || /^(?:true|1)$/i.test(String(value ?? ''));
-const CAPTCHA_MESSAGE = 'Captcha is incorrect, please re-enter captcha.';
+import { pcfHiddenValue } from './pcf-field-host.mjs';
+import { DataError } from './data.mjs';
+import { siteSetting } from './redirects.mjs';
 
 function nativeSubmissionContext(item) {
   const context = nativeFormSubmissionContext(item?.context ?? {});
@@ -55,15 +59,77 @@ function nativeSubmissionQuery(context, page) {
   return query;
 }
 
-/* NOSONAR */ function normalizePostedValue(value, control) {
+const literalPatterns = new Map();
+const SPACE_GROUP_MARKS = /^[\u0020\u00a0\u202f]$/u;
+const SPACE_GROUP_CLASS = String.raw`[\u0020\u00a0\u202f]`;
+const escapeMark = (mark) => mark.replaceAll(/[\\^$.*+?()[\]{}|]/g, String.raw`\$&`);
+
+// The page culture's number literal, with the culture's marks from the locale data (lib/native-postback.mjs): group
+// marks are ignored in the integer part (also noncanonical group sizes) and the decimal mark starts the fraction.
+function cultureLiteralPattern(locale) {
+  if (literalPatterns.has(locale)) return literalPatterns.get(locale);
+  const marks = numberCultureMarks(locale);
+  let culture = null;
+  if (marks) {
+    // A space group mark (fr-FR U+202F in the locale data, U+00A0 in other culture data) accepts every space a visitor
+    // can type or paste there: U+0020, U+00A0 and U+202F.
+    const spaceGroup = marks.group != null && SPACE_GROUP_MARKS.test(marks.group);
+    let groupMark = null;
+    if (spaceGroup) groupMark = SPACE_GROUP_CLASS;
+    else if (marks.group) groupMark = escapeMark(marks.group);
+    const group = groupMark ? String.raw`(?:${groupMark}\d+)*` : '';
+    const decimal = escapeMark(marks.decimal);
+    const pattern = new RegExp(String.raw`^([+-]?\d+${group})(?:${decimal}(\d*))?([eE][+-]?\d+)?$`);
+    culture = { pattern, group: groupMark && new RegExp(groupMark, 'g') };
+  }
+  if (literalPatterns.size < 64) literalPatterns.set(locale, culture);
+  return culture;
+}
+
+function nativeNumberLiteral(value, locale) {
+  if (!locale) return /^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value) ? value : null;
+  const culture = cultureLiteralPattern(locale);
+  const parts = culture?.pattern.exec(value);
+  if (!parts) return null;
+  const [, integer, fraction, exponent] = parts;
+  return (
+    (culture.group ? integer.replaceAll(culture.group, '') : integer) +
+    (fraction == null ? '' : '.' + fraction) +
+    (exponent ?? '')
+  );
+}
+
+// The choices control posts its selection as a JSON array of the selected options' metadata (hosted F2): an empty array
+// clears the column, text that is not such an array fails the save with HTTP 500. A comma list of option values, which
+// the local runtime has always accepted, stays accepted. The values are stored as the column's comma list.
+function postedChoices(value) {
+  const text = value.trim();
+  let items;
+  if (/^\d+(?:\s*,\s*\d+)*$/.test(text)) items = text.split(',').map(Number);
+  else
+    try {
+      items = JSON.parse(text);
+    } catch {
+      items = null;
+    }
+  const values = Array.isArray(items)
+    ? items.map((item) => (item && typeof item === 'object' && !Array.isArray(item) ? item.Value : item))
+    : null;
+  if (!values || values.some((item) => !Number.isSafeInteger(item)))
+    throw new DataError('The posted choices value is not a list of options', 500, 'FormChoicesValueInvalid');
+  return values.length ? [...new Set(values)].join(',') : null;
+}
+
+/* NOSONAR */ function normalizePostedValue(value, control, numberLocale) {
   if (typeof value !== 'string') return value;
   if (value === '') return null;
   if (['integer', 'decimal', 'money', 'double', 'picklist'].includes(control)) {
     // Malformed text remains textual for the native format validator. Exact
     // decimal/Int64 tokens never pass through a rounded JavaScript Number.
-    if (/^[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(value)) {
+    const literal = nativeNumberLiteral(value, numberLocale);
+    if (literal != null) {
       try {
-        return control === 'double' ? Number(value) : parseNumericLiteral(value);
+        return control === 'double' ? Number(literal) : parseNumericLiteral(literal);
       } catch {
         /* The service will reject the original textbox value. */
       }
@@ -71,6 +137,7 @@ function nativeSubmissionQuery(context, page) {
     return value;
   }
   if (control === 'boolean' && /^(?:0|1|true|false)$/i.test(value)) return /^(?:1|true)$/i.test(value);
+  if (control === 'multiselect') return postedChoices(value);
   if (control === 'textarea') return value.replace(/\r\n|\r/g, '\n');
   // The rich text control's hidden value is the editor's HTML as a JSON string (lib/platform.mjs).
   if (control === 'richtext' && value.startsWith('"')) {
@@ -122,18 +189,6 @@ function resolveSubmissionSchema(submission, options, definition) {
   return schema;
 }
 
-function validateNativeCaptcha(submission, options, schema, definition) {
-  const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
-  if (submission.body.action !== 'submit' || !truthy(portalField(captchaSettings, 'captcharequired', false))) return;
-  const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
-  if (!signedIn || truthy(portalField(captchaSettings, 'showcaptchaforauthenticatedusers', false)))
-    throw Object.assign(new Error(CAPTCHA_MESSAGE), {
-      status: 400,
-      code: 'CaptchaInvalid',
-      details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] },
-    });
-}
-
 /** Decode against descriptors collected while rendering this server-owned page. */
 export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   if (!Array.isArray(rendered)) throw new NativePostbackError('Rendered native forms required');
@@ -165,49 +220,152 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   };
 }
 
+function fixtureProof(posted, names) {
+  const controls = new URLSearchParams(posted);
+  const ids = controls.getAll(`${names}captcha$FixtureChallengeToken`);
+  const answers = controls.getAll(`${names}captcha$FixtureAnswerToken`);
+  return ids.length === 1 && answers.length === 1 ? { challengeId: ids[0], answer: answers[0] } : null;
+}
+
+function applyNativeCaptcha(submission, schema, definition, descriptor, posted, options) {
+  if (options.verifyCaptcha && submission.body.action === 'submit') {
+    submission.body.captchaProofToken = fixtureProof(posted, descriptor.ids.names);
+    return;
+  }
+  // Without a local fixture, retain the native CAPTCHA outcome before textbox coercion and lookup binding.
+  validateFormCaptcha(submission.body.action, schema?.metadata ?? definition.metadata, options.identity);
+}
+
+/** Converts the posted values of the schema's fields to the values the form service accepts. */
+function normalizeNativeValues(schema, submission, descriptor, posted, mapping, options) {
+  const postbackFields = new Map(descriptor.fields.map((field) => [field.name, field]));
+  for (const field of schema?.fields ?? []) {
+    if (!Object.hasOwn(submission.body.values, field.name)) continue;
+    const rawValue = submission.body.values[field.name];
+    const binding = postbackFields.get(field.name);
+    // The hidden input of a mounted field component is decoded by the form service (lib/pcf-field-host.mjs).
+    if (binding?.pcf) {
+      submission.body.values[field.name] = pcfHiddenValue(rawValue);
+      continue;
+    }
+    // A rich text binding the form rendered as a plain textarea (no code component metadata) posts textarea text.
+    const control = nativeControlKind(binding && !binding.richText ? formRichTextField(field, null) : field);
+    // A value carried from an earlier auto-generated step tab has no binding on this tab: its field's page culture
+    // comes from the form's number locales.
+    const numberLocale = binding ? binding.numberLocale : descriptor.numberLocales?.[field.name]?.parse;
+    const value = normalizePostedValue(rawValue, control, numberLocale);
+    if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);
+    else submission.body.values[field.name] = value;
+  }
+}
+
+const REQUEST_VALIDATION_MESSAGE =
+  'Request validation has detected potentially dangerous input value(s) such as HTML, or script. Please review the input value(s) and try again.';
+
+// The default rule (Site/DisableFormDataSafeHtmlValidation absent or true): only a script block is refused. Hosted F2
+// state-0 runs s0g, s0h and s0r refused `<script>` on a basic form and on a multistep step and accepted, stored as posted,
+// `<img src=x onerror=…>`, `<svg onload=…>`, `<a href="javascript:…">`, `<iframe …>`, `<b onclick=…>` and `<p><strong>`.
+const SCRIPT_BLOCK = /<\s*script\b/i;
+// The safe-HTML rule (the setting false): besides script blocks, an event-handler attribute is refused (s0i, s0j refused
+// `onerror` and accepted `<p><strong>`). The script and HTML-document URLs, the entity inside a tag and the embedding
+// elements are refused by inference from Learn's "prevent any malicious code execution"; no capture tested them.
+const UNSAFE_MARKUP = [
+  SCRIPT_BLOCK,
+  /<\s*(?:iframe|object|embed|frame|frameset)\b/i,
+  /^\s*(?:javascript|vbscript)\s*:/i,
+  /^\s*data\s*:\s*text\/html/i,
+];
+// The same rule's tokens that count only inside a tag (`<[^>]*` before them): an event-handler attribute, a script or
+// HTML-document URL and an entity. None of them can hold `<` or `>`.
+const UNSAFE_IN_TAG = [/[\s/"'`]on[a-z]+\s*=/gi, /(?:javascript|vbscript)\s*:/gi, /data\s*:\s*text\/html/gi, /&#/g];
+
+// Whether the global `pattern` (whose match holds neither `<` nor `>`) matches after a `<` with no `>` between them: the
+// test `/<[^>]*(?:pattern)/` makes, in one pass instead of one backtracking scan per `<`.
+function matchesInsideTag(text, pattern) {
+  let cursor = 0,
+    open = false;
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    for (; cursor < match.index; cursor++) {
+      if (text[cursor] === '<') open = true;
+      else if (text[cursor] === '>') open = false;
+    }
+    if (open) return true;
+  }
+  return false;
+}
+
+/**
+ * Request validation of a basic or multistep form post (Microsoft Learn, basic forms, "Request validation"): the default
+ * rule refuses script blocks only; with Site/DisableFormDataSafeHtmlValidation false the safe-HTML rule applies.
+ * DisableValidationWebTemplate true turns request validation off. A field the rich text editor renders follows the same
+ * rule as any other field (inferred: no editor post was determinable). Every posted text is checked, array values
+ * included; a post whose form is not in the sources is checked as a whole.
+ */
+function validateNativeRequest(submission, portal) {
+  const setting = (name) =>
+    String(siteSetting(portal ?? {}, name) ?? '')
+      .trim()
+      .toLowerCase();
+  if (setting('DisableValidationWebTemplate') === 'true') return;
+  const safeHtml = setting('Site/DisableFormDataSafeHtmlValidation') === 'false';
+  const unsafe = (text) =>
+    safeHtml
+      ? UNSAFE_MARKUP.some((pattern) => pattern.test(text)) ||
+        UNSAFE_IN_TAG.some((pattern) => matchesInsideTag(text, pattern))
+      : SCRIPT_BLOCK.test(text);
+  for (const value of Object.values(submission.body.values ?? {})) {
+    const texts = (Array.isArray(value) ? value : [value]).filter((item) => typeof item === 'string');
+    if (texts.some(unsafe))
+      throw new DataError(REQUEST_VALIDATION_MESSAGE, 400, 'FormRequestValidation', { requestValidation: true });
+  }
+}
+
 /** Transport-neutral adapter: source/session/permission checks stay in the service. */
 export async function submitNativePostback(entries, rendered, options) {
   const posted = [...entries];
   const submission = resolveNativeFormSubmission(posted, rendered, options?.requestUrl);
   // Files posted with the page (the attach-file control) are the submission's attachments.
   if (Array.isArray(options?.attachments) && options.attachments.length)
-    submission.body.attachments = options.attachments.map(({ name, type, content }) => ({ name, type, content }));
+    submission.body.attachments = options.attachments.map(({ name, type, content, noteId, regarding }) => ({
+      name,
+      type,
+      content,
+      // A staged note row of the runtime's own upload staging (server.mjs), never a posted value.
+      ...(noteId ? { noteId, regarding } : {}),
+    }));
   // Next/Previous of an auto-generated step form re-render the page on another tab without a save.
   if (submission.body.action === 'tab') return { result: { outcome: { type: 'tab' } }, context: submission.context };
   const definition = (submission.kind === 'webform' ? options.portal.advancedForms : options.portal.forms)?.find(
     (row) => row.id === submission.formId,
   );
+  const descriptor = rendered.find(
+    (item) => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId,
+  )?.descriptor;
+  // Request validation reads the whole post before the form handles it, for every form kind and without a known form.
+  validateNativeRequest(submission, options.portal);
   if (!definition)
     return {
       result: await submitPortalForm(submission.kind, submission.formId, submission.body, options),
       context: submission.context,
     };
   let schema = resolveSubmissionSchema(submission, options, definition);
-  // A basic form or step that requires the captcha (for a signed-in visitor only with "show
-  // captcha for authenticated users") rejects its save postback with the captcha message and
-  // re-renders with the posted values (status 200).
-  // The local challenge has no verifiable answer; keep CAPTCHA-required saves closed.
-  validateNativeCaptcha(submission, options, schema, definition);
+  applyNativeCaptcha(submission, schema, definition, descriptor, posted, options);
+
   if (schema?.formXml)
     schema = {
       ...schema,
       ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }),
     };
   const mapping = schema?.entity ? options.store.resolveMapping(schema.entity) : null;
-  const descriptor = rendered.find(
-    (item) => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId,
-  ).descriptor;
-  for (const field of schema?.fields ?? []) {
-    if (!Object.hasOwn(submission.body.values, field.name)) continue;
-    let value = submission.body.values[field.name];
-    const control = nativeControlKind(field);
-    value = normalizePostedValue(value, control);
-    if (control === 'lookup') applyNativeLookup(field, value, posted, descriptor, mapping, submission, options.store);
-    else submission.body.values[field.name] = value;
-  }
+  normalizeNativeValues(schema, submission, descriptor, posted, mapping, options);
   const result = await submitPortalForm(submission.kind, submission.formId, submission.body, {
     ...options,
     nativePostback: true,
+    // The page language of each localized number field's validation copy.
+    nativeNumberLocales: new Map(
+      Object.entries(descriptor.numberLocales ?? {}).map(([name, locale]) => [name, locale.messages]),
+    ),
   });
   return { result, context: submission.context };
 }
@@ -217,12 +375,20 @@ const nativeValidationCodes = new Set([
   'FormFieldInvalid',
   'FormFieldOutOfRange',
   'FormFieldTooLong',
+  'FormAttachmentRequired',
+  'FormAttachmentTooMany',
   'CaptchaInvalid',
 ]);
 
 /** Only native field validators have an observed successful HTML response status. */
 export function nativePostbackResponse({ result, error, context, values, observed, portal }) {
   if (error) {
+    // Request validation re-renders the form with its own error panel (hosted F2: `message alert error alert alert-danger`).
+    if (error.code === 'FormRequestValidation' && error.details?.requestValidation === true)
+      return {
+        status: 200,
+        state: { ...context, values, outcome: { type: 'error', panel: 'request-validation', message: error.message } },
+      };
     const presentation = formWriteError(error, observed, context?.kind, portal);
     if (presentation) return { status: 200, state: { ...context, values, outcome: presentation } };
     const errors = error.details?.validationErrors;

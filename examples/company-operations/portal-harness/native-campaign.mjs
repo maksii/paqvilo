@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, stat, unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadConnection, connectedClient } from 'paqvilo/dataverse';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
@@ -13,7 +13,7 @@ import { savePrivateJson } from './private-journal.mjs';
 import { captureNativeSnapshot, snapshotHash } from './native-capture.mjs';
 import { captureNativeRegistry } from './native-registry.mjs';
 import { nativeRegistrationFingerprint, recordedPluginPayloads } from '../plugins/mirage-runtime.mjs';
-import { cli } from '../cli.mjs';
+import { cli, isMain } from '../cli.mjs';
 
 const load = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const digest = (value) => createHash('sha256').update(stable(value)).digest('hex');
@@ -410,7 +410,7 @@ async function defaultChild(file) {
     );
   });
 }
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta)) {
   const {
     positionals: [file],
   } = cli(

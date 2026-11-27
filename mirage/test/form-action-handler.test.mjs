@@ -388,7 +388,7 @@ test('the validation summary escapes a field id with an ampersand and quotes onc
   assert.deepEqual(calls, [['a&"b_label', id]]);
 });
 
-// @test-kind contract: an ordinary field id in the validation summary renders the plain markup.
+// @test-kind contract+observation: an ordinary field id in the validation summary renders the plain markup; the list's role="presentation" is the hosted F2 FORM-06 capture (runs a/b).
 test('the validation summary renders an ordinary field id byte-identically', () => {
   assert.equal(
     validationSummaryMarkup(
@@ -396,6 +396,6 @@ test('the validation summary renders an ordinary field id byte-identically', () 
       '<h2>Errors</h2>',
       true,
     ),
-    `<h2>Errors</h2><ul><li><a href='#first_name_label' onclick='javascript:scrollToAndFocus("first_name_label","first_name");return false;' referenceControlId=first_name>Required </a></li></ul>`,
+    `<h2>Errors</h2><ul role="presentation"><li><a href='#first_name_label' onclick='javascript:scrollToAndFocus("first_name_label","first_name");return false;' referenceControlId=first_name>Required </a></li></ul>`,
   );
 });

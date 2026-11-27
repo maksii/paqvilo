@@ -74,6 +74,7 @@ export const LENSE_OPTIONS = {
   scope: { type: 'string' },
   baseline: { type: 'string' },
   path: { type: 'string' },
+  'verify-path': { type: 'string', multiple: true },
   headless: { type: 'boolean' },
   headed: { type: 'boolean' },
   'signed-in': { type: 'boolean' },
@@ -98,9 +99,11 @@ export const LENSE_OPTIONS = {
   timeout: { type: 'string' },
   'full-page': { type: 'boolean' },
   'include-panel': { type: 'boolean' },
+  pierce: { type: 'boolean' },
   width: { type: 'string' },
   height: { type: 'string' },
   styles: { type: 'string' },
+  samples: { type: 'string' },
   'sign-in-timeout': { type: 'string' },
   project: { type: 'string' },
   'resource-map': { type: 'string' },
@@ -124,6 +127,7 @@ export const LENSE_OPTIONS = {
   mirage: { type: 'boolean' },
   'lint-profiles': { type: 'boolean' },
   'fail-on': { type: 'string' },
+  'analysis-limit': { type: 'string', multiple: true },
   json: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 };
@@ -152,6 +156,7 @@ export const LENSE_COMMAND_OPTIONS = {
     ...browserSelection,
     'pick',
     'path',
+    'verify-path',
     'headless',
     'headed',
     'signed-in',
@@ -159,8 +164,18 @@ export const LENSE_COMMAND_OPTIONS = {
     'strict',
     'sign-in-timeout',
   ],
-  doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
-  analyze: ['site', 'env', 'source', 'repo', 'config', 'project', 'all', 'fail-on', 'json'],
+  doctor: [
+    ...selection,
+    ...browserSelection,
+    'cdp-url',
+    'all',
+    'mirage',
+    'lint-profiles',
+    'fail-on',
+    'analysis-limit',
+    'json',
+  ],
+  analyze: ['site', 'env', 'source', 'repo', 'config', 'project', 'all', 'fail-on', 'analysis-limit', 'json'],
   list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
   audit: [...selection, 'all', 'strict', 'json'],
   use: ['config', 'repo', 'site', 'env'],
@@ -176,9 +191,11 @@ export const LENSE_COMMAND_OPTIONS = {
     'timeout',
     'full-page',
     'include-panel',
+    'pierce',
     'width',
     'height',
     'styles',
+    'samples',
     'path',
     'json',
   ],
@@ -350,3 +367,43 @@ export const MIRAGE_ACTION_OPTIONS = {
     'json',
   ],
 };
+
+export const AGENT_PAGE_ACTIONS = new Set([
+  'state',
+  'snapshot',
+  'screenshot',
+  'viewport',
+  'coverage',
+  'navigate',
+  'reload',
+]);
+
+/** The options an agent action accepts; its validation and the CLI's check beside --help both read it. */
+export function agentActionOptions(action) {
+  const allowed = new Set(['config', 'json', 'help', 'timeout', ...(action === 'sessions' ? [] : ['session'])]);
+  if (AGENT_PAGE_ACTIONS.has(action)) allowed.add('page-id');
+  for (const option of {
+    events: ['after', 'limit'],
+    snapshot: ['selector', 'limit', 'styles', 'pierce'],
+    screenshot: ['output', 'full-page', 'include-panel'],
+    viewport: ['width', 'height'],
+    coverage: ['limit', 'samples'],
+    navigate: ['path'],
+  }[action] ?? [])
+    allowed.add(option);
+  return allowed;
+}
+
+/** The options model-driven inspect accepts; its validation and the CLI's check beside --help both read it. */
+export const MODEL_DRIVEN_INSPECT_OPTIONS = new Set([
+  'config',
+  'project',
+  'env',
+  'url',
+  'path',
+  'resource-map',
+  'local-simulation',
+  'json',
+  'event-cursor',
+  'include-event-parameters',
+]);

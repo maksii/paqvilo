@@ -25,6 +25,7 @@ const commands = {
       'navigate',
       'reload',
       'viewport',
+      'coverage',
       'stop',
     ],
   },
@@ -70,7 +71,9 @@ const sharedOptionHelp = {
     mirage: '  --portals <selected|all> one Mirage or one per catalogue site (default from config)',
     '*': '  --portals <selected|all> one origin or every catalogue origin (default from config)',
   },
-  'cdp-url': { '*': '  --cdp-url <url>        attach to an already running browser' },
+  'cdp-url': {
+    '*': '  --cdp-url <url|channel> attach to a running browser: its debugging endpoint, or msedge/chrome when its remote debugging switch is on',
+  },
   path: {
     dev: '  --path <urlpath>  optional first tab only',
     verify: '  --path <urlpath>  page to test',
@@ -103,6 +106,12 @@ const sharedOptionHelp = {
     doctor: "  --all             check every configured site's default environment offline",
     analyze: "  --all             review every catalogue site's declared sources separately",
     audit: "  --all             inventory every configured site's default environment offline",
+  },
+  'analysis-limit': {
+    doctor:
+      '  --analysis-limit <ceiling>=<n> raise or lower one static analysis ceiling (files, directories, entries, fileBytes, totalBytes, roots; repeatable)',
+    analyze:
+      '  --analysis-limit <ceiling>=<n> raise or lower one ceiling (files, directories, entries, fileBytes, totalBytes, roots; repeatable)',
   },
   'fail-on': {
     doctor: '  --fail-on <none|error|warning|hint> static analysis threshold (default: none, advisory)',
