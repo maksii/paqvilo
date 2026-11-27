@@ -620,7 +620,7 @@ export function createLocalAccounts({
     if (problems.length) return refused(problems.join(' '));
     if (
       flags.captcha &&
-      !captcha.redeem(req, { challengeId: read('CaptchaChallengeToken'), answer: read('CaptchaAnswerToken') })
+      !captcha?.redeem(req, { challengeId: read('CaptchaChallengeToken'), answer: read('CaptchaAnswerToken') })
     )
       return refused('The CAPTCHA answer is incorrect or expired. Try a new challenge.');
     // Hosted session F4: a group invitation passes the code step and is refused here, the invitation unchanged.
@@ -679,7 +679,7 @@ export function createLocalAccounts({
     const code = url.searchParams.get('invitationCode') || url.searchParams.get('InvitationCode') || null;
     if (!(code ? invitationRegistrationAllowed(flags) : registrationAllowed(flags)))
       return page(req, res, url, 'Register', note(registrationUnavailable), 403);
-    const invitation = code ? invitations.find(code) : null;
+    const invitation = code ? invitations?.find(code) : null;
     const banner = code ? info(`Redeeming code: ${code}`) : '';
     const prefill = invitation?.type === 'single' ? (invitation.invitedEmail ?? '') : '';
     const again = (message, email = prefill, status = 200) =>
