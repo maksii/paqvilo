@@ -137,7 +137,7 @@ function withoutTags(text) {
 // The page copy as text: markup, Liquid tags and outputs removed, whitespace collapsed.
 const pageText = (html) =>
   withoutTags(withoutLiquid(String(html ?? '')).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' '))
-    .replace(/&nbsp;/g, ' ')
+    .replaceAll('&nbsp;', ' ')
     .replace(/\s+/g, ' ')
     .trim();
 

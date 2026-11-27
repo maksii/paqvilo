@@ -158,6 +158,9 @@ function requestObject(token, declared, languageVariable) {
   return null;
 }
 
+// The scope a template scanned on its own starts with: nothing inherited, nothing declared.
+const rootScope = () => ({ inherited: new Set(), languages: new Set(), globals: new Set() });
+
 // The variables visible at one point of a template: names inherited from the including template, inherited names
 // that are language objects, the render-wide assign and capture names (shared with included templates) and the open
 // loops.
@@ -230,13 +233,7 @@ function scanToken(token, scope, context) {
  * substitution block renders apart from the cached output, in a context of its own (mirage/lib/liquid.mjs
  * SubstitutionTag), so nothing in it is reported and its declarations do not shadow names outside it.
  */
-function scanTemplate(
-  template,
-  templates,
-  emit,
-  chain,
-  scope = { inherited: new Set(), languages: new Set(), globals: new Set() },
-) {
+function scanTemplate(template, templates, emit, chain, scope = rootScope()) {
   if (chain.has(template) || chain.size >= MAX_INCLUDE_DEPTH) return;
   chain.add(template);
   const state = templateScope(scope);

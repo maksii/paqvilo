@@ -138,6 +138,13 @@ function readAttributes(text, at) {
   }
 }
 
+/** The URI bound to prefix in scope, or in the nearest ancestor scope that binds it; undefined when none does. */
+function boundIn(scope, prefix) {
+  for (let current = scope; current; current = current.parent)
+    if (current.bindings.has(prefix)) return current.bindings.get(prefix);
+  return undefined;
+}
+
 /**
  * The namespace bindings in scope at an element: its own declarations, then its ancestors'. An element that declares
  * nothing shares its parent's scope.
@@ -148,9 +155,7 @@ class Scope {
     this.bindings = bindings;
   }
   get(prefix) {
-    for (let scope = this; scope; scope = scope.parent)
-      if (scope.bindings.has(prefix)) return scope.bindings.get(prefix);
-    return undefined;
+    return boundIn(this, prefix);
   }
   has(prefix) {
     return this.get(prefix) !== undefined;
@@ -213,7 +218,7 @@ function element(state, parent, qname, attributes) {
 /** Skips the XML declaration and whitespace at the start; refuses any other prolog markup. */
 function prologEnd(text) {
   let pos = 0;
-  if (text.charCodeAt(0) === 0xfeff) pos = 1;
+  if (text.codePointAt(0) === 0xfeff) pos = 1;
   if (text.startsWith('<?xml', pos) && /\s/.test(text[pos + 5] ?? '')) {
     const end = text.indexOf('?>', pos);
     if (end < 0) throw problem('Unterminated XML declaration.');

@@ -695,7 +695,7 @@ function applyObservedCorsPages(value, label, observed) {
 function applyObservedWildcardExpiry(value, label, observed) {
   if (!Object.hasOwn(value, 'webApiWildcardExpiresAt')) return;
   const expires = value.webApiWildcardExpiresAt;
-  const instant = typeof expires === 'string' ? Date.parse(expires) : NaN;
+  const instant = typeof expires === 'string' ? Date.parse(expires) : Number.NaN;
   if (
     observed.webApiWildcard !== 'exempt' ||
     !Number.isFinite(instant) ||

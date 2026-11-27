@@ -672,13 +672,18 @@ export function installPortalProvenanceRegistry({
   };
   // The binding of each place under the host whose binding is `hostId` (a closed shadow root's elements, by their
   // element index path from the root; lib/render-provenance.mjs sealedChildren).
+  // The bindings and children are read by index, never through the iteration protocol, which page code can replace
+  // (Array.prototype[Symbol.iterator], NodeList.prototype[Symbol.iterator]) before Inspect reads a sealed root.
   const sealedPlaces = (hostId) => {
     const places = new NativeMap();
     proofs.forEach((proof) => {
-      for (let i = 0; i < proof.bindings.length; i++) {
-        const sealed = proof.bindings[i].sealed;
+      const bindings = proof.bindings;
+      let i = 0;
+      while (i < bindings.length) {
+        const binding = bindings[i++];
+        const sealed = binding.sealed;
         if (sealed?.host === hostId && typeof sealed.path === 'string')
-          apply(mapSet, places, [sealed.path, proof.bindings[i].id]);
+          apply(mapSet, places, [sealed.path, binding.id]);
       }
     });
     return places;
@@ -702,8 +707,11 @@ export function installPortalProvenanceRegistry({
   const elementChildren = (node) => {
     const children = read(childNodes, node),
       elements = [];
-    for (let i = 0; i < children.length; i++)
-      if (read(nodeType, children[i]) === 1) elements[elements.length] = children[i]; // NOSONAR: array-like or mutated collection, index loop kept
+    let i = 0;
+    while (i < children.length) {
+      const child = children[i++];
+      if (read(nodeType, child) === 1) elements[elements.length] = child;
+    }
     return elements;
   };
   const isArray = Array.isArray;

@@ -40,9 +40,10 @@ export function createPortalRequestTokens({ enabled, toolToken, browser, cookieN
   const slotName = (slot) => cookieName() + '-' + slot;
 
   function bindingId(value, slot) {
-    const [id, expiry, proof, extra] = String(value ?? '').split('.');
-    if (!BINDING_ID.test(id) || !/^\d{1,13}$/.test(expiry ?? '') || Number(expiry) <= now() || extra !== undefined)
-      return null;
+    const parts = String(value ?? '').split('.');
+    if (parts.length !== 3) return null;
+    const [id, expiry, proof] = parts;
+    if (!BINDING_ID.test(id) || !/^\d{1,13}$/.test(expiry) || Number(expiry) <= now()) return null;
     return sameToken(proof, bindingProof(slot, id, expiry)) ? id : null;
   }
 

@@ -181,9 +181,12 @@ function decodeGif(bytes, { width, height }) {
   const { left, top, palette, indices } = frame;
   const rgba = new Uint8Array(width * height * 4);
   const rows = frameRows(frame.height, frame.interlaced);
+  // The columns of the frame that fall on the screen; rows below it are skipped.
+  const columns = Math.min(frame.width, width - left);
   for (let row = 0; row < frame.height; row++) {
     const y = top + rows[row];
-    for (let x = 0; x < frame.width && left + x < width && y < height; x++) {
+    if (y >= height) continue;
+    for (let x = 0; x < columns; x++) {
       const index = indices[row * frame.width + x];
       // The transparent index, and an index past the color table, leave the screen transparent.
       if (index === prelude.transparent || 3 * index >= palette.length) continue;

@@ -77,6 +77,8 @@ const text = (value) => {
   return String(value);
 };
 const searchError = (message, code) => Object.assign(new Error(message), { status: 501, code });
+// Code-unit order of distinct strings (a Set's values), as the default sort compares them.
+const distinctOrder = (a, b) => (a < b ? -1 : 1);
 
 /** `filter`: required (+) and prohibited (-) column equality clauses. */
 function filterClauses(filter) {
@@ -324,7 +326,7 @@ async function appendKnowledgeNoteHits(hits, articles, clauses, context) {
       code: 'PORTAL_SEARCH_ATTACHMENT_NOT_INDEXED',
       severity: 'info',
       component: 'searchindex',
-      message: `Knowledge article note bodies of type ${[...report.binary].sort().join(', ')} are not indexed: the local search reads text bodies only.`,
+      message: `Knowledge article note bodies of type ${[...report.binary].sort(distinctOrder).join(', ')} are not indexed: the local search reads text bodies only.`,
     });
   if (report.unavailable)
     context.diagnostic({
@@ -406,7 +408,7 @@ function recordTypeFacets(portal, hits) {
     available.add(facet);
   }
   return [...available]
-    .map(({ label, visibleNames, count }) => ({ label, names: [...visibleNames].sort(), count }))
+    .map(({ label, visibleNames, count }) => ({ label, names: [...visibleNames].sort(distinctOrder), count }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 

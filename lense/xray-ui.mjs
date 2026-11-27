@@ -1291,7 +1291,7 @@ function xrayBrowserImpl(data) {
     const path = (below.result.path ?? [])
       .map(
         (step) =>
-          step.tag + (step.id ? '#' + step.id : '') + (step.class ? '.' + step.class.split(/\s+/).join('.') : ''),
+          step.tag + (step.id ? '#' + step.id : '') + (step.class ? '.' + step.class.replaceAll(/\s+/g, '.') : ''),
       )
       .join(' › ');
     // A declarative closed shadow root the export writes: its element maps to that source, as other elements do.
@@ -4401,19 +4401,17 @@ function xrayBrowserImpl(data) {
     identifySealed(node) {
       const identity = identify(node, getSelectionScope(node));
       const source = identity?.evidence?.source;
-      return JSON.parse(
-        JSON.stringify({
-          title: identity?.title ?? null,
-          kind: identity?.kind ?? null,
-          status: source?.status ?? null,
-          refs: (source?.refs ?? []).map((ref) => ({
-            ref: ref.ref ?? null,
-            name: ref.name ?? ref.label ?? null,
-            line: ref.region?.line ?? null,
-            status: ref.status ?? null,
-          })),
-        }),
-      );
+      return structuredClone({
+        title: identity?.title ?? null,
+        kind: identity?.kind ?? null,
+        status: source?.status ?? null,
+        refs: (source?.refs ?? []).map((ref) => ({
+          ref: ref.ref ?? null,
+          name: ref.name ?? ref.label ?? null,
+          line: ref.region?.line ?? null,
+          status: ref.status ?? null,
+        })),
+      });
     },
     /** The pierced read of the current selection as markup, for the panel's selection summary ('' when none). */
     /** The pierced read of the current selection: null without one, else whether it is still read and what it found. */

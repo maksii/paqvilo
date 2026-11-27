@@ -26,7 +26,7 @@ export class Oauth1Problem extends Error {
 
 /** RFC 5849 3.6 percent-encoding: everything but ALPHA, DIGIT, "-", ".", "_" and "~". */
 const percentEncode = (value) =>
-  encodeURIComponent(String(value)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  encodeURIComponent(String(value)).replace(/[!'()*]/g, (c) => '%' + c.codePointAt(0).toString(16).toUpperCase());
 
 /** The signature base string (RFC 5849 3.4.1) of a request with `parameters` ([name, value] pairs, oauth_signature excluded). */
 function signatureBase(method, url, parameters) {

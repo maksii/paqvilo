@@ -36,7 +36,7 @@ const isSlash = (character) => character === '/' || character === '\\';
  */
 function authorityStart(text) {
   let index = 0;
-  while (index < text.length && text.charCodeAt(index) <= 0x20) index++;
+  while (index < text.length && text.codePointAt(index) <= 0x20) index++;
   const scheme = SCHEME.exec(text.slice(index));
   if (scheme && !SPECIAL_SCHEMES.has(scheme[0].slice(0, -1).toLowerCase()))
     return text.startsWith('//', index + scheme[0].length)

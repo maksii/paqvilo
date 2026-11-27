@@ -122,7 +122,8 @@ export function nativeStaticValue(text, type) {
   const value = String(text ?? '');
   if (type === 'TwoOptions')
     return /^(true|false)$/i.test(value) ? { value: /^true$/i.test(value) } : { refused: true };
-  if (/^Whole\./.test(type)) return /^[+-]?\d+$/.test(value.trim()) ? { value: Number(value) } : { refused: true };
+  if (String(type).startsWith('Whole.'))
+    return /^[+-]?\d+$/.test(value.trim()) ? { value: Number(value) } : { refused: true };
   if (['Decimal', 'FP', 'Currency'].includes(type))
     return value.trim() !== '' && Number.isFinite(Number(value)) ? { value: Number(value) } : { refused: true };
   return { value };

@@ -162,6 +162,27 @@ function settingsFor(portal) {
   };
 }
 
+// A registration refusal: the message the form shows again, with the response status.
+const refused = (message, status = 200) => ({ message, status });
+
+function registrationProblems(read, flags) {
+  const email = read(WEB_FORM + 'EmailTextBox').trim(),
+    username = read(WEB_FORM + 'UserNameTextBox').trim(),
+    password = read(WEB_FORM + 'PasswordTextBox');
+  const required = [
+    !email && MESSAGE.emailRequired,
+    !username && MESSAGE.usernameRequired,
+    !password && MESSAGE.passwordRequired,
+  ].filter(Boolean);
+  if (required.length) return required;
+  return [
+    (email.length > 250 || !plausibleEmail(email)) && MESSAGE.invalidEmail,
+    password !== read(WEB_FORM + 'ConfirmPasswordTextBox') && MESSAGE.mismatch,
+    !(flags.alphaUser ? /^[a-z0-9]{1,128}$/i : /^[a-z0-9_.@+-]{1,128}$/i).test(username) &&
+      `User name ${username} is invalid, can only contain letters or digits.`,
+  ].filter(Boolean);
+}
+
 /** The password validator's messages, in the platform's order (empty when the password passes). */
 function passwordProblems(password, settings) {
   if (password.length > 256) return ['Passwords must be at most 256 characters.'];
@@ -546,7 +567,7 @@ export function createLocalAccounts({
   function registrationPage(req, res, url, flags, { banner = '', message = '', email = '', status = 200 } = {}) {
     const title = 'Register';
     if (req.method === 'HEAD') return page(req, res, url, title, '', status);
-    const challenge = flags.captcha ? captcha.issue(req, res) : null;
+    const challenge = flags.captcha ? captcha?.issue(req, res) : null;
     if (flags.captcha && !challenge) return page(req, res, url, title, note(registrationUnavailable), 403);
     const controls =
       input(WEB_FORM + 'EmailTextBox', 'Email', 'text', email) +
@@ -567,24 +588,6 @@ export function createLocalAccounts({
         form(req, res, ROUTES.register + url.search, controls + challengeFields, 'Register'),
       status,
     );
-  }
-
-  function registrationProblems(read, flags) {
-    const email = read(WEB_FORM + 'EmailTextBox').trim(),
-      username = read(WEB_FORM + 'UserNameTextBox').trim(),
-      password = read(WEB_FORM + 'PasswordTextBox');
-    const required = [
-      !email && MESSAGE.emailRequired,
-      !username && MESSAGE.usernameRequired,
-      !password && MESSAGE.passwordRequired,
-    ].filter(Boolean);
-    if (required.length) return required;
-    return [
-      (email.length > 250 || !plausibleEmail(email)) && MESSAGE.invalidEmail,
-      password !== read(WEB_FORM + 'ConfirmPasswordTextBox') && MESSAGE.mismatch,
-      !(flags.alphaUser ? /^[a-z0-9]{1,128}$/i : /^[a-z0-9_.@+-]{1,128}$/i).test(username) &&
-        `User name ${username} is invalid, can only contain letters or digits.`,
-    ].filter(Boolean);
   }
 
   // The user name and address the platform's user validator reports as taken (they reveal accounts: hosted behaviour,
@@ -611,27 +614,26 @@ export function createLocalAccounts({
     return { message: 'These details cannot be used for local registration.', status: 409 };
   };
 
-  // Why a registration post is refused, as the message the form shows again (or { message, status }), or null when it
-  // registers.
+  // Why a registration post is refused, as the { message, status } the form shows again, or null when it registers.
   function registrationRefusal(req, url, read, flags, { code, invitation, email, username, password }) {
     const problems = registrationProblems(read, flags);
-    if (problems.length) return problems.join(' ');
+    if (problems.length) return refused(problems.join(' '));
     if (
       flags.captcha &&
       !captcha.redeem(req, { challengeId: read('CaptchaChallengeToken'), answer: read('CaptchaAnswerToken') })
     )
-      return 'The CAPTCHA answer is incorrect or expired. Try a new challenge.';
+      return refused('The CAPTCHA answer is incorrect or expired. Try a new challenge.');
     // Hosted session F4: a group invitation passes the code step and is refused here, the invitation unchanged.
-    if (code && invitation?.type !== 'single') return MESSAGE.invalidInvitation;
+    if (code && invitation?.type !== 'single') return refused(MESSAGE.invalidInvitation);
     // An invited contact that already has a local account redeems the code by signing in ("I have an existing account");
     // registering would replace its credentials (F4 captured invited contacts without credentials only).
-    if (invitation?.invited && toAccount(contactRow(invitation.invited))) return MESSAGE.invalidInvitation;
+    if (invitation?.invited && toAccount(contactRow(invitation.invited))) return refused(MESSAGE.invalidInvitation);
     const policy = passwordProblems(password, flags);
-    if (policy.length) return policy.join(' ');
+    if (policy.length) return refused(policy.join(' '));
     const taken = takenIdentities(username, email, flags, invitation?.invited ?? null);
-    if (taken.length) return flags.namedDuplicates ? taken.join(' ') : duplicateRefusal(url);
+    if (taken.length) return flags.namedDuplicates ? refused(taken.join(' ')) : duplicateRefusal(url);
     const accountCount = store.tableRows('contact').filter((row) => row[COLUMN.username]).length;
-    if (accountCount + reservations.size >= MAX_ACCOUNTS) return registrationUnavailable;
+    if (accountCount + reservations.size >= MAX_ACCOUNTS) return refused(registrationUnavailable);
     return null;
   }
 
@@ -653,7 +655,9 @@ export function createLocalAccounts({
         emailaddress1: email,
       };
       if (invited) {
-        // The invited contact becomes the account; no contact is created (hosted session F4 AUTH-05d).
+        // The invited contact becomes the account; no contact is created (hosted session F4 AUTH-05d). Its invitation was
+        // found through `invitations` (register); without that service it cannot be redeemed.
+        if (!invitations) return null;
         try {
           await invitations.redeem({ code, contactId: invited, subject: username, contactFields: fields });
         } catch (error) {
@@ -685,8 +689,7 @@ export function createLocalAccounts({
     const username = read(WEB_FORM + 'UserNameTextBox').trim();
     const password = read(WEB_FORM + 'PasswordTextBox');
     const refusal = registrationRefusal(req, url, read, flags, { code, invitation, email, username, password });
-    if (typeof refusal === 'string') return again(refusal, email);
-    if (refusal !== null) return again(refusal.message, email, refusal.status);
+    if (refusal) return again(refusal.message, email, refusal.status);
     const invited = invitation?.invited ?? null;
     const contactId = await createAccount(flags, { code, invited, username, password, email });
     if (contactId === null) return again(MESSAGE.invalidInvitation, email);

@@ -150,6 +150,7 @@ function inactiveRecordSource(root, rel) {
 // Live needsDeploy rows carry free-text reasons (lense/portal-model.mjs deploymentChanges, lense/html-rewriter.mjs,
 // lense/pcf-resources.mjs). Each pattern below names the producer text it classifies; test/deployment-diagnostics
 // drives every producer, so a reworded reason fails there instead of losing its code.
+/** @type {Array<[RegExp, string]>} */
 const LIVE_REASONS = [
   [/^Server logic runs on the Power Pages server\b/, 'server-logic'],
   [/^Site or language settings changed\b/, 'site-metadata'],

@@ -160,10 +160,10 @@ const NATIVE_BINDABLE_USAGES = new Set(['bound', 'input']);
 
 function pcfTypeFamily(type) {
   const value = String(type ?? '');
-  if (/^SingleLine\./.test(value) || value === 'Multiple') return 'text';
-  if (/^Whole\./.test(value) || ['Decimal', 'FP', 'Currency'].includes(value)) return 'number';
-  if (/^DateAndTime\./.test(value)) return 'date';
-  if (/^Lookup\./.test(value)) return 'lookup';
+  if (value.startsWith('SingleLine.') || value === 'Multiple') return 'text';
+  if (value.startsWith('Whole.') || ['Decimal', 'FP', 'Currency'].includes(value)) return 'number';
+  if (value.startsWith('DateAndTime.')) return 'date';
+  if (value.startsWith('Lookup.')) return 'lookup';
   return value;
 }
 
@@ -467,13 +467,14 @@ function componentDatasetFetch(dataset, view) {
  * its table, attribute and display name ("Email (Contact)" for a link-entity column).
  */
 function datasetCellField(cell, { entity, fields, mapping, links, metadata }) {
-  const [alias, column, extra] = String(cell.name ?? '').split('.');
-  if (column === undefined) {
+  const parts = String(cell.name ?? '').split('.');
+  const [alias, column] = parts;
+  if (parts.length === 1) {
     if (!datasetName.test(alias)) return null;
     const field = own(fields, alias) ?? (alias === mapping.idColumn ? {} : null);
     return field && { field, table: entity, attribute: alias, displayName: field.label ?? alias };
   }
-  if (extra !== undefined || !datasetName.test(column)) return null;
+  if (parts.length > 2 || !datasetName.test(column)) return null;
   const link = links.find((entry) => entry.alias === alias);
   const table = link && own(metadata.entities, link.name);
   const field = table && own(table.fields, column);
@@ -1677,9 +1678,8 @@ function wholeProperty(trimmed) {
 }
 
 const cultureSeparators = new Map();
-// The group and decimal separators of a page culture (Intl); en-US for no culture or one Intl does not know.
-function numberSeparators(culture) {
-  const name = culture || 'en-US';
+// The group and decimal separators of a page culture name (Intl); en-US for one Intl does not know.
+function numberSeparators(name) {
   if (!cultureSeparators.has(name)) {
     let separators = { group: ',', decimal: '.' };
     try {
@@ -1711,7 +1711,8 @@ function cultureNumberText(trimmed, { group, decimal }) {
 // dropped, FP and Currency are the plain decimal text as given. Another culture reads the text with its separators:
 // Decimal is the number, FP and Currency its text (captured for de-DE only).
 function numberProperty(type, trimmed, culture) {
-  const separators = numberSeparators(culture);
+  // No page culture reads as en-US.
+  const separators = numberSeparators(culture || 'en-US');
   const decimal = /^Decimal$/i.test(type);
   if (separators.decimal === '.') return decimal || !DECIMAL_TEXT.test(trimmed) ? undefined : trimmed;
   const text = cultureNumberText(trimmed, separators);

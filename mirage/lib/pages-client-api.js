@@ -1050,7 +1050,9 @@
     if (!config) return false;
     try {
       const context = JSON.parse(config.getAttribute('pcf-controlcontext'));
-      return Boolean(context.PcfControlHiddenValueId) && !/^MscrmControls\./.test(String(context.ControlName ?? ''));
+      return (
+        Boolean(context.PcfControlHiddenValueId) && !String(context.ControlName ?? '').startsWith('MscrmControls.')
+      );
     } catch {
       return false;
     }

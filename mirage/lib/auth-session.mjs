@@ -60,7 +60,10 @@ const CHUNK_SIZE = 4050;
 const MAX_CHUNKS = 99;
 const CHUNKS = /^chunks:([1-9]\d?)$/;
 
-/** Set-Cookie for name=value with `attributes`: one header, or the chunk headers when it is longer than a cookie. */
+/**
+ * Set-Cookie for name=value with `attributes`: one header, or the chunk headers when it is longer than a cookie.
+ * @returns {string | string[]} a Set-Cookie value, as node:http's setHeader takes it
+ */
 function chunkedCookie(name, value, attributes) {
   if (name.length + 1 + value.length < CHUNK_SIZE) return `${name}=${value}${attributes}`;
   const size = CHUNK_SIZE - name.length - 1 - 3;

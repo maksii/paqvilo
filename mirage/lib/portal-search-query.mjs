@@ -313,6 +313,11 @@ function scoreGroup(clauses, row) {
   return matched ? score : null;
 }
 
+function closeGroup(clauses, depth) {
+  if (!depth) throw invalidQuery('Unexpected search group end.', SYNTAX_ERROR);
+  return clauses;
+}
+
 /**
  * Parse the query. With `fields`, `name:term` and `name:(group)` restrict a clause to one field, and `placeholder` (the
  * `@Query` token) evaluates another compiled query against the clause's row.
@@ -341,11 +346,6 @@ function structuredQuery(query, { legacyLucene = false, fields = false, placehol
       mode = 'optional';
     }
     if (depth) throw invalidQuery('An opened search group must be closed.', SYNTAX_ERROR);
-    return clauses;
-  }
-
-  function closeGroup(clauses, depth) {
-    if (!depth) throw invalidQuery('Unexpected search group end.', SYNTAX_ERROR);
     return clauses;
   }
 

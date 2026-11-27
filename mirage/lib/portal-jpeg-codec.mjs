@@ -966,9 +966,10 @@ export function encodeJpeg(
 ) {
   assertEncodable(image, sampling);
   const { width, height, channels } = image;
-  const quants = [LUMA_QUANT, CHROMA_QUANT]
-    .slice(0, channels === 1 ? 1 : 2)
-    .map((base, i) => (usableQuant(quantTables?.[i]) ? Uint16Array.from(quantTables[i]) : scaledQuant(base, quality)));
+  const quants = [LUMA_QUANT, CHROMA_QUANT].slice(0, channels === 1 ? 1 : 2).map((base, i) => {
+    const table = quantTables?.[i];
+    return usableQuant(table) ? Uint16Array.from(table) : scaledQuant(base, quality);
+  });
   const hMax = channels === 1 ? 1 : sampling.h;
   const vMax = channels === 1 ? 1 : sampling.v;
   const planes = samplePlanes(image, hMax, vMax);

@@ -163,7 +163,13 @@ const schemaValidationOption = (trigger) =>
 // (observed.powerPagesFlowTriggerSchema) runs the flow with what was sent, as hosted session F8 (envelope group, two runs)
 // recorded for a missing required field, a string for a number, an undeclared property and {}. A resume (no value) does not
 // check it again.
-export function validateTriggerInput(trigger, input, { powerPagesSchema = null, diagnostic = null } = {}) {
+/**
+ * @param {object} trigger
+ * @param {unknown} input
+ * @param {{ powerPagesSchema?: 'enforced' | 'not-enforced' | null, diagnostic?: Function | null }} [options] without
+ *   powerPagesSchema (a resume, a direct call) a Power Pages trigger's input is not checked.
+ */
+export function validateTriggerInput(trigger, input, { powerPagesSchema, diagnostic = null } = {}) {
   if (trigger.kind === 'powerpages' && powerPagesSchema !== 'enforced') return;
   const schema = trigger.inputs?.schema ?? {};
   try {

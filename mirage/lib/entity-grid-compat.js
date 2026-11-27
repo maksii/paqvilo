@@ -667,7 +667,7 @@
       this.widthStyle = data('column-width-style') || 'Percent';
       this.selectedView = data('selected-view');
       // A dataset code component's list or subgrid: the grid draws its toolbar and the control reads the rows.
-      this.pcfHost = element.hasAttribute('data-pcf-view-host');
+      this.pcfHost = element.dataset.pcfViewHost !== undefined;
       // Grids inside a Bootstrap 5 dialog (lookup, associate) and grids of a page that loads the
       // Bootstrap 5 platform bundles render the Bootstrap 5 toolbar, table and pagination.
       this.dialog = Boolean(element.closest('.modal[data-bs-backdrop]'));
@@ -2900,8 +2900,8 @@
       }
       const item = remove.closest('tr.sp-item');
       const modal = container.querySelector(
-        item.hasAttribute('data-foldername') ? '.modal-delete-folder' : '.modal-delete-file',
-      ); // NOSONAR: actual attributes exclude inherited dataset values
+        item.dataset.foldername === undefined ? '.modal-delete-file' : '.modal-delete-folder',
+      );
       if (!modal) return;
       prepare(modal, () =>
         finish(

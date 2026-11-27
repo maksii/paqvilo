@@ -592,6 +592,15 @@ function refuseBulkTargets(mapping, message, targets) {
   }
 }
 
+// The more-records annotation (when included) and the paging cookie of a FetchXML page.
+function addFetchPagingAnnotations(c, body, fetched, info) {
+  if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
+  // The paging cookie is answered without a Prefer header.
+  if (fetched.more_records && fetched.paging_cookie) {
+    body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
+  }
+}
+
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
@@ -2049,14 +2058,6 @@ export function createRecordHandlers({
       body[`@${RECORD_COUNT}`] = counted ? fetched.total_record_count : -1;
     if ((counted || service) && c.include?.(RECORD_LIMIT))
       body[`@${RECORD_LIMIT}`] = counted && Boolean(fetched.total_record_count_limit_exceeded);
-  }
-  // The more-records annotation (when included) and the paging cookie of a FetchXML page.
-  function addFetchPagingAnnotations(c, body, fetched, info) {
-    if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
-    // The paging cookie is answered without a Prefer header.
-    if (fetched.more_records && fetched.paging_cookie) {
-      body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
-    }
   }
   function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
     validateFetchXmlRequest(c, mapping, xml);

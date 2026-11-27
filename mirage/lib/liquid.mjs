@@ -1380,7 +1380,7 @@ function openElementEnds(text) {
     at = text.indexOf('<', end);
   }
   return open
-    .reverse()
+    .toReversed()
     .map((tag) => `</${tag}>`)
     .join('');
 }
@@ -1925,6 +1925,11 @@ export function contentStylesheetFiles(portal, page) {
 // ---- Renderer
 // Header and footer output cache lifetime from the render that filled the copy (hosted session F3: 5:00 to 5:23).
 const OUTPUT_CACHE_MS = 5 * 60 * 1000;
+// A visitor's role ids in code-unit order (the order Array#sort gives strings without a comparator).
+const compareCodeUnits = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 // The rewrite pages an enhanced site renders (hosted session F3): any other ASPX page has no route handler.
 const ENHANCED_REWRITE_PAGES = new Set([
   'pages/fullpage.aspx',
@@ -3074,7 +3079,11 @@ export function createPortalRenderer(
       return renderSourceFragment(template.source, context, sourceRef);
     const user = context.user;
     const visitor = user
-      ? ['contact', String(user.id ?? user.contactid ?? '').toLowerCase(), [...(user.roles ?? [])].map(String).sort()]
+      ? [
+          'contact',
+          String(user.id ?? user.contactid ?? '').toLowerCase(),
+          [...(user.roles ?? [])].map(String).sort(compareCodeUnits),
+        ]
       : ['anonymous'];
     const key = JSON.stringify([part, portal.website?.id ?? null, context.__language?.id ?? null, visitor]);
     const now = clock();

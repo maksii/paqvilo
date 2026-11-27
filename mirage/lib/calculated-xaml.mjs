@@ -266,8 +266,8 @@ function compileBranch(program, { args, props }, depth) {
   return {
     op: 'branch',
     condition: conditionOf(argumentText(args.get('Condition')), 'ConditionBranch Condition'),
-    then: branch('Then') ?? [],
-    else: branch('Else'),
+    whenTrue: branch('Then') ?? [],
+    whenFalse: branch('Else'),
   };
 }
 
@@ -468,7 +468,7 @@ function bareLiteralIn(steps, literals = new Set()) {
       const bare = step.parameters.find((name) => literals.has(name));
       if (bare) return `EvaluateExpression ${step.operator} reads the literal ${bare} without SelectFirstNonNull.`;
     }
-    const nested = [step.steps, step.then, step.else].filter(Boolean);
+    const nested = [step.steps, step.whenTrue, step.whenFalse].filter(Boolean);
     for (const body of nested) {
       const found = bareLiteralIn(body, literals);
       if (found) return found;
@@ -666,8 +666,8 @@ function runChain(steps, vars, ctx, state) {
 }
 function runBranch(step, vars, ctx, state) {
   const holds = 'literal' in step.condition ? step.condition.literal : vars.get(step.condition.variable) === true;
-  if (holds) run(step.then, vars, ctx, state);
-  else if (step.else) run(step.else, vars, ctx, state);
+  if (holds) run(step.whenTrue, vars, ctx, state);
+  else if (step.whenFalse) run(step.whenFalse, vars, ctx, state);
   return holds;
 }
 

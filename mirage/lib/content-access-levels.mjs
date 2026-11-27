@@ -34,6 +34,11 @@ const canonical = (value) =>
   String(value?.id ?? value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// The level ids in code-unit order (the order Array#sort gives strings without a comparator).
+const compareCodeUnits = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 const active = (row) => {
   const state = row?.statecode?.value ?? row?.statecode;
   return state == null || state === '' || Number(state) === 0;
@@ -287,7 +292,7 @@ async function liveKnowledgeArticleAccess({ portal, store, identity, readProvide
         for (const article of await liveRows(readProvider, identity, ARTICLE_TABLE, articleId, body))
           articles.add(article);
       }
-    return { levels: [...levels].sort(), visible: (id) => articles.has(canonical(id)) };
+    return { levels: [...levels].sort(compareCodeUnits), visible: (id) => articles.has(canonical(id)) };
   } catch (error) {
     return liveHidden(store, diagnostic, error?.message ?? String(error));
   }
@@ -342,7 +347,7 @@ export function knowledgeArticleAccess({
       articleLevels.get(article).add(level);
     }
   return {
-    levels: [...levels].sort(),
+    levels: [...levels].sort(compareCodeUnits),
     visible: (articleId) => [...(articleLevels.get(canonical(articleId)) ?? [])].some((level) => levels.has(level)),
   };
 }

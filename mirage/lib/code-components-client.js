@@ -169,6 +169,7 @@
   function enumValues(property) {
     return Array.isArray(property?.values) ? property.values : null;
   }
+  /** @returns {number|string} A declared value: a number when every declared value is numeric, a string otherwise. */
   function typedEnum(value, property) {
     const declared = enumValues(property);
     if (!declared) return typedNumber(value, 'Enum');
@@ -356,7 +357,7 @@
   const textMaxLength = (length) => (Number.isInteger(length) && length > 0 && length <= 100 ? length : 100);
   function fieldAttributes(spec, name, type) {
     const binding = spec.nativeBinding;
-    const defaults = FIELD_TYPES[type] ?? { Type: /^SingleLine\./.test(type) ? 'string' : type };
+    const defaults = FIELD_TYPES[type] ?? { Type: type.startsWith('SingleLine.') ? 'string' : type };
     const options = ['TwoOptions', 'OptionSet', 'MultiSelectOptionSet'].includes(type)
       ? (binding.attributes?.Options ?? [])
       : null;
@@ -874,6 +875,16 @@
    * sets: no rows) or "webapi" (the local pcf.liquidDatasetBinding "view" binding through the portal Web API).
    * `updated(properties)` runs one updateView per completed load with the captured updatedProperties.
    */
+  // Adds <attribute name="name"> to a FetchXML entity or link-entity node that does not select it yet.
+  function ensureAttribute(xml, node, name) {
+    if (
+      !Array.from(node.children).some((child) => child.tagName === 'attribute' && child.getAttribute('name') === name)
+    ) {
+      const attribute = xml.createElement('attribute');
+      attribute.setAttribute('name', name);
+      node.append(attribute);
+    }
+  }
   // Dataset bindings come from selected solution views/table metadata, never from table-name guessing.
   function datasetAdapter(binding, api, updated, settled = () => {}) {
     const transport = binding.transport ?? 'webapi';
@@ -1121,15 +1132,6 @@
         node.setAttribute('attribute', parts.at(-1));
         node.setAttribute('descending', String(sort.sortDirection === 1));
         entity.append(node);
-      }
-    }
-    function ensureAttribute(xml, node, name) {
-      if (
-        !Array.from(node.children).some((child) => child.tagName === 'attribute' && child.getAttribute('name') === name)
-      ) {
-        const attribute = xml.createElement('attribute');
-        attribute.setAttribute('name', name);
-        node.append(attribute);
       }
     }
     function linkNodes(xml, entity) {
@@ -1549,7 +1551,7 @@
   // Attributes of a bound Liquid-tag property (captured for SingleLine.Text: the property name as display name, a
   // fresh GUID as logical name). Type and Format of the other PCF types are not captured yet.
   function liquidBoundAttributes(name, type) {
-    const text = /^SingleLine\./.test(type) || type === 'Multiple';
+    const text = type.startsWith('SingleLine.') || type === 'Multiple';
     return {
       DisplayName: name,
       LogicalName: randomGuid(),
@@ -1596,7 +1598,7 @@
       notifications: null,
       security: bound ? { secured: false, editable: true, readable: true } : {},
     };
-    if (/^DateAndTime\./.test(type)) {
+    if (type.startsWith('DateAndTime.')) {
       const date = liquidDateRaw(present, value);
       if (!date) return null;
       parameter.raw = date;
@@ -1616,7 +1618,7 @@
   function setLiquidRaw(parameter, { present, value, type, property }) {
     if (/^(Whole\.|Decimal$|FP$|Currency$)/.test(type)) setLiquidNumber(parameter, present, value);
     else if (type === 'TwoOptions') parameter.raw = liquidTwoOptionsRaw(value, parameter.raw);
-    else if (type === 'Enum' || /^SingleLine\./.test(type) || type === 'Multiple')
+    else if (type === 'Enum' || type.startsWith('SingleLine.') || type === 'Multiple')
       parameter.raw = present && value != null ? String(value) : null;
     else setLiquidTyped(parameter, present ? value : null, type, property);
   }
@@ -2074,7 +2076,7 @@
           (value) =>
             formatDatePattern(
               asDate(value),
-              info.LongDatePattern.replace(/dddd/g, 'ddd').replace(/MMMM/g, 'MMM'),
+              info.LongDatePattern.replaceAll('dddd', 'ddd').replaceAll('MMMM', 'MMM'),
               info,
             ),
         ],
@@ -2133,7 +2135,7 @@
         ],
         formatLanguage: [1, (value) => languageName(value)],
         formatUserDateTimeToUTC: [2, (value, behavior) => (behavior === 1 ? userDate(Number.NaN) : userDate(value))],
-        formatUTCDateTimeToUserDate: [2, (value) => new Date(asDate(value).getTime())],
+        formatUTCDateTimeToUserDate: [2, (value) => new Date(asDate(value))],
         formatUserInput: [2, (value) => (value == null ? '' : String(value))],
       },
     );
@@ -2466,7 +2468,9 @@
     if (requested.length && !columns.length)
       throw new Error('PCF utils.getEntityMetadata needs column logical names: ' + requested.join(', '));
     const filter = columns.map((column) => "LogicalName eq '" + column + "'").join(' or ');
-    const query = filter ? '?$expand=Attributes($filter=' + filter.replace(/ /g, '%20').replace(/'/g, '%27') + ')' : '';
+    const query = filter
+      ? '?$expand=Attributes($filter=' + filter.replaceAll(' ', '%20').replaceAll("'", '%27') + ')'
+      : '';
     const response = await fetch("/_api/EntityDefinitions(LogicalName='" + logical + "')" + query, {
       credentials: 'same-origin',
       // The host's request headers: the portal answers EntityDefinitions only with
@@ -2796,11 +2800,9 @@
         updateComponent: utilsStub('updateComponent', 2),
         createCrmUri: utilsStub('createCrmUri', 1, (path) => new URL(String(path ?? ''), location.origin).href),
         createServerUri: utilsStub('createServerUri', 1, (path) => new URL(String(path ?? ''), location.origin).href),
-        openInBrowser: utilsStub(
-          'openInBrowser',
-          1,
-          (url) => void globalThis.open(navigationUrl(url), '_blank', 'noopener,noreferrer'),
-        ),
+        openInBrowser: utilsStub('openInBrowser', 1, (url) => {
+          globalThis.open(navigationUrl(url), '_blank', 'noopener,noreferrer');
+        }),
         getServiceUri: utilsStub('getServiceUri', 0, () => location.origin),
         setState: utilsStub('setState', 1),
         // An unknown dependency rejects with undefined at once (captured); declared manifest dependencies are never loaded.
@@ -2842,7 +2844,7 @@
         retrieveRecordCommand: utilsStub('retrieveRecordCommand', 6),
         getDeclaredFeatures: utilsStub('getDeclaredFeatures', 0, () => []),
         getFeatureClassName: utilsStub('getFeatureClassName', 0),
-        encodeFilterString: utilsStub('encodeFilterString', 2, (value) => String(value ?? '').replace(/'/g, "''")),
+        encodeFilterString: utilsStub('encodeFilterString', 2, (value) => String(value ?? '').replaceAll("'", "''")),
         getUserSettings: [0, () => userSettings],
       },
     );

@@ -1253,6 +1253,8 @@ function runPostpone(state, step) {
   state.host.trace(`Postpone: the run waits until ${new Date(until).toISOString()}.`);
 }
 
+// A step runs to completion or answers a promise of its completion (runStep awaits either).
+/** @type {Map<string, (state: object, step: object) => void | Promise<void>>} */
 const STEPS = new Map([
   ['sequence', runSequence],
   ['choice', runChoice],
@@ -1417,7 +1419,7 @@ export async function runClassicWorkflow(program, host, { resume = null, suspend
     path: [],
     resume: resume ? [...resume.path] : [],
     // A run resumed at a wait or Postpone evaluates it again without logging it again.
-    waitResumed: Boolean(resume) && resume.kind !== 'failure',
+    waitResumed: resume ? resume.kind !== 'failure' : false,
   };
   const { logicalName, id, row } = host.primary;
   state.input.set('primaryEntity', entityOf(logicalName, id, row));

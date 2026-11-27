@@ -298,7 +298,12 @@ function appendConfiguredHeaders(headers, portal) {
     if (!match) continue;
     const name = match[1].toLowerCase();
     // HTTP/Access-Control-* settings are added by corsSettingHeaders, with its wildcard-with-credentials guard.
-    if (SEPARATE.has(name) || NOT_ECHOED.test(name) || /^access-control-/.test(name) || Object.hasOwn(headers, name))
+    if (
+      SEPARATE.has(name) ||
+      NOT_ECHOED.test(name) ||
+      name.startsWith('access-control-') ||
+      Object.hasOwn(headers, name)
+    )
       continue;
     const value = String((raw && typeof raw === 'object' ? raw.value : raw) ?? '').trim();
     if (value && headerValueValid(value)) headers[name] = value;

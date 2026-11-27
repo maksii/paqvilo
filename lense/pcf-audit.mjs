@@ -175,7 +175,8 @@ export async function auditCodeComponents(cfg) {
   if (!named.length) return result;
   const sources = await inspectionSources(cfg);
   for (const diagnostic of sources.diagnostics)
-    if (/^PCF_/.test(diagnostic.code)) result.findings.push({ code: diagnostic.code, reason: diagnostic.reason });
+    if (String(diagnostic.code).startsWith('PCF_'))
+      result.findings.push({ code: diagnostic.code, reason: diagnostic.reason });
   // The pcf.platformLibraries the Power Pages host serves admit React and virtual controls, as Mirage renders them
   // (mirage/lib/pcf-sources.mjs pcfPlatformLibraries): a listed file that cannot be served is its own finding; the
   // notice that the list differs from the live set is not.

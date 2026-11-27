@@ -543,7 +543,7 @@ function createApi(api) {
     const order = (left, right) =>
       right.split('/').length - left.split('/').length ||
       Number(left.endsWith(`/${NAME_CLAIM}`)) - Number(right.endsWith(`/${NAME_CLAIM}`));
-    for (const key of markers.sort(order)) await storage.delete(key);
+    for (const key of markers.toSorted(order)) await storage.delete(key);
     return { deleted: true };
   }
 

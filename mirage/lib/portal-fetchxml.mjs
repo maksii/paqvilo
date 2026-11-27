@@ -12,10 +12,7 @@ import { serializePermissionFetchXml } from './permission-query.mjs';
  * stays with its alias), `datasource` removed from fetch (`bin` read the ordinary rows) and a valid `top` removed (top="2"
  * returned every matching row). A malformed or out-of-range top was not observed; it still fails validation.
  */
-export function preparePortalFetchXml(
-  xml,
-  { linkTypes, profile = 'webapi', dropValidTop = false, authoring = null } = {},
-) {
+export function preparePortalFetchXml(xml, { linkTypes, profile = 'webapi', dropValidTop = false, authoring } = {}) {
   const rewriteLinks = linkTypes === 'portal-classic';
   const objectModel = authoring === 'portal-classic';
   if (!rewriteLinks && !dropValidTop && !objectModel) return xml;

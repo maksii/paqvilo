@@ -155,7 +155,7 @@ export function verifyRedirectQuery(rawQuery, kind, publicKeys) {
   }
   const decode = (name) => {
     try {
-      return decodeURIComponent((raw.get(name) ?? '').replace(/\+/g, ' '));
+      return decodeURIComponent((raw.get(name) ?? '').replaceAll('+', ' '));
     } catch {
       throw fault(`The redirect's ${name} is not URL-encoded.`);
     }

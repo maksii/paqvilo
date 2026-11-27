@@ -85,14 +85,17 @@ const addressRange = (value) => {
 
 // One allow-list or match entry: an address, or a range in CIDR notation.
 function parseRange(value) {
-  const [host, prefixText, extra] = String(value ?? '')
+  const parts = String(value ?? '')
     .trim()
     .split('/');
-  const parsed = extra === undefined ? normalAddress(host) : null;
+  if (parts.length > 2) return null;
+  const parsed = normalAddress(parts[0]);
   if (!parsed) return null;
   const bits = parsed.family === 4 ? 32 : 128;
-  const prefix = prefixText === undefined ? bits : Number(prefixText);
-  if (!/^\d{1,3}$/.test(prefixText ?? String(bits)) || prefix > bits) return null;
+  // Without a prefix the entry is the one address.
+  const prefixText = parts.length === 2 ? parts[1] : String(bits);
+  const prefix = Number(prefixText);
+  if (!/^\d{1,3}$/.test(prefixText) || prefix > bits) return null;
   const list = new net.BlockList();
   list.addSubnet(parsed.address, prefix, parsed.family === 4 ? 'ipv4' : 'ipv6');
   return { text: `${parsed.address}/${prefix}`, family: parsed.family, list };
@@ -308,13 +311,13 @@ const TRANSFORM = {
   Trim: (text) => text.trim(),
   UrlDecode: (text) => {
     try {
-      return decodeURIComponent(text.replace(/\+/g, ' '));
+      return decodeURIComponent(text.replaceAll('+', ' '));
     } catch {
       return text;
     }
   },
   UrlEncode: (text) => encodeURIComponent(text),
-  RemoveNulls: (text) => text.replace(/\0/g, ''),
+  RemoveNulls: (text) => text.replaceAll('\0', ''),
 };
 
 const hasBody = (req) =>
@@ -329,7 +332,7 @@ function cookieValues(header, name) {
   return values;
 }
 
-// The request's values of a match variable, or { unknown } when the local runtime cannot read them before the site.
+// The request's values of a match variable, or null when the local runtime cannot read them before the site.
 function variableValues(condition, req, url, visitor) {
   switch (condition.matchVariable) {
     case 'RemoteAddr':
@@ -352,7 +355,7 @@ function variableValues(condition, req, url, visitor) {
       return cookieValues(req.headers.cookie, condition.selector);
     default:
       // PostArgs and RequestBody: the edge reads the body before the site; the local gate does not.
-      return hasBody(req) ? { unknown: 'the request body is not read before the site' } : [];
+      return hasBody(req) ? null : [];
   }
 }
 
@@ -368,7 +371,7 @@ function conditionResult(condition, req, url, visitor) {
   const fixed = staticUnknown(condition);
   if (fixed) return { result: 'unknown', reason: fixed };
   const read = variableValues(condition, req, url, visitor);
-  if (!Array.isArray(read)) return { result: 'unknown', reason: read.unknown };
+  if (!read) return { result: 'unknown', reason: 'the request body is not read before the site' };
   const candidates = read.map((value) =>
     condition.transforms.reduce((text, transform) => TRANSFORM[transform](text), String(value)),
   );
@@ -429,7 +432,10 @@ function rateCounters(now) {
   };
 }
 
-// One rule's outcome for the request: null when it does not apply, 'allow' when it admits the request, else the event
+// The outcome of a rule that admits the request.
+const ALLOWED = Object.freeze({ allowed: true });
+
+// One rule's outcome for the request: null when it does not apply, ALLOWED when it admits the request, else the event
 // to log (enforced: the rule blocks the request).
 function ruleOutcome(rule, firewall, request, rateExceeded) {
   if (rule.enabledState !== 'Enabled') return null;
@@ -437,7 +443,7 @@ function ruleOutcome(rule, firewall, request, rateExceeded) {
   if (result === false) return null;
   // Fail closed: an undecided rule never allows, and blocks as if it matched.
   if (rule.action === 'Allow')
-    return result === true ? 'allow' : { rule: rule.name, action: 'Allow', decided: false, enforced: false, reason };
+    return result === true ? ALLOWED : { rule: rule.name, action: 'Allow', decided: false, enforced: false, reason };
   if (rule.ruleType === 'RateLimitRule' && !rateExceeded(rule, request.visitor)) return null;
   const enforced = rule.action === 'Block' && firewall.mode !== 'Detection';
   const event = { rule: rule.name, action: rule.action, decided: result === true, enforced };
@@ -448,7 +454,7 @@ function ruleOutcome(rule, firewall, request, rateExceeded) {
 function firewallDecision(firewall, request, events, rateExceeded) {
   for (const rule of firewall.customRules) {
     const outcome = ruleOutcome(rule, firewall, request, rateExceeded);
-    if (outcome === 'allow') return null;
+    if (outcome === ALLOWED) return null;
     if (!outcome) continue;
     events.push(outcome);
     if (outcome.enforced) return rule;
