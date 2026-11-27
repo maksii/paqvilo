@@ -738,6 +738,9 @@ export function createLocalAccounts({
   ) {
     if (invitationCode) {
       try {
+        // A code without the invitation service is refused as an invalid invitation (the sign-in page refuses it first).
+        if (!invitations)
+          throw Object.assign(new Error('Invitations are not available.'), { code: 'INVITATION_INVALID' });
         await invitations.redeem({ code: invitationCode, contactId: account.contactId, subject: account.username });
       } catch (error) {
         if (error?.code !== 'INVITATION_INVALID') throw error;
