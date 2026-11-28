@@ -694,6 +694,12 @@ export function webApiPagingCookie(cookie, page) {
 export function fieldValue(row, attribute) {
   return lookupColumnValue(row, attribute);
 }
+
+function readSelectedColumn(row, column) {
+  const source = column.alias == null ? row.base : row.aliases[column.alias];
+  return source == null ? undefined : column.read(source);
+}
+
 const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
 const joinKey = (value) => {
   const raw = scalar(value);
@@ -798,6 +804,8 @@ function validatePortalDateOnlyIn(operator, definition, values) {
   const rootMapping = mappingOf.get(root);
   const aliasNode = (alias) => (alias == null ? root : plan.byAlias.get(alias));
   const definition = (node, attribute) => ctx.definition?.(mappingOf.get(node).logicalName, attribute);
+  const readColumn = (node, attribute) =>
+    ctx.lookupDisplayField?.(mappingOf.get(node), attribute) ?? ((row) => fieldValue(row, attribute));
   // An order the platform ignores (a calculated column over a parent or another calculated column) is dropped silently.
   const sortable = (node, attribute) =>
     attribute == null || node == null || ctx.sortable?.(mappingOf.get(node).logicalName, attribute) !== false;
@@ -972,8 +980,12 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     } else if (structural.has(link)) {
       const { relation, columns } = structural.get(link);
       const endpoint = ctx.mapping(relation.entity);
+      // Structural validation proves every authored child is this exact endpoint.
+      // Classic Liquid may use that node's backend context. A bare intersect
+      // has no authored endpoint context, and the API still checks row grants.
+      const endpointLink = ctx.nativeLiquidStructuralEndpoints ? children(link, 'link-entity')[0] : undefined;
       const readable = new Set(
-        ctx.readableRows(endpoint.logicalName).map((row) => joinKey(fieldValue(row, relation.to))),
+        ctx.readableRows(endpoint.logicalName, endpointLink).map((row) => joinKey(fieldValue(row, relation.to))),
       );
       rows = (ctx.tableRows(lm.logicalName) ?? [])
         .filter((edge) => readable.has(joinKey(fieldValue(edge, relation.intersect.to))))
@@ -992,7 +1004,8 @@ function validatePortalDateOnlyIn(operator, definition, values) {
   const referencesOtherAlias = (node, ownerAlias) =>
     (node.name === 'condition' &&
       ((node.attrs.entityname != null && resolveEntityName(node.attrs.entityname) !== ownerAlias) ||
-        (node.attrs.valueof ?? '').includes('.'))) ||
+        (node.attrs.valueof?.includes('.') &&
+          resolveEntityName(node.attrs.valueof.split('.', 1)[0]) !== ownerAlias))) ||
     (node.name !== 'link-entity' && node.children.some((child) => referencesOtherAlias(child, ownerAlias)));
   const compileCondition = (condition, ownerAlias) => {
     const targetAlias = condition.attrs.entityname != null ? resolveEntityName(condition.attrs.entityname) : ownerAlias;
@@ -1000,9 +1013,10 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     const attribute = condition.attrs.attribute;
     assertStructural(targetAlias, attribute, 'condition');
     const columnDefinition = definition(targetNode, attribute);
+    const targetValue = readColumn(targetNode, attribute);
     const read = (item) => {
       const source = targetAlias == null ? item.base : item.aliases[targetAlias];
-      return source == null ? undefined : fieldValue(source, attribute);
+      return source == null ? undefined : targetValue(source);
     };
     const qualified = `${mappingOf.get(targetNode).logicalName}.${attribute}`;
     if (condition.attrs.valueof != null) {
@@ -1011,6 +1025,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
         : [undefined, condition.attrs.valueof];
       const otherAlias = otherAliasRaw === undefined ? targetAlias : resolveEntityName(otherAliasRaw);
       assertStructural(otherAlias, otherAttribute, 'condition');
+      const otherValue = readColumn(aliasNode(otherAlias), otherAttribute);
       const compare = compileColumnComparison(condition.attrs.operator, {
         attribute: qualified,
         definition: columnDefinition,
@@ -1018,7 +1033,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       });
       return (item) => {
         const other = otherAlias == null ? item.base : item.aliases[otherAlias];
-        return compare(read(item), other == null ? undefined : fieldValue(other, otherAttribute));
+        return compare(read(item), other == null ? undefined : otherValue(other));
       };
     }
     const values = valuesOf(condition);
@@ -1034,14 +1049,26 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       now,
       table: mappingOf.get(targetNode).logicalName,
     });
+    if (ctx.canMatchExplicitNullText && condition.attrs.operator === 'ne' && fieldKind(columnDefinition) === 'string')
+      return (item) => {
+        const row = targetAlias == null ? item.base : item.aliases[targetAlias];
+        const value = read(item);
+        return (
+          (value === null &&
+            own(row, attribute) &&
+            ctx.canMatchExplicitNullText(mappingOf.get(targetNode), row, attribute)) ||
+          predicate(value)
+        );
+      };
     return (item) => predicate(read(item));
   };
+  const compileFilterPart = (child, ownerAlias) => {
+    if (child.name === 'filter') return compileFilter(child, ownerAlias);
+    if (child.name === 'condition') return compileCondition(child, ownerAlias);
+    return compileSemiJoin(child, ownerAlias);
+  };
   const compileFilter = (filter, ownerAlias) => {
-    const parts = filter.children.map((child) => {
-      if (child.name === 'filter') return compileFilter(child, ownerAlias);
-      if (child.name === 'condition') return compileCondition(child, ownerAlias);
-      return compileSemiJoin(child, ownerAlias);
-    });
+    const parts = filter.children.map((child) => compileFilterPart(child, ownerAlias));
     if (!parts.length) return () => true;
     return (filter.attrs.type ?? 'and') === 'or'
       ? (item) => parts.some((part) => part(item))
@@ -1051,6 +1078,14 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     const parts = children(node, 'filter').map((filter) => compileFilter(filter, ownerAlias));
     return parts.length ? (item) => parts.every((part) => part(item)) : null;
   };
+  const conjuncts = (node) => {
+    if (node.name === 'filter' && (node.attrs.type ?? 'and') === 'and') return node.children.flatMap(conjuncts);
+    return [node];
+  };
+  const readsOnlyRootColumns = (node) =>
+    node.name === 'condition'
+      ? !referencesOtherAlias(node, null)
+      : node.name === 'filter' && node.children.every(readsOnlyRootColumns);
 
   // Distinct permission unions only project authored columns. Restrict their
   // private paths before materializing alternatives, rather than multiplying
@@ -1327,13 +1362,27 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     base,
     aliases: {},
   }));
-  const rootFilter = compileFilters(root, null);
-  const pushdown = rootFilter && !children(root, 'filter').some((f) => referencesOtherAlias(f, null));
-  if (pushdown) rows = rows.filter(rootFilter);
+  const filters = children(root, 'filter');
+  const afterJoin = [];
+  if (filters.some((filter) => referencesOtherAlias(filter, null))) {
+    // Conditions on AND paths constrain every satisfying row. Move root-only
+    // expressions as a unit, preserving the alternatives of each OR filter.
+    const beforeJoin = [];
+    for (const part of filters.flatMap(conjuncts)) {
+      const predicate = compileFilterPart(part, null);
+      if (readsOnlyRootColumns(part)) beforeJoin.push(predicate);
+      else afterJoin.push(predicate);
+    }
+    if (beforeJoin.length) rows = rows.filter((row) => beforeJoin.every((predicate) => predicate(row)));
+  } else {
+    const rootFilter = compileFilters(root, null);
+    if (rootFilter) rows = rows.filter(rootFilter);
+  }
+  const applyJoinedFilters = (joined) =>
+    afterJoin.length ? joined.filter((row) => afterJoin.every((predicate) => predicate(row))) : joined;
   const limit = earlyLimit();
   if (limit == null) {
-    rows = joinTree(rows, root);
-    if (rootFilter && !pushdown) rows = rows.filter(rootFilter);
+    rows = applyJoinedFilters(joinTree(rows, root));
   } else {
     // Rows of one root stay together and roots keep the final order, so joining roots
     // in that order and stopping once `limit` rows exist gives the same first rows.
@@ -1343,11 +1392,12 @@ function validatePortalDateOnlyIn(operator, definition, values) {
         attribute: order.attrs.attribute,
         descending: bool(order.attrs.descending),
         definition: definition(root, order.attrs.attribute),
+        read: readColumn(root, order.attrs.attribute),
       }));
     const keyed = rows.map((row, index) => ({
       row,
       index,
-      keys: specs.map((spec) => sortKeyOf(fieldValue(row.base, spec.attribute), spec.definition)),
+      keys: specs.map((spec) => sortKeyOf(spec.read(row.base), spec.definition)),
       pk: makeSortKey(row.base[rootMapping.idColumn], { definition: { dataverseType: 'primarykey' } }),
     }));
     keyed.sort((a, b) => {
@@ -1359,8 +1409,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     });
     const collected = [];
     for (const { row } of keyed) {
-      let joined = joinTree([row], root);
-      if (rootFilter && !pushdown) joined = joined.filter(rootFilter);
+      const joined = applyJoinedFilters(joinTree([row], root));
       for (const row of joined) collected.push(row);
       if (collected.length >= limit) break;
     }
@@ -1417,6 +1466,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       distinct: bool(attribute.attrs.distinct),
       usertimezone: attribute.attrs.usertimezone == null ? true : bool(attribute.attrs.usertimezone),
       definition: columnDefinition,
+      read: readColumn(node, name),
     };
     if (plan.aggregate) {
       if (!attribute.attrs.alias)
@@ -1492,15 +1542,14 @@ function validatePortalDateOnlyIn(operator, definition, values) {
           attribute: order.attrs.attribute,
           descending: bool(order.attrs.descending),
           definition: definition(node, order.attrs.attribute),
+          read: readColumn(node, order.attrs.attribute),
         };
       });
     const pk = rootMapping.idColumn;
     const keyed = rows.map((row, index) => ({
       row,
       index,
-      keys: specs.map((spec) =>
-        sortKeyOf(fieldValue(spec.alias == null ? row.base : row.aliases[spec.alias], spec.attribute), spec.definition),
-      ),
+      keys: specs.map((spec) => sortKeyOf(readSelectedColumn(row, spec), spec.definition)),
       pk: plan.distinct ? null : makeSortKey(row.base[pk], { definition: { dataverseType: 'primarykey' } }),
     }));
     keyed.sort((a, b) => {
@@ -1600,7 +1649,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       aggregate: plan.aggregate,
       distinct: plan.distinct,
       page: plan.page,
-      columns: columns.map(({ definition: _definition, ...column }) => column),
+      columns: columns.map(({ definition: _definition, read: _read, ...column }) => column),
       aliases: Object.fromEntries(plan.links.map((link) => [plan.aliasOf.get(link), mappingOf.get(link).logicalName])),
       allAttributeAliases,
     },
@@ -1627,8 +1676,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     // Distinct queries don't add the primary key implicitly; an explicitly
     // selected key (attribute element or all-attributes) is an ordinary column.
     for (const column of columns) {
-      const source = column.alias == null ? row.base : row.aliases[column.alias];
-      const value = fieldValue(source, column.attribute);
+      const value = readSelectedColumn(row, column);
       if (!isEmpty(value)) out[column.key] = copyValue(value);
       else delete out[column.key];
     }
@@ -1741,8 +1789,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       });
     const groups = columns.filter((column) => column.groupby);
     const aggregates = columns.filter((column) => column.aggregate);
-    const read = (row, column) =>
-      fieldValue(column.alias == null ? row.base : row.aliases[column.alias], column.attribute);
+    const read = readSelectedColumn;
     let fiscal;
     const groupValue = (row, column) => {
       const value = read(row, column);
@@ -1822,7 +1869,7 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     for (const spec of first.specs) {
       if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && withKey)) continue;
       seen.add(spec.attribute);
-      const read = (item) => fieldValue(item.row.base, spec.attribute);
+      const read = (item) => spec.read(item.row.base);
       parts.push(
         `<${spec.attribute} last="${xmlEscapeAttribute(cookieValue(read(last)))}" first="${xmlEscapeAttribute(cookieValue(read(first)))}" />`,
       );

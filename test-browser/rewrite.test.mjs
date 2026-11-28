@@ -1,24 +1,29 @@
-import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
-// Browser semantics with fulfilled requests.
+// @test-kind compatibility: browser parsing and source-map semantics for rewritten portal documents.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
+import { makeTemporaryDirectorySync, ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { withFileSourceMap } from '../lense/source-map.mjs';
+import { launchRenderingBrowser, renderingBrowserName } from './helpers/lense-rendering-browser.mjs';
+import { listenOwnedServer } from './helpers/owned-server.mjs';
 
-test('real browser: HTML recovery, dynamic imports and existing source-map directives retain their semantics', async (t) => {
+async function rewriteFixture(t) {
+  const owner = ownedFixture(t);
   const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-browser-'));
   const file = path.join(dir, 'page.js');
   let browser;
-  t.after(async () => {
-    await browser?.close();
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
-  });
+  owner.add(() => browser?.close());
+  owner.remove(() => removeFixtureDirectory(dir));
+  const origin = await listenOwnedServer(
+    t,
+    http.createServer((_, response) => response.writeHead(404).end()),
+  );
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-  browser = await chromium.launch({
+  browser = await launchRenderingBrowser({
     channel: channel === 'chromium' ? undefined : channel,
     headless: true,
     args: [
@@ -30,7 +35,6 @@ test('real browser: HTML recovery, dynamic imports and existing source-map direc
   });
   const context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
-  const origin = 'http://127.0.0.1:9';
   const seen = [];
   let html = '';
   let rewriter;
@@ -61,6 +65,22 @@ test('real browser: HTML recovery, dynamic imports and existing source-map direc
       sourceMaps,
     });
   };
+  return {
+    page,
+    context,
+    file,
+    seen,
+    configure,
+    rewrite: () => rewriter.rewrite(html, '/chapter/'),
+    navigate: (document) => {
+      html = document;
+      return page.goto(`${origin}/chapter/`);
+    },
+  };
+}
+
+test('rewritten HTML recovery, source-map scripts and dynamic imports retain their browser semantics', async (t) => {
+  const { page, seen, configure, rewrite, navigate } = await rewriteFixture(t);
   configure('window.probe = 1;', 'window.probe = 2;');
   for (const [prefix, attrs, closing] of [
     ['<!-->', '', '</script ignored>'],
@@ -69,48 +89,46 @@ test('real browser: HTML recovery, dynamic imports and existing source-map direc
     ['<?probe <script>window.probe = 1;</script>', 'type="application/x-javascript"', '</script>'],
     ['<script.foo>window.probe = 1;</script.foo>', 'type="text/javascript1.5"', '</script>'],
   ]) {
-    html = `${prefix}<script ${attrs}>window.probe = 1;${closing}`;
-    await page.goto(`${origin}/chapter/`);
+    await navigate(`${prefix}<script ${attrs}>window.probe = 1;${closing}`);
     assert.equal(await page.evaluate(() => window.probe), 2);
   }
   const escaped = "const a = '<!--<script>';\nconst b = '</script>';\nwindow.probe = 1;";
   configure(escaped, escaped.replace('probe = 1', 'probe = 2'));
-  html = `<script>${escaped}</script>`;
-  await page.goto(`${origin}/chapter/`);
+  await navigate(`<script>${escaped}</script>`);
   assert.equal(await page.evaluate(() => window.probe), 2);
 
   configure('window.probe = 1;', 'window.probe = 4;', true);
-  html =
-    '<script integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" async defer>window.probe = 1;</script><script>window.afterProbe = window.probe;</script>';
-  await page.goto(`${origin}/chapter/`);
+  await navigate(
+    '<script integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" async defer>window.probe = 1;</script><script>window.afterProbe = window.probe;</script>',
+  );
   assert.equal(await page.evaluate(() => window.probe), 4);
   assert.equal(await page.evaluate(() => window.afterProbe), 4);
 
   configure('window.probe = 1;', 'const label = "</script>"; window.probe = 5;');
-  html = '<script>window.probe = 1;</script><p id="after">After</p>';
-  await page.goto(`${origin}/chapter/`);
+  await navigate('<script>window.probe = 1;</script><p id="after">After</p>');
   assert.equal(await page.evaluate(() => window.probe), 1);
   assert.equal(await page.locator('#after').textContent(), 'After');
-  assert.match(rewriter.rewrite(html, '/chapter/').notes[0].reason, /HTML closing boundary/);
+  assert.match(rewrite().notes[0].reason, /HTML closing boundary/);
 
   configure('window.ready = import("./module.js");', 'window.ready = import("./changed.js");', true);
-  html = '<script>window.ready = import("./module.js");</script>';
-  await page.goto(`${origin}/chapter/`);
+  await navigate('<script>window.ready = import("./module.js");</script>');
   assert.equal(await page.evaluate(async () => (await window.ready).default), 42);
   assert.ok(seen.includes('/chapter/changed.js'));
   assert.equal(seen.filter((url) => url.startsWith('/__paqvilo/inline/')).length, 1);
-
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('Debugger.enable');
-  const maps = [];
-  cdp.on('Debugger.scriptParsed', (event) => {
-    if (event.sourceMapURL) maps.push(event.sourceMapURL);
-  });
-  rewriter = null;
-  const mapped = withFileSourceMap(Buffer.from('window.probe = 3; //# sourceMappingURL=original.map\n'), file);
-  html = `<script>${mapped}</script>`;
-  await page.goto(`${origin}/chapter/`);
-  assert.ok(maps.includes('original.map'));
-  assert.ok(!maps.some((map) => map.startsWith('data:')));
-  await cdp.detach();
 });
+
+if (renderingBrowserName === 'chromium')
+  test('Chromium debugger retains the existing source-map directive', async (t) => {
+    const { page, context, file, navigate } = await rewriteFixture(t);
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Debugger.enable');
+    const maps = [];
+    cdp.on('Debugger.scriptParsed', (event) => {
+      if (event.sourceMapURL) maps.push(event.sourceMapURL);
+    });
+    const mapped = withFileSourceMap(Buffer.from('window.probe = 3; //# sourceMappingURL=original.map\n'), file);
+    await navigate(`<script>${mapped}</script>`);
+    assert.ok(maps.includes('original.map'));
+    assert.ok(!maps.some((map) => map.startsWith('data:')));
+    await cdp.detach();
+  });

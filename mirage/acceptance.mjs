@@ -23,6 +23,14 @@ import {
   frameState,
 } from './lib/navigation-settle.mjs';
 import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
+import { compareBrowserPolicyDiagnostics, observeBrowserPolicyDiagnostics } from './lib/browser-policy-diagnostics.mjs';
+import {
+  localQuickViewUrl,
+  observeQuickViewCompatibility,
+  observedQuickViewDocument,
+  quickViewRefreshCaller,
+  reconcileQuickViewReplacement,
+} from './lib/quick-view-replacements.mjs';
 import { observeReadAborts, oneProofPerRecord, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
 import { answerRoute } from './lib/closed-route.mjs';
 import { openBrowserWriteNet, connectCdpTransport } from './lib/browser-write-net.mjs';
@@ -262,6 +270,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
     outputDir,
     flows,
     nativeNetworkBaseline,
+    nativeBrowserDiagnosticBaseline,
     channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
     timeout = 15000,
     navigationCommitReserveMs,
@@ -423,6 +432,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         responseObservations = [];
       const requestRecords = new Map(),
         frameDocuments = new WeakMap(),
+        cdpFrameIds = new WeakMap(),
+        quickViewFailures = new WeakMap(),
         navigationHolds = new Set(),
         navigationBudgets = new Map();
       let settlementDeadline = Infinity,
@@ -465,10 +476,28 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
         frameEvents = [];
+      const quickViewCompatibility = isLive ? null : observeQuickViewCompatibility(cdp, origin);
+      const recordQuickViewFailures = (frame) => {
+        const failures = quickViewFailures.get(frame);
+        if (!failures?.length) return;
+        const unmatched = failures.filter(({ record, error }) => {
+          const row = observedQuickViewDocument(record, cdpRecords.values());
+          if (!row) return true;
+          row.playwrightFailure = error;
+          return false;
+        });
+        quickViewFailures.set(frame, unmatched);
+      };
+      const policyObserver =
+        !isLive && nativeBrowserDiagnosticBaseline ? await observeBrowserPolicyDiagnostics(page, { origin }) : null;
       await cdp.send('Network.enable');
       await cdp.send('Page.enable');
       await observeDocumentCommits(page, cdp, {
         document: (frame, token) => frameDocuments.set(frame, token),
+        ready: (frame, _token, frameId) => {
+          cdpFrameIds.set(frame, frameId);
+          recordQuickViewFailures(frame);
+        },
         commit: (frame, token) =>
           cancelRequests(
             [...requestRecords.keys()].filter((request) => {
@@ -575,7 +604,15 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
                 }),
           }),
         );
+      if (!isLive)
+        cdp.on('Page.frameRequestedNavigation', ({ frameId, reason, url }) => {
+          const event = { event: 'frameRequestedNavigation', frameId, reason, observedTicks: performance.now() };
+          const quickView = localQuickViewUrl(url, origin);
+          Object.defineProperty(event, 'path', { value: quickView ? quickView.pathname + quickView.search : null });
+          frameEvents.push(event);
+        });
       cdp.on('Network.requestWillBeSent', (event) => {
+        if (event.type === 'Script') quickViewCompatibility?.consider(event.request.url);
         let url;
         try {
           url = new URL(event.request.url);
@@ -586,13 +623,14 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         const redirectTiming = event.redirectResponse?.timing;
         if (budget && redirectTiming?.sendStart >= 0 && redirectTiming.receiveHeadersEnd >= redirectTiming.sendStart)
           budget.responseMs += redirectTiming.receiveHeadersEnd - redirectTiming.sendStart;
-        cdpRecords.set(event.requestId, {
+        const record = {
           requestId: event.requestId,
           loaderId: event.loaderId,
           frameId: event.frameId,
           type: event.type,
           path: url.origin === local.origin ? url.pathname + url.search : url.href,
           method: event.request.method,
+          ...(event.redirectResponse ? { redirected: true } : {}),
           startedAt: new Date(event.wallTime * 1000).toISOString(),
           startedTimestamp: event.timestamp,
           // The runner's receipt on its monotonic clock, comparable with its Playwright request events (lib/request-evidence.mjs).
@@ -600,7 +638,14 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           parentTrace: Object.entries(event.request.headers ?? {}).find(
             ([name]) => name.toLowerCase() === 'x-sim-parent-trace',
           )?.[1],
+        };
+        Object.defineProperties(record, {
+          startedWallTime: { value: event.wallTime },
+          quickViewScriptId: {
+            value: !isLive && event.type === 'Document' ? quickViewRefreshCaller(event.initiator, origin) : null,
+          },
         });
+        cdpRecords.set(event.requestId, record);
       });
       cdp.on('Network.responseReceived', (event) => {
         const record = cdpRecords.get(event.requestId);
@@ -616,6 +661,9 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         if (record) {
           record.status = event.response.status;
           record.mimeType = event.response.mimeType;
+          if (!isLive && event.type === 'Document' && localQuickViewUrl(record.path, origin))
+            record.responseStartTime =
+              ((timing ? timing.requestTime - record.startedTimestamp : 0) + record.startedWallTime) * 1000;
           record.serverTraceId = Object.entries(event.response.headers ?? {}).find(
             ([name]) => name.toLowerCase() === 'x-sim-trace-id',
           )?.[1];
@@ -634,6 +682,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         const record = cdpRecords.get(event.requestId);
         releaseNavigationBudget(event.requestId);
         if (record) {
+          Object.defineProperty(record, 'failedObservedTicks', { value: performance.now() });
           record.failure = event.errorText;
           record.failedTimestamp = event.timestamp;
           record.failedAt = Date.parse(record.startedAt) + (event.timestamp - record.startedTimestamp) * 1000;
@@ -647,6 +696,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
             url: message.location().url ? failureUrl(message.location().url, { isLive }) : null,
+            line: message.location().lineNumber,
           });
         }
       });
@@ -661,6 +711,15 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       page.on('requestfailed', (request) => {
         const record = requestRecords.get(request),
           requestKey = String(record?.order ?? '');
+        if (!isLive && record?.type === 'document' && localQuickViewUrl(record.path, origin)) {
+          const frame = requestFrame(request);
+          if (frame) {
+            const failures = quickViewFailures.get(frame) ?? [];
+            failures.push({ record, error: safeMessage(request.failure()?.errorText) });
+            quickViewFailures.set(frame, failures);
+            recordQuickViewFailures(frame);
+          }
+        }
         if (!isLive) {
           let target;
           try {
@@ -701,7 +760,14 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       });
       page.on('response', (response) => {
         const record = pending.get(response.request());
-        if (record) record.status = response.status();
+        if (record) {
+          record.status = response.status();
+          if (!isLive && record.type === 'document' && localQuickViewUrl(record.path, origin))
+            Object.defineProperties(record, {
+              responseStartTime: { get: () => response.request().timing().startTime },
+              serverTraceId: { value: response.headers()['x-sim-trace-id'] },
+            });
+        }
         // A 204/205 navigation keeps the current document. Chromium ends it with requestfailed (ERR_ABORTED) or
         // requestfinished depending on timing, so it is classified here, once, from its status.
         if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
@@ -748,14 +814,17 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           started: Date.now(),
         };
         Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
+        Object.defineProperty(record, 'cdpFrameId', { get: () => cdpFrameIds.get(frame) });
         // The runner's monotonic clock, comparable with its receipt of the CDP send (lib/intentional-abort.mjs).
         Object.defineProperty(record, 'startedTicks', { value: performance.now() });
         pending.set(request, record);
         requestRecords.set(request, record);
         const url = new URL(request.url());
+        const requestPath = url.origin === local.origin ? url.pathname + url.search : url.href;
+        Object.defineProperty(record, 'path', { value: requestPath });
         proofInputs.set(request, {
           method: record.method,
-          path: url.origin === local.origin ? url.pathname + url.search : url.href,
+          path: requestPath,
           startedAt: new Date(record.started).toISOString(),
           startedTicks: record.startedTicks,
           // The host's monotonic clock, shared with the loopback server's audit entries (lib/audit-log.mjs).
@@ -845,7 +914,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
           timeout: actionTimeout,
-          ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
+          ignore: (row) => row.playwrightFailure || simulatorBackgroundRequest(row.url ?? row.path, origin),
           roundTrip: pageTurn,
         });
         observation.loadWaits ??= [];
@@ -1089,6 +1158,8 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           } else if (step.action === 'screenshot') await capture(step.name ?? String(stepIndex + 1));
           else throw new Error(`Unsupported acceptance action ${step.action}`);
           actionDeadline = Infinity;
+          // Resolve policy queries for the current document before the next action can replace it.
+          await policyObserver?.report();
           entry.passed = true;
         }
         actionTimeout = timeout;
@@ -1102,24 +1173,46 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           (await page.locator('input[type=password]:visible').count())
         )
           throw new Error('Sign-in or origin redirect was observed.');
-        let unexpectedRequests = observation.failedRequests.filter(
-            (failure) =>
+        const isLocalQuickViewFailure = (failure) => {
+          const request = observation.resources[Number(failure.requestKey) - 1];
+          return !isLive && request?.type === 'document' && localQuickViewUrl(request.path, origin);
+        };
+        let unexpectedRequests = observation.failedRequests.filter((failure) => {
+            if (isLocalQuickViewFailure(failure)) return true;
+            return (
               !simulatorBackgroundRequest(failure.url, origin) &&
               !(
                 failure.errorText === 'net::ERR_ABORTED' &&
                 (observation.navigationCancelledRequests ?? []).some(
                   (cancelled) => cancelled.requestKey === failure.requestKey,
                 )
-              ),
-          ),
+              )
+            );
+          }),
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];
         if (!isLive) {
+          const rows = [...cdpRecords.values()];
+          await quickViewCompatibility.verify(rows);
+          const quickViews = unexpectedRequests.filter(isLocalQuickViewFailure).map((failure) =>
+            reconcileQuickViewReplacement(failure, {
+              request: observation.resources[Number(failure.requestKey) - 1],
+              rows,
+              events: frameEvents,
+              origin,
+            }),
+          );
+          const quickViewProofs = oneProofPerRecord(quickViews.filter(Boolean));
+          if (quickViewProofs.length) {
+            observation.quickViewReplacements = quickViewProofs;
+            const provenKeys = new Set(quickViewProofs.map((proof) => proof.requestKey));
+            unexpectedRequests = unexpectedRequests.filter((failure) => !provenKeys.has(failure.requestKey));
+          }
           const proofs = unexpectedRequests.map((failure) =>
             reconcileIntentionalReadAbort(failure, {
               resources: observation.resources,
-              cdpRecords: [...cdpRecords.values()],
+              cdpRecords: rows,
               sourceAborts,
               origin: local.origin,
             }),
@@ -1144,7 +1237,24 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         }
         observation.duplicateNetworkConsole = [];
         observation.unexpectedConsoleErrors = [];
-        for (const message of observation.consoleMessages ?? []) {
+        const consoleMessages = observation.consoleMessages ?? [];
+        let expectedPolicyConsole = new Set();
+        if (policyObserver) {
+          const localPolicy = await policyObserver.report();
+          const policyComparison = compareBrowserPolicyDiagnostics(
+            consoleMessages,
+            localPolicy,
+            nativeBrowserDiagnosticBaseline,
+          );
+          expectedPolicyConsole = policyComparison.expected;
+          observation.nativeBrowserDiagnosticComparison = {
+            valid: policyComparison.valid,
+            local: localPolicy,
+            classified: policyComparison.proof,
+          };
+        }
+        for (const message of consoleMessages) {
+          if (expectedPolicyConsole.has(message)) continue;
           const duplicate = correlateNetworkConsole(message, observation.failedResponses);
           if (duplicate) {
             observation.duplicateNetworkConsole.push(duplicate);
@@ -1213,6 +1323,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
           } catch (error) {
             observation.auditError = safeMessage(error.message);
           }
+        await policyObserver?.dispose();
         await endFlowPage(page, stopGuardingPages, flowWriteNet);
       }
     }

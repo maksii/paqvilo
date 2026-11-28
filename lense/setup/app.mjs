@@ -273,11 +273,11 @@ function keepPlace(paint) {
 // pressed. Repaints that cannot wait for a later poll run through whenReleased. Every way a press can end without its
 // release reaching the page (a native dialog, another window, a hidden tab) clears all presses, so a load or save
 // waiting for the release always goes on.
-const presses = new Set(),
+const presses = new Map(),
   afterPress = [];
 let pressing = false;
 function press(kind, down) {
-  if (down) presses.add(kind);
+  if (down) presses.set(kind, Symbol(kind));
   else presses.delete(kind);
   pressing = presses.size > 0;
   if (!pressing) for (const run of afterPress.splice(0)) run();
@@ -285,8 +285,13 @@ function press(kind, down) {
 const whenReleased = (run) => (pressing ? afterPress.push(run) : run());
 // For an async step about to repaint: resolves at once, or when the press that is under way ends.
 const released = () => new Promise((resolve) => whenReleased(resolve));
-// The release waits one task, so the click of that press runs first.
-const releaseAfterClick = (kind) => setTimeout(() => press(kind, false));
+// Let this press's click run first. A newer press can start before this release runs.
+function releaseAfterClick(kind) {
+  const releasedPress = presses.get(kind);
+  setTimeout(() => {
+    if (presses.get(kind) === releasedPress) press(kind, false);
+  });
+}
 document.addEventListener('pointerdown', () => press('pointer', true), true);
 for (const type of ['pointerup', 'pointercancel'])
   document.addEventListener(type, () => releaseAfterClick('pointer'), true);

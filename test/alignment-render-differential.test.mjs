@@ -113,6 +113,7 @@ const DYNAMIC_COUNTS = {
   '/dyn/beta/ signed in': '167/137/0/0/0',
   '/dyn/gamma/ anonymous': '719/1/0/0/0',
   '/dyn/gamma/ signed in': '718/1/0/0/0',
-  '/dyn/empty/ anonymous': '644/1/0/0/0',
-  '/dyn/empty/ signed in': '643/1/0/0/0',
+  // The inline Bootstrap 3 wizard renders its stacked contents directly in the wrapper.
+  '/dyn/empty/ anonymous': '643/1/0/0/0',
+  '/dyn/empty/ signed in': '642/1/0/0/0',
 };

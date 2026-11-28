@@ -1,8 +1,9 @@
+// @test-kind contract: the panel keeps its controls inside a narrow viewport and restores the user's preferred position after resizing
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { chromium } from 'playwright-core';
+import { launchRenderingBrowser } from './helpers/lense-rendering-browser.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
@@ -10,7 +11,7 @@ import { modelDrivenPanelData } from '../lense/model-driven-panel.mjs';
 
 let browser;
 before(async () => {
-  browser = await chromium.launch(browserLaunchOptions());
+  browser = await launchRenderingBrowser(browserLaunchOptions());
 });
 after(() => browser?.close());
 

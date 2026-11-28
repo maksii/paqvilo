@@ -2,7 +2,7 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { chromium } from 'playwright-core';
+import { launchRenderingBrowser } from './helpers/lense-rendering-browser.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { once } from 'node:events';
@@ -46,7 +46,7 @@ before(async () => {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch(browserLaunchOptions());
+  browser = await launchRenderingBrowser(browserLaunchOptions());
 });
 after(async () => {
   await browser?.close();

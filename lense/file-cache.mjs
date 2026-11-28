@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -8,12 +9,13 @@ const RACY_WINDOW_MS = 2000;
 /** True while `stat` (number or bigint fields) is too recent to identify the file's content. */
 export const racyStat = (stat, now = Date.now()) =>
   Number(stat.mtimeMs > stat.ctimeMs ? stat.mtimeMs : stat.ctimeMs) > now - RACY_WINDOW_MS; // NOSONAR: Math.max would reject BigInt values
+const racyStampNamespace = randomUUID();
 let racyStamps = 0;
 /**
  * The stamp to keep beside content read after `stat`: `value`, or while the stat is racy a value
  * no later stamp equals, so the entry is read again once instead of hiding a same-tick rewrite.
  */
-export const recordedStamp = (stat, value) => (racyStat(stat) ? `racy:${++racyStamps}` : value);
+export const recordedStamp = (stat, value) => (racyStat(stat) ? `racy:${racyStampNamespace}:${++racyStamps}` : value);
 
 const stamp = (stat) =>
   [stat.dev, stat.ino, stat.size, stat.mtimeNs ?? stat.mtimeMs, stat.ctimeNs ?? stat.ctimeMs].join(':');

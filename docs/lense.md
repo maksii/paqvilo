@@ -71,6 +71,10 @@ reload alone does not mean an edit was applied.
 
 ### Which browser profile
 
+Lense's live overlay uses Chromium DevTools Protocol (CDP) in Edge, Chrome or Chromium. The
+[browser compatibility audit](design/lense-safari.md) covers Firefox and Safari rendering, native transport probes,
+and the requirements for live overlays in both browsers.
+
 `dev`, `mirage dev`, `verify --signed-in` and `model-driven dev` choose the browser the same way (catalogue keys in
 [configuration](configuration.md); `verify` does not attach). `lense list --site <site> --env <env>` prints the choice
 for that selection as `browser profile:` and `user-data root`, with `browser profile cannot be used:` when the selection

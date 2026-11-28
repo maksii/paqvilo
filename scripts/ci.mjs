@@ -1661,7 +1661,7 @@ async function runVerification({ values, suite, full, unit, browser, scope, suit
   const preparation = prepareVerification({ values, suites, scope, suite, browser, unit, shard: values.shard });
   if (preparation.shouldPrepare) await preparation.result;
   const baselineIdentity = await verificationIdentity(Boolean(full));
-  if (!suite && !baselineIdentity)
+  if (!suite && baselineIdentity?.tree !== startingTree)
     throw new Error('Source or toolchain changed during preparation; review the staged tree and rerun validation.');
   const laneRun = runVerificationLanes({
     suite,

@@ -95,16 +95,18 @@ test('startup ownership keeps caller initial records and simulator settings deta
   assert.equal(initial.tables.item[0].nested.value, 2);
 });
 
-async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
+async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false, profileWrite = false } = {}) {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
   const files = {
     'website.yml': 'adx_name: Integration\nadx_websiteid: site',
-    'sitesetting.yml': ['contact', 'account']
-      .map(
-        (entity) =>
-          `- adx_name: Webapi/${entity}/enabled\n  adx_value: true\n- adx_name: Webapi/${entity}/fields\n  adx_value: '*'`,
-      )
-      .join('\n'),
+    'sitesetting.yml':
+      ['contact', 'account']
+        .map(
+          (entity) =>
+            `- adx_name: Webapi/${entity}/enabled\n  adx_value: true\n- adx_name: Webapi/${entity}/fields\n  adx_value: '*'`,
+        )
+        .join('\n') +
+      '\n- adx_sitesettingid: 10000000-0000-4000-8000-000000000001\n  adx_name: Inventory/Heading\n  adx_value: Original',
     'web-pages/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
     'page-templates/Main.pagetemplate.yml':
       'adx_pagetemplateid: main\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: false',
@@ -127,6 +129,9 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
         operations: ['read'],
         scope: 'global',
       },
+      ...(profileWrite
+        ? [{ id: 'profile-write', entity: 'contact', roles: ['Reader'], operations: ['update'], scope: 'self' }]
+        : []),
     ],
     plugins: [],
     presets: {},
@@ -136,7 +141,7 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
       pageMode: 'local',
       // Requests use the configured persona; session mechanics aren't under test here.
       identityScope: 'configured',
-      identity: { id: 'person', roles: ['Reader'] },
+      identity: { id: profileWrite ? 'one' : 'person', roles: ['Reader'] },
       live: {},
       endpoints: [],
     },
@@ -438,6 +443,66 @@ test(
     assert.match(await current.text(), /Replacement source/);
   },
 );
+test('HTTP: an admitted Liquid read survives a profile write and detects a real management source publication', async (t) => {
+  const { app, call, dir } = await setup(t, { profileWrite: true });
+  await fs.writeFile(
+    path.join(dir, 'web-templates/Main.webtemplate.source.html'),
+    `<!doctype html><html><body><h1>{{settings['Inventory/Heading']}}</h1>{% fetchxml rows %}<fetch><entity name="contact"><attribute name="fullname"/></entity></fetch>{% endfetchxml %}<output>{{rows.results.entities.size}}</output></body></html>`,
+  );
+  await app.reload();
+  const page = () => fetch(app.url);
+  const baseline = await page();
+  assert.equal(baseline.status, 200);
+  assert.match(await baseline.text(), /<h1>Original<\/h1><output>1<\/output>/);
+  const read = app.store.readOperation.bind(app.store);
+  async function overlap(change) {
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    t.signal.addEventListener('abort', release.resolve, { once: true });
+    let gate = true;
+    const mock = t.mock.method(app.store, 'readOperation', async (fn) => {
+      if (gate) {
+        gate = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return read(fn);
+    });
+    const pending = page();
+    try {
+      await Promise.race([entered.promise, pending.then(() => assert.fail('Liquid did not reach its read.'))]);
+      await change();
+    } finally {
+      release.resolve();
+      mock.mock.restore();
+      t.signal.removeEventListener('abort', release.resolve);
+    }
+    return pending;
+  }
+
+  const ordinary = await overlap(async () => {
+    const response = await call('/_api/contacts(one)', 'PATCH', { fullname: 'Updated profile' });
+    assert.equal(response.status, 204, await response.text());
+  });
+  assert.equal(ordinary.status, 200);
+  assert.match(await ordinary.text(), /<h1>Original<\/h1><output>1<\/output>/);
+  assert.equal(app.store.state.tables.contact[0].fullname, 'Updated profile');
+
+  const stale = await overlap(async () => {
+    await app.store.update(
+      'adx_sitesetting',
+      '10000000-0000-4000-8000-000000000001',
+      { adx_value: 'Published' },
+      { admin: true },
+    );
+    const current = await page();
+    assert.equal(current.status, 200);
+    assert.match(await current.text(), /<h1>Published<\/h1><output>1<\/output>/);
+  });
+  assert.equal(stale.status, 409);
+  assert.match(await stale.text(), /Portal sources changed while resolving this page/);
+});
+
 test('HTTP: source application-relative links redirect locally, retaining parameters and access checks', async (t) => {
   const { app } = await setup(t);
   for (const [route, target] of [

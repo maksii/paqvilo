@@ -28,6 +28,8 @@ arguments after `--`.
 
 Mirage unit lanes fail when Python or OpenSSL is missing. On Linux, CI installs matching Chromium with
 `node node_modules/playwright-core/cli.js install --with-deps chromium`.
+For the macOS WebKit and Firefox rendering lanes and native protocol probes, see
+[Lense browser compatibility](docs/design/lense-safari.md).
 
 ## Commits and pull requests
 

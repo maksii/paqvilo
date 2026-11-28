@@ -162,10 +162,10 @@ export async function fileStamp(file) {
 }
 
 /**
- * Parsed-file cache for solution sources. An entry is reused only when the file's
- * size, mtime, ctime and inode are unchanged and the parser identifier matches,
- * so a changed file is always read and parsed again. Without a cache file the
- * same API reads every file (memoized for the lifetime of the object only).
+ * Parsed-file cache for solution sources. A matching file identity enables reuse
+ * without a read. Otherwise the bytes are hashed and the parse is reused only if
+ * the hash and parser identifier match. Without a cache file, reuse is limited to
+ * the lifetime of the object.
  */
 export class SolutionFileCache {
   constructor(file = null) {
@@ -210,8 +210,8 @@ export class SolutionFileCache {
     return cache;
   }
   /**
-   * Parse `file` with `parser(text, file)` unless an identical stamp is cached, in this
-   * cache or, while a share is open (shareSolutionParses), in another cache of this process:
+   * Parse `file` with `parser(text, file)` unless this cache has a matching stamp
+   * or content hash, or another cache has a matching stamp during shareSolutionParses:
    * the portals of `serve --project` parse a common file once. A shared result is handed
    * out as a copy, so no consumer sees another's changes. Returns { value, hash, cached }.
    * The SHA-256 covers the file bytes.
@@ -241,14 +241,20 @@ export class SolutionFileCache {
       this.dirty = true;
       return { value, hash: shared.hash, cached: true };
     }
-    this.stats.misses++;
     const bytes = await fs.readFile(file);
     const hash = createHash('sha256').update(bytes).digest('hex');
+    const matchesContent = entry?.hash === hash;
+    if (matchesContent && Object.hasOwn(entry.results, parserId)) {
+      const current = { ...entry, stamp };
+      this.entries.set(file, current);
+      shareEntry(file, current, parserId);
+      this.dirty = true;
+      this.stats.hits++;
+      return { value: current.results[parserId], hash, cached: true };
+    }
+    this.stats.misses++;
     const value = await parser(binary ? bytes : bytes.toString('utf8'), file);
-    const next =
-      entry?.stamp === stamp && entry.hash === hash
-        ? { ...entry, results: { ...entry.results, [parserId]: value } }
-        : { stamp, hash, results: { [parserId]: value } };
+    const next = { stamp, hash, results: { ...(matchesContent ? entry.results : {}), [parserId]: value } };
     this.entries.set(file, next);
     coalesceSourceText(next.results);
     shareEntry(file, next, parserId);
@@ -314,12 +320,9 @@ export class SolutionFileCache {
     const entry = this.entries.get(file);
     if (entry?.stamp === stamp && Object.hasOwn(entry.results, resultId)) return entry.results[resultId];
     const value = compute();
-    this.entries.set(
-      file,
-      entry?.stamp === stamp
-        ? { ...entry, results: { ...entry.results, [resultId]: value } }
-        : { stamp, hash: null, results: { [resultId]: value } },
-    );
+    // This listing cannot verify an earlier parse. Preserve it until a read checks its hash.
+    if (stamp.startsWith('racy:') || (entry && entry.stamp !== stamp)) return value;
+    this.entries.set(file, { stamp, hash: entry?.hash ?? null, results: { ...entry?.results, [resultId]: value } });
     this.dirty = true;
     return value;
   }

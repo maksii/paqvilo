@@ -11,7 +11,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { launchRenderingBrowser } from './helpers/lense-rendering-browser.mjs';
 import YAML from 'yaml';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
@@ -55,11 +55,11 @@ async function started(run) {
 }
 let browser;
 before(async () => {
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  browser = await launchRenderingBrowser(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
 
-async function setupFixture(t, prefix) {
+async function setupFixture(t, prefix, hash = '') {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }));
   await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'exports', 'site'), {
@@ -87,7 +87,7 @@ async function setupFixture(t, prefix) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(server.url);
+  await page.goto(server.url + hash);
   return { directory, config, page, errors };
 }
 
@@ -123,6 +123,76 @@ test('quick setup creates a project from a found export, starts, opens and stops
   await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor();
   assert.ok(!(await running()).includes(new URL(website).origin), 'the stopped preview no longer runs');
   assert.deepEqual(errors, []);
+});
+
+// @test-kind contract: a Setup repaint waits for the current stage link's click even when a previous release is pending
+test('a delayed Refresh release leaves the next pressed stage link in place', async (t) => {
+  const { page } = await setupFixture(t, 'paqvilo-refresh-press-', '#overview');
+  const link = page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name: /Sample data/ });
+  await link.waitFor();
+
+  // Hold the previous click's deferred release until the next pointer press is in progress.
+  const held = await page.evaluateHandle(() => {
+    const nativeTimeout = globalThis.setTimeout;
+    const releases = [];
+    globalThis.addEventListener(
+      'pointerup',
+      () => {
+        globalThis.setTimeout = (fn, delay, ...args) => {
+          if (delay !== undefined) return nativeTimeout(fn, delay, ...args);
+          releases.push(() => fn(...args));
+          return 0;
+        };
+      },
+      { capture: true, once: true },
+    );
+    globalThis.addEventListener('pointerup', () => (globalThis.setTimeout = nativeTimeout), { once: true });
+    return releases;
+  });
+  const status = Promise.withResolvers();
+  await page.route(
+    '**/_setup/api/status',
+    async (route) => {
+      await status.promise;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  try {
+    await page.getByRole('button', { name: 'Refresh status' }).click();
+    const box = await link.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    const gate = await page.evaluateHandle(() => {
+      const reads = new Set(['/_setup/api/quick', '/_setup/api/preview']);
+      const parse = Response.prototype.json;
+      const channel = new MessageChannel();
+      const handled = new Promise((resolve) => {
+        channel.port1.onmessage = () => {
+          channel.port1.close();
+          channel.port2.close();
+          resolve();
+        };
+      });
+      Response.prototype.json = async function (...args) {
+        const data = await Reflect.apply(parse, this, args);
+        if (reads.delete(new URL(this.url).pathname) && !reads.size) {
+          Response.prototype.json = parse;
+          // Setup's continuations consume both bodies before this browser task runs.
+          channel.port2.postMessage(null);
+        }
+        return data;
+      };
+      return { handled };
+    });
+    await held.evaluate(([release]) => release());
+    status.resolve();
+    await gate.evaluate(({ handled }) => handled);
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => location.hash), '#packs', 'the pressed Sample data link opened its stage');
+  } finally {
+    status.resolve();
+  }
 });
 
 test('All settings creates a project from what to run and the found exports, and starts it from Start & check', async (t) => {

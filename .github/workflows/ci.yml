@@ -319,6 +319,45 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 14
+  lense-rendering:
+    needs: changes
+    if: needs.changes.outputs.lense == 'true'
+    name: Lense rendering (macOS, ${{ matrix.engine }})
+    runs-on: macos-26
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [webkit, firefox]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the pinned npm version
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm install --global npm@12.2.2 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "12.2.2"
+      - name: Restore npm cache with the pinned npm version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          cache: npm
+          cache-dependency-path: paqvilo-lock.json
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install the selected Playwright browser
+        env:
+          LENSE_ENGINE: ${{ matrix.engine }}
+        run: node node_modules/playwright-core/cli.js install "$LENSE_ENGINE"
+      - name: Test Lense rendering
+        env:
+          LENSE_ENGINE: ${{ matrix.engine }}
+        run: npm run "test:lense:$LENSE_ENGINE"
   windows:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
@@ -520,6 +559,7 @@ jobs:
       - checks
       - test
       - browser
+      - lense-rendering
       - windows
       - sdk-linux
       - package
@@ -537,7 +577,9 @@ jobs:
           CHECKS: ${{ needs.checks.result }}
           TESTS: ${{ needs.test.result }}
           BROWSER: ${{ needs.browser.result }}
+          LENSE_REQUIRED: ${{ needs.changes.outputs.lense }}
+          RENDERING: ${{ needs.lense-rendering.result }}
           WINDOWS: ${{ needs.windows.result }}
           SDK: ${{ needs.sdk-linux.result }}
           SMOKE: ${{ needs.package.result }}
-        run: node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.QUALITY==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS].some(r=>!want(e.RUNTIME==='true',r))||!want(e.SDK_REQUIRED==='true',e.SDK)||!want(e.SMOKE_REQUIRED==='true',e.SMOKE))process.exit(1)"
+        run: node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.QUALITY==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS].some(r=>!want(e.RUNTIME==='true',r))||!want(e.LENSE_REQUIRED==='true',e.RENDERING)||!want(e.SDK_REQUIRED==='true',e.SDK)||!want(e.SMOKE_REQUIRED==='true',e.SMOKE))process.exit(1)"

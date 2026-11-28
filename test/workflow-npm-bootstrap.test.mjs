@@ -11,6 +11,7 @@ const cachedJobs = {
   'ci.checks': pairedLocks,
   'ci.test': pairedLocks,
   'ci.browser': pairedLocks,
+  'ci.lense-rendering': ['paqvilo-lock.json'],
   'ci.windows': pairedLocks,
   'ci.sdk-linux': ['package-lock.json'],
   'ci.package': pairedLocks,
@@ -86,8 +87,8 @@ test('every hosted Node bootstrap installs strict npm before restoring all exist
       if (result.caches) visited.push(label);
     }
   }
-  assert.equal(initial, 12, 'every Node-installing job is covered, including the built-in-only changes job');
-  assert.equal(caches, 11, 'seven explicit and four formerly automatic npm caches remain active');
+  assert.equal(initial, 13, 'every Node-installing job is covered, including the built-in-only changes job');
+  assert.equal(caches, 12, 'eight explicit and four formerly automatic npm caches remain active');
   assert.deepEqual(visited.sort(), Object.keys(cachedJobs).sort());
 });
 
