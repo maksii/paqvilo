@@ -2,7 +2,7 @@
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright-core';
+import { launchRenderingBrowser } from './helpers/lense-rendering-browser.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { lenseUiKit } from '../lense/ui-kit.mjs';
@@ -13,7 +13,7 @@ const painted = (page) =>
 
 let browser;
 before(async () => {
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  browser = await launchRenderingBrowser(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
 
@@ -233,6 +233,43 @@ test('every X-ray control has a tooltip, and the Inspect tooltip follows the mod
   const reveal = xray.locator('.foot [data-action=reveal]');
   assert.equal(await reveal.evaluate((node) => node.className), 'btn sec');
   assert.ok((await reveal.innerHTML()).includes(/d="([^"]+)"/.exec(lenseUiKit().ICON.locate)[1]));
+});
+
+// @test-kind contract: the toolbar keeps its controls usable and its mode visible on narrow viewports
+test('the X-ray toolbar fits a narrow window when using the page', async (t) => {
+  const { page } = await fixture(t, { width: 320, height: 844 });
+  const xray = page.locator('#paqvilo-xray');
+  const toolbar = xray.locator('.bar');
+  await toolbar.locator('[data-action=mode]').click();
+  const status = toolbar.locator('.mode-state');
+  assert.equal(await status.isVisible(), true);
+  assert.match(await status.textContent(), /Using the page/);
+  const toolbarLayout = await toolbar.evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    const selector = node.querySelector('select');
+    const canvas = document.createElement('canvas').getContext('2d');
+    const style = getComputedStyle(selector);
+    canvas.font = style.fontSize + ' ' + style.fontFamily;
+    const labelWidth = canvas.measureText(selector.selectedOptions[0].textContent).width;
+    return {
+      visible: bounds.left >= 0 && bounds.right <= innerWidth,
+      outside: [...node.querySelectorAll('button,select,.mode-state')]
+        .filter((control) => {
+          const rect = control.getBoundingClientRect();
+          return (
+            rect.left < bounds.left || rect.right > bounds.right || rect.top < bounds.top || rect.bottom > bounds.bottom
+          );
+        })
+        .map((control) => control.dataset.action ?? control.localName),
+      selectorWidth: selector.getBoundingClientRect().width,
+      labelWidth,
+    };
+  });
+  assert.ok(toolbarLayout.visible, 'the toolbar fits the viewport');
+  assert.deepEqual(toolbarLayout.outside, []);
+  assert.ok(toolbarLayout.selectorWidth >= toolbarLayout.labelWidth + 24, 'the selector fits its label and arrow');
+  await toolbar.locator('[data-action=exit]').click();
+  assert.equal(await toolbar.isVisible(), false);
 });
 
 test('content that grows after placement (an opened disclosure) scrolls inside the card, never past the window', async (t) => {

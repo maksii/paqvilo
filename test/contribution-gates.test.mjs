@@ -184,7 +184,19 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.equal(ci.jobs.gate.name, 'CI gate');
   assert.equal(ci.jobs.gate.if, 'always()');
-  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'sdk-linux', 'package']);
+  assert.deepEqual(ci.jobs.gate.needs, [
+    'changes',
+    'checks',
+    'test',
+    'browser',
+    'lense-rendering',
+    'windows',
+    'sdk-linux',
+    'package',
+  ]);
+  const rendering = ci.jobs['lense-rendering'];
+  assert.equal(rendering.if, "needs.changes.outputs.lense == 'true'");
+  assert.deepEqual(rendering.strategy.matrix.engine, ['webkit', 'firefox']);
   const command = ci.jobs.gate.steps.find((step) => step.name === 'Require every job to succeed').run;
   assert.match(command, /^node -e ".*"$/);
   const script = command.slice('node -e "'.length, -1);
@@ -193,11 +205,13 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     QUALITY: 'true',
     PACKAGE: 'true',
     RUNTIME: 'true',
+    LENSE_REQUIRED: 'true',
     SMOKE_REQUIRED: 'true',
     SDK_REQUIRED: 'true',
     CHECKS: 'success',
     TESTS: 'success',
     BROWSER: 'success',
+    RENDERING: 'success',
     WINDOWS: 'success',
     SDK: 'success',
     SMOKE: 'success',
@@ -234,7 +248,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
   assert.equal(node(required), 0);
   assert.equal(node({ ...required, CHECKS: 'failure' }), 1);
   assert.equal(run(required), 0);
-  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SDK', 'SMOKE'])
+  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'RENDERING', 'WINDOWS', 'SDK', 'SMOKE'])
     for (const result of ['failure', 'cancelled', 'skipped'])
       assert.equal(run({ ...required, [lane]: result }), 1, `${lane} cannot qualify with ${result}`);
   assert.equal(
@@ -243,11 +257,13 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
       QUALITY: 'false',
       PACKAGE: 'false',
       RUNTIME: 'false',
+      LENSE_REQUIRED: 'false',
       SMOKE_REQUIRED: 'false',
       SDK_REQUIRED: 'false',
       CHECKS: 'skipped',
       TESTS: 'skipped',
       BROWSER: 'skipped',
+      RENDERING: 'skipped',
       WINDOWS: 'skipped',
       SDK: 'skipped',
       SMOKE: 'skipped',
@@ -255,6 +271,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     0,
     'only inapplicable lanes may be skipped',
   );
+  assert.equal(run({ ...required, LENSE_REQUIRED: 'false', RENDERING: 'skipped' }), 0);
 });
 
 test('commits use fast quality checks before scoped pre-push validation', () => {

@@ -464,6 +464,7 @@ export function validateReleaseFiles(files) {
     'docs/design/power-pages-permission-test-harness.md',
     'docs/design/dataverse-plugin-observation.md',
     'docs/design/dataverse-api.md',
+    'docs/design/lense-safari.md',
     'docs/design/tracing.md',
   ]);
   const demoSources =
