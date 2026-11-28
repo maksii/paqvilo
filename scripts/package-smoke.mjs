@@ -484,4 +484,8 @@ project lifecycle, project tests and workspace browser debugging. Works in .paqv
 and dependency evidence in .paqvilo/distribution/last; PAQVILO_KEEP_WORK=1 keeps the work directory. Installs use the
 npm cache only (prepare it with npm run cache:package). Takes no options; --help prints this help.`,
   });
-if (isEntry) await withWorkDirectory(directory, smokePackage, { keep: process.env.PAQVILO_KEEP_WORK === '1' });
+if (isEntry) {
+  const keep = process.env.PAQVILO_KEEP_WORK === '1';
+  delete process.env.PAQVILO_KEEP_WORK;
+  await withWorkDirectory(directory, smokePackage, { keep });
+}

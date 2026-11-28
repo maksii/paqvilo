@@ -353,6 +353,62 @@ unique strings of 1–160 characters; `statusOnly` and `unordered` must be boole
   Detached frames and committed document replacements release their pending work; fragment and History
   API changes and a 204/205 document response (listed under `noContentNavigations`) keep the document.
   A cancelled write records browser lifecycle, not whether the server saved it.
+- A local read-only quick-view document that reports `net::ERR_ABORTED` can be reconciled when the
+  installed compatibility script's bound startup refresh commits and completes a successful GET in
+  the same child frame for the same entity, record, form and control. If the original document has
+  already committed, its abort must coincide with the successor's commit after the refresh starts.
+  `quickViewReplacements` records both request and loader IDs and the script digest. `failedRequests`
+  and the browser network file retain the original observations.
+
+To opt in to a native browser policy baseline, import `observeBrowserPolicyDiagnostics` from
+`paqvilo/mirage/acceptance`. Attach it to a read-only reference Chromium or Edge page before opening
+the reference placement. Use a fresh tab in the intended signed-in browser context.
+
+```js
+const capturedAssets = [
+  {
+    referenceUrl: 'https://static.example.test/client.js',
+    localPath: '/mirrored/client.js',
+    sha256: capturedClientDigest,
+  },
+];
+const observer = await observeBrowserPolicyDiagnostics(referencePage, { origin: referenceOrigin, capturedAssets });
+try {
+  await referencePage.goto(new URL('/example-page', referenceOrigin).href);
+  const report = await observer.report();
+  await runAcceptance({
+    localUrl,
+    outputDir,
+    flows,
+    channel: referenceBrowserChannel,
+    nativeBrowserDiagnosticBaseline: { referenceOrigin, report, capturedAssets },
+  });
+} finally {
+  await observer.dispose();
+}
+```
+
+The observer verifies the browser's unload policy violation, header policy context and executed
+static script bytes. The report includes the exact browser build and origin, and the page, frame
+and asset paths. Select the channel matching the reference browser and configure a distinct
+reference origin. Keep the report as project evidence. Reference observations expire after 30 days.
+When observing several placements, call `report()` at each placement before navigating again so
+its browser policy queries complete. Local runs record matched proofs in
+`nativeBrowserDiagnosticComparison` and retain the raw console errors.
+
+Pass `capturedAssets` when the reference document uses a script from an independent asset origin
+and Mirage serves the captured bytes under its own origin. Omit the option for same-origin
+scripts. Each of up to 128 mappings gives the credential-free HTTPS or loopback `referenceUrl`,
+the `localPath`, and the lowercase SHA-256 hex digest of the captured script. Each reference URL
+and each local path must be unique and omit query strings and fragments. Observed script requests
+can carry a query string. The observer binds the full request URL to the executed script in memory
+and records only the asset origin, path and verified digest. The local run verifies the same digest
+at the configured local path and records both assets in the comparison proof. Each mapped proof
+also requires an explicit unload denial in the received response for the document or ancestor
+identified by the browser. The proof compares that frame's kind, path and canonical unload
+allowlist digest. Capture this evidence with a fresh navigation that exposes the document's
+received headers to the browser observer. The report omits other policy directives and response
+headers.
 
 `observePageLifecycle(page, { origin, maxRecords: 10000 })` and `observeContextLifecycle(context, options)`
 are read-only Chromium observers. Await attachment (for a new page in an observed context,

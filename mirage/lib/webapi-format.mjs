@@ -212,7 +212,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
       );
   };
 
-  const formatFetchValue = (out, key, value, column, info) => {
+  const formatFetchValue = (out, key, value, column, info, authoredPortalFetchXml) => {
     const { entity, attribute, rootColumn } = fetchColumnInfo(key, column, info);
     if (!rootColumn) out[`${key}${ATTRIBUTE_NAME}`] = attribute;
     if (column?.aggregate || column?.dategrouping) {
@@ -227,7 +227,12 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
       });
       return;
     }
-    const columnDefinition = definition(entity, attribute);
+    // A generated lookup label is text even when the export has no field definition for it.
+    const columnDefinition =
+      definition(entity, attribute) ??
+      (authoredPortalFetchXml && column && store.fetchLookupDisplayField(mapping, attribute, metadata)
+        ? { dataverseType: 'nvarchar' }
+        : undefined);
     const text = formatted(value, columnDefinition, attribute);
     if (text != null) out[`${key}${FORMATTED}`] = text;
     out[key] = outputValue(value, columnDefinition, attribute);
@@ -262,7 +267,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
    * Web API results omit null values; aliased and linked columns carry
    * AttributeName; only root lookups name their navigation property.
    */
-  function formatFetchRow(row, info) {
+  function formatFetchRow(row, info, { authoredPortalFetchXml = false } = {}) {
     const rootMapping = store.resolveMapping(info.root);
     const out = {};
     if (!info.aggregate && row[info.idColumn] != null) {
@@ -272,7 +277,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     const byKey = new Map(info.columns.map((column) => [column.key, column]));
     for (const [key, value] of Object.entries(row)) {
       if (isPrivate(key) || key.includes('@') || value == null || value === '') continue;
-      formatFetchValue(out, key, value, byKey.get(key), info);
+      formatFetchValue(out, key, value, byKey.get(key), info, authoredPortalFetchXml);
     }
     return out;
   }

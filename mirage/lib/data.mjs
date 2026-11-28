@@ -36,7 +36,7 @@ import {
   duplicateAlternateKey,
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { customerAddressColumns, relationshipsOf, standardFields, standardTableDef } from './dataverse-standard.mjs';
 import { cascadeAction } from './relationship-cascade.mjs';
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { countWork, trackWork, workOf } from './work-counter.mjs';
@@ -133,6 +133,7 @@ import {
 import {
   fieldKind,
   formatDotNetDate,
+  primaryNameColumn,
   primaryNameValue,
   isDateOnlyField,
   GUID_PATTERN,
@@ -4560,6 +4561,65 @@ export class DataStore {
     const external = typeof metadata === 'function' ? metadata(mapping?.logicalName ?? logical) : null;
     return find(external) ?? find(mapping?.fields) ?? find(mapping?.fieldMetadata);
   }
+  /** Solution sources can omit lookup display columns or identify them through AttributeOf. */
+  fetchLookupDisplayField(mapping, attribute, metadata) {
+    const name = String(attribute ?? '').toLowerCase();
+    if (!name.endsWith('name') || name === 'name' || name.startsWith('__sim')) return null;
+    const relationships = Object.values(mapping.relationships ?? {});
+    if (name === mapping.nameColumn || name === mapping.idColumn || relationships.some((rel) => rel?.from === name))
+      return null;
+    const column = name.slice(0, -4);
+    const display = this.fieldDefinition(mapping.logicalName, name, metadata);
+    const attributeOf =
+      display?.attributeOf ?? display?.columnMetadata?.attributeOf ?? display?.dataverseMetadata?.AttributeOf;
+    if (display) {
+      const linked =
+        attributeOf != null
+          ? String(attributeOf).toLowerCase() === column
+          : display.validForCreate === false &&
+            display.validForUpdate === false &&
+            standardFields(mapping.logicalName)[name]?.validForUpdate === false;
+      if (!linked || fieldKind(display) !== 'string') return null;
+    }
+    const definition = this.fieldDefinition(mapping.logicalName, column, metadata);
+    const related = relationships.filter((rel) => rel?.many === false && rel.from === column && !rel.intersect);
+    if (column === mapping.idColumn || (fieldKind(definition) !== 'lookup' && !related.length)) return null;
+    const targets = [].concat(
+      definition?.targets ?? [],
+      definition?.target ?? [],
+      related.map((rel) => rel.entity),
+    );
+    return { column, targets: [...new Set(targets)] };
+  }
+  currentLookupDisplay(row, logical, { column, targets }, identity) {
+    const visible = (name, source) =>
+      this.portalAuthorization?.maskRow(identity, name, source, { portalRequest: true }) ?? source;
+    const source = visible(logical, row);
+    const reference = columnValue(source, column);
+    const id = scalar(reference);
+    if (typeof id !== 'string' || !id) return undefined;
+    const typed = reference?.logical_name ?? reference?.logicalName ?? source[`_${column}_value${lookupAnnotation}`];
+    if (typed && targets.length && !targets.includes(typed)) return undefined;
+    for (const entity of typed ? [typed] : targets) {
+      let mapping;
+      try {
+        mapping = this.resolveMapping(entity);
+      } catch {
+        continue;
+      }
+      const rows = this.portalReadRows(mapping.logicalName);
+      const index = this.rowIndex(mapping, rows, id, {
+        partitionId: row[`${column}pid`] ?? reference?.partitionid,
+      });
+      if (index >= 0) {
+        const [target] = this.withComputed(mapping.logicalName, [rows[index]]);
+        const defaultName = standardTableDef(mapping.logicalName)?.primaryNameAttribute;
+        const name = primaryNameColumn(mapping, mapping.logicalName, defaultName);
+        return visible(mapping.logicalName, target)[name] ?? undefined;
+      }
+    }
+    return undefined;
+  }
   /** Fiscal calendar settings: explicit settings win over the organization row. */
   fiscalSettings(settings = this.state.settings ?? {}) {
     const explicit = ['fiscalCalendarStart', 'fiscalPeriodType', 'fiscalPeriodsPerYear'].some(
@@ -8136,19 +8196,61 @@ export class DataStore {
       );
     }
     const ctx = this.queryContext(identity, { ...options, permissionLinkNodes, rawQueryNodes });
+    // Scalar OData adapters also execute FetchXML internally. Only the authored
+    // Liquid and portal API inputs qualify for portal FetchXML value rules.
+    const portalAuthoredFetch =
+      options.portalRequest === true &&
+      (options.liquidTag === true || options.authoredPortalFetchXml === true) &&
+      !plan.dataverseIdentity;
+    const explicitNullTextInequality =
+      portalAuthoredFetch && this.observed?.portalFetchTextInequality === 'include-explicit-null';
+    const lookupDisplays = new Map();
+    const lookupDisplayField = (mapping, attribute) => {
+      const key = `${mapping.logicalName}\u0000${attribute}`;
+      if (!lookupDisplays.has(key))
+        lookupDisplays.set(key, this.fetchLookupDisplayField(mapping, attribute, options.metadata));
+      return lookupDisplays.get(key);
+    };
     return executeFetch(plan, {
       mapping: (name) => this.resolveMapping(name),
       relationships: ctx.relationships,
       readableRows: options.noBackendAdmission ? () => [] : ctx.readRows,
       noBackendAdmission: options.noBackendAdmission === true,
+      nativeLiquidStructuralEndpoints:
+        portalAuthoredFetch && nativeBackend && options.liquidTag === true && profile === 'portal',
+      omitLookupDisplayProjection:
+        portalAuthoredFetch && this.observed?.portalFetchLookupDisplayProjection === 'omit-scalars',
+      canMatchExplicitNullText: explicitNullTextInequality
+        ? (mapping, row, attribute) =>
+            !this.computedColumns(mapping.logicalName)?.has(attribute) &&
+            this.portalAuthorization?.canReadRawColumn(
+              identity,
+              mapping.logicalName,
+              attribute,
+              row[mapping.idColumn],
+            ) !== false
+        : undefined,
       permissionLink: (node) => permissionLinkNodes.has(node),
       permissionTerminalConditions: options.permissionQuery?.generatedTerminalConditions ?? [],
       nativePagingCookies:
         options.portalRequest === true && this.observed?.tablePermissionQueryPipeline === 'native-classic',
       tableRows: (logical) => this.tableRows(logical),
       datasourceRows: (source, logical) => this.readDatasourceRows(source, logical, identity, plan, options),
-      definition: ctx.definition,
-      column: ctx.column,
+      definition: portalAuthoredFetch
+        ? (logical, attribute) =>
+            ctx.definition(logical, attribute) ??
+            (lookupDisplayField(this.resolveMapping(logical), attribute) ? { dataverseType: 'nvarchar' } : undefined)
+        : ctx.definition,
+      column: portalAuthoredFetch
+        ? (logical, attribute) =>
+            lookupDisplayField(this.resolveMapping(logical), attribute) ? 'known' : ctx.column(logical, attribute)
+        : ctx.column,
+      lookupDisplayField: portalAuthoredFetch
+        ? (mapping, attribute) => {
+            const field = lookupDisplayField(mapping, attribute);
+            return field ? (row) => this.currentLookupDisplay(row, mapping.logicalName, field, identity) : null;
+          }
+        : undefined,
       sortable: (logical, attribute) => this.sortableColumn(logical, attribute),
       lookupName: ctx.lookupName,
       identity: applicationUser ? { ...identity, portalApplicationUser: applicationUser } : identity,

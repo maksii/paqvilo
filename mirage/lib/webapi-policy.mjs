@@ -403,6 +403,8 @@ export function webApiPolicy(portal, store, entity) {
     mapping.fieldMetadata,
     portal.webApiEntities?.[mapping.logicalName]?.fields,
   ].filter((value) => value && typeof value === 'object');
+  const fetchLookup = (name) =>
+    store.fetchLookupDisplayField(mapping, name, (logical) => portal.webApiEntities?.[logical]?.fields);
   const hasField = (name) =>
     metadataFields.some(
       (definitions) =>
@@ -427,7 +429,7 @@ export function webApiPolicy(portal, store, entity) {
       hasField(physical) ||
       Boolean(relation(column)) ||
       Object.values(mapping.relationships ?? {}).some((item) => item.from === physical);
-    if (!known && mapping.schemaComplete !== true) {
+    if (!known && mapping.schemaComplete !== true && !(write && fetchLookup(physical))) {
       // A wildcard allow-list can't prove that a written column is absent:
       // the first row written to an empty table introduces its columns.
       if (write && fields.has('*')) return;
@@ -481,6 +483,13 @@ export function webApiPolicy(portal, store, entity) {
       !reserved(name) && ((name === mapping.idColumn && !inheritedColumn(name)) || columnListed(name));
     for (const column of columns) if (!listedColumn(column)) notEnabled(column, deniedTable(column));
     assertActivityColumns(columns, mapping, portal, inherited);
+  };
+  const allowedFetch = (name, generated = fetchLookup(name)) =>
+    allowed(name) && (!generated || columnAllowed(generated.column, 'read'));
+  const assertFetch = (name) => {
+    const generated = fetchLookup(name);
+    if (!generated) return assert(name);
+    if (!allowedFetch(name, generated)) notEnabled(name, deniedTable(name));
   };
   const relation = (name) => mapping.relationships?.[name];
   // A path segment before "/" must be a navigation property; the platform answers
@@ -687,7 +696,8 @@ export function webApiPolicy(portal, store, entity) {
       definitions[Object.keys(definitions).find((key) => key.toLowerCase() === physical.toLowerCase())];
     if (
       rel?.many !== true &&
-      (operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false
+      ((operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false ||
+        fetchLookup(physical))
     )
       return { skip: true };
     let written = value;
@@ -720,8 +730,8 @@ export function webApiPolicy(portal, store, entity) {
     }
     return result;
   };
-  const project = (row) => {
-    if (Array.isArray(row)) return row.map(project);
+  const project = (row, allowedColumn) => {
+    if (Array.isArray(row)) return row.map((item) => project(item, allowedColumn));
     if (!row || typeof row !== 'object') return row;
     const result = {};
     for (const [name, value] of Object.entries(row)) {
@@ -737,7 +747,7 @@ export function webApiPolicy(portal, store, entity) {
         result[name] = webApiPolicy(portal, store, rel.entity).project(value);
         continue;
       }
-      if (!allowed(column)) continue;
+      if (!allowedColumn(column)) continue;
       result[name] =
         rel && value && typeof value === 'object' ? webApiPolicy(portal, store, rel.entity).project(value) : value;
     }
@@ -748,8 +758,10 @@ export function webApiPolicy(portal, store, entity) {
     fields: [...fields],
     customActivity: Boolean(inherited),
     allowed,
+    allowedFetch,
     readable,
     assert,
+    assertFetch,
     assertSelectLess,
     selectLessColumns,
     deniedTable,
@@ -758,7 +770,8 @@ export function webApiPolicy(portal, store, entity) {
     assertExpand: expand,
     assertWrite: write,
     prepareWrite,
-    project,
+    project: (row) => project(row, allowed),
+    projectFetch: (row) => project(row, allowedFetch),
   };
 }
 
@@ -797,12 +810,14 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
       const columns = new Set([relationship.intersect.from, relationship.intersect.to]);
       const mapping = store.resolveMapping(node.attrs.name);
       columns.add(mapping.idColumn);
+      const assert = (name) => {
+        if (!columns.has(name)) notEnabled(name, node.attrs.name);
+      };
       return {
         mapping,
-        allowed: () => false,
-        assert: (name) => {
-          if (!columns.has(name)) notEnabled(name, node.attrs.name);
-        },
+        allowedFetch: () => false,
+        assert,
+        assertFetch: assert,
       };
     }
     return webApiPolicy(portal, store, node.attrs.name);
@@ -836,18 +851,18 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
   };
   const assertCondition = (node, owner) => {
     const policy = policyFor(node.attrs.entityname, owner);
-    policy.assert(node.attrs.attribute);
+    policy.assertFetch(node.attrs.attribute);
     if (node.name === 'condition' && node.attrs.valueof) {
       const [other, column] = node.attrs.valueof.includes('.')
         ? node.attrs.valueof.split('.', 2)
         : [node.attrs.entityname, node.attrs.valueof];
-      policyFor(other, owner).assert(column);
+      policyFor(other, owner).assertFetch(column);
     }
   };
   function walkEntityChildren(node, policy) {
     for (const child of node.children) {
       if (child.name === 'attribute') {
-        policy.assert(child.attrs.name);
+        policy.assertFetch(child.attrs.name);
         if (child.attrs.alias) attributeAliases.add(child.attrs.alias);
       }
       if (['condition', 'order'].includes(child.name) && child.attrs.attribute) assertCondition(child, policy);
@@ -883,12 +898,12 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
   walk(root, null);
   const policy = webApiPolicy(portal, store, rootEntity);
   return (row) => {
-    const out = policy.project(row);
+    const out = policy.projectFetch(row);
     for (const [name, value] of Object.entries(row)) {
       const clean = name.split('@')[0],
         dot = clean.indexOf('.');
       if (
-        (dot > 0 && aliases.get(clean.slice(0, dot))?.allowed(clean.slice(dot + 1))) ||
+        (dot > 0 && aliases.get(clean.slice(0, dot))?.allowedFetch(clean.slice(dot + 1))) ||
         (dot < 0 && attributeAliases.has(clean))
       )
         out[name] = value;

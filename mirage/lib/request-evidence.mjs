@@ -9,6 +9,14 @@ const SCRIPT_OR_STYLE_TYPES = new Set([
   'text/css',
 ]);
 
+export function recordCdpFailure(record, event, observedTicks = performance.now()) {
+  if (!record || Object.hasOwn(record, 'failedObservedTicks')) return;
+  Object.defineProperty(record, 'failedObservedTicks', { value: observedTicks });
+  record.failure = event.errorText;
+  record.failedTimestamp = event.timestamp;
+  record.failedAt = Date.parse(record.startedAt) + (event.timestamp - record.startedTimestamp) * 1000;
+}
+
 // The start order of two CDP records: the browser's monotonic startedTimestamp when both carry it, so a wall clock stepped
 // back (an NTP or WSL time resync) cannot reorder them; otherwise their wallTime startedAt.
 const startOrder = (a, b) =>

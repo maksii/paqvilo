@@ -3529,7 +3529,7 @@ export async function createSimulator(options) {
   const change = (fn) => {
     const next = mutation.then(async () => {
       const result = await fn();
-      if (managementStorage) {
+      if (hasPendingManagementSource()) {
         try {
           await refreshManagementSource();
         } catch (cause) {
@@ -3642,6 +3642,9 @@ export async function createSimulator(options) {
   // Source import happens after the record transaction commits. The short
   // publication transaction checks its overlay snapshot again, so background
   // SDK writes during source I/O cannot be overwritten by rematerialization.
+  const hasPendingManagementSource = () =>
+    managementStorage &&
+    !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords);
   const refreshManagementSourceCore = async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const records = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
@@ -7218,11 +7221,7 @@ export async function createSimulator(options) {
       pageToken: pairedBrowserTokens ? adminToken : csrf,
       appsToken,
     });
-    if (
-      managementStorage &&
-      !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)
-    )
-      await change(async () => {});
+    if (hasPendingManagementSource()) await change(async () => {});
     // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService): the /_services/sharepoint-* services
     // and the local download route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
     if (organization?.api?.sharepoint) {

@@ -598,6 +598,41 @@ test('plain field lists expose only metadata-proven lookup aliases and empty pro
   );
 });
 
+test('FetchXML applies the lookup column grant to generated names supplied in provider rows', () => {
+  const store = new DataStore({ state: fixture() });
+  const lookupGrant = {
+    id: 'lookup-grant',
+    kind: 'columnpermission',
+    adx_columnpermissionprofileid: 'profile',
+    adx_columnname: 'companyid',
+    adx_permissions: [746610000],
+  };
+  const portal = {
+    settings: { ...settings, 'Webapi/contact/fields': 'fullname,companyid,companyidname' },
+    webApiIdentity: { roleSource: 'memberships', roleIds: ['reader'] },
+    records: [
+      {
+        id: 'profile',
+        kind: 'columnpermissionprofile',
+        adx_tablename: 'contact',
+        adx_columnpermissionprofile_webrole: ['reader'],
+        adx_allcolumnpermissions: [746610001],
+      },
+      lookupGrant,
+    ],
+  };
+  const xml = '<fetch><entity name="contact"><all-attributes/></entity></fetch>';
+  const returned = { contactid: 'person', fullname: 'Sample contact', companyidname: 'Lookup display' };
+  const project = webApiFetchPolicy(portal, store, xml, 'contact');
+  assert.deepEqual(project(returned), { contactid: 'person', fullname: 'Sample contact' });
+  const explicit = xml.replace('<all-attributes/>', '<attribute name="companyidname"/>');
+  assert.throws(() => webApiFetchPolicy(portal, store, explicit, 'contact'), { code: 'WebApiFieldNotEnabled' });
+
+  lookupGrant.adx_permissions = [746610001];
+  assert.deepEqual(webApiFetchPolicy(portal, store, xml, 'contact')(returned), returned);
+  assert.deepEqual(webApiFetchPolicy(portal, store, explicit, 'contact')(returned), returned);
+});
+
 test('FetchXML resolves forward-declared link aliases without skipping their column policy', () => {
   const store = new DataStore({ state: fixture() }),
     portal = { settings };

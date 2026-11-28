@@ -8,10 +8,14 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { AssetCache } from '../lib/asset-cache.mjs';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-async function fixture(t, { compatibility = false, mode = 100000000, readOnly = false, script = null } = {}) {
+async function fixture(
+  t,
+  { compatibility = false, mode = 100000000, readOnly = false, script = null, capturedEditor, stylePolicy } = {},
+) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
@@ -30,6 +34,10 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
       script ??
       `document.addEventListener('DOMContentLoaded',()=>{window.richChanges=[];$('#narrative').on('change',function(){const html=JSON.parse(this.value);window.richChanges.push({html,text:$('<div>').html(html).text()});}).each(function(){new MutationObserver(changes=>{const value=changes[0].target.value;window.observedHTML=JSON.parse(value);const doc=new DOMParser().parseFromString(window.observedHTML,'text/html');window.observedText=doc.body.textContent;}).observe(this,{attributes:true});});});`,
   };
+  if (stylePolicy) {
+    files['site-settings/Styles.sitesetting.yml'] =
+      `adx_sitesettingid: styles\nadx_name: HTTP/Content-Security-Policy\nadx_value: "${stylePolicy}"`;
+  }
   for (const [name, value] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -37,7 +45,7 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
   }
   const initial = {
     tables: {
-      example: mode === 100000001 ? [{ exampleid: '11111111-1111-4111-8111-111111111111', narrative: '' }] : [],
+      example: mode === 100000000 ? [] : [{ exampleid: '11111111-1111-4111-8111-111111111111', narrative: '' }],
     },
     mappings: { example: { entitySet: 'examples', idColumn: 'exampleid' } },
     permissions: [],
@@ -62,12 +70,30 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
     },
   };
   const stateFile = path.join(root, 'state.json');
+  if (capturedEditor) {
+    const origin = 'https://editor-fixture.invalid';
+    const base = '/webresources/msdyn_/RichTextEditorControl/';
+    const config = base + 'RTEGlobalConfiguration.json';
+    const library = base + 'libs/ckeditor_latest/';
+    const cache = await new AssetCache({ directory: path.join(root, 'assets'), origin }).init();
+    await cache.capture([config, library + 'ckeditor.js', library + 'lang/en.js'], {
+      origin,
+      request: async (resource) => ({
+        status: 200,
+        headers: { 'content-type': resource === config ? 'application/json' : 'application/javascript' },
+        body: Buffer.from(
+          resource === config ? JSON.stringify({ defaultSupportedProps: { height: 185 } }) : capturedEditor,
+        ),
+      }),
+    });
+    initial.simulator.live = { origin };
+  }
   await fs.writeFile(stateFile, JSON.stringify(initial));
   const app = await createSimulator({
     sourceDir: root,
     stateFile,
     watch: false,
-    richTextCompatibility: compatibility,
+    ...(capturedEditor ? {} : { richTextCompatibility: compatibility }),
   });
   ownedFixture(t).add(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -79,20 +105,14 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
 }
 
 test('rich text editor changes preserve native JSON binding, authored observers and stored HTML through native form submit', async (t) => {
-  const { app, page, errors } = await fixture(t);
-  await page.route('**/webresources/msdyn_/RichTextEditorControl/**', (route) => {
-    if (route.request().url().endsWith('.json'))
-      return route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ defaultSupportedProps: { height: 185 } }),
-      });
-    return route.fulfill({
-      contentType: 'application/javascript',
-      body: `window.CKEDITOR={replace(id,config){const node=document.getElementById(id),editable=document.createElement('div');editable.contentEditable=!config.readOnly;editable.className='cke_editable';editable.setAttribute('role','textbox');editable.setAttribute('aria-label','Narrative editor');editable.innerHTML=node.value;node.after(editable);node.hidden=true;const handlers={};editable.addEventListener('input',()=>handlers.change?.());setTimeout(()=>handlers.instanceReady?.(),0);return{getData:()=>editable.innerHTML,on:(event,fn)=>handlers[event]=fn};}};`,
-    });
+  const { app, page, errors } = await fixture(t, {
+    capturedEditor: `window.CKEDITOR={replace(id,config){const node=document.getElementById(id),editable=document.createElement('div');editable.contentEditable=!config.readOnly;editable.className='cke_editable';editable.dataset.height=config.height;editable.setAttribute('role','textbox');editable.setAttribute('aria-label','Narrative editor');editable.innerHTML=node.value;node.after(editable);node.hidden=true;const handlers={};editable.addEventListener('input',()=>handlers.change?.());setTimeout(()=>handlers.instanceReady?.(),0);return{getData:()=>editable.innerHTML,on:(event,fn)=>handlers[event]=fn};}};`,
   });
   await page.goto(app.url);
   await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  assert.equal(await page.locator('.sim-richtext-toolbar').count(), 0);
+  assert.equal(await page.evaluate(() => document.adoptedStyleSheets.length), 0);
+  assert.equal(await page.getByRole('textbox', { name: 'Narrative editor' }).getAttribute('data-height'), '185');
   await page.getByRole('textbox', { name: 'Narrative editor' }).fill('Meaningful scope change');
   const expected = '<div><strong>Meaningful scope change</strong></div>';
   await page.getByRole('textbox', { name: 'Narrative editor' }).evaluate((editor, html) => {
@@ -174,6 +194,139 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
   assert.deepEqual(errors, []);
 });
 
+test('the compatibility toolbar fits a constrained form and all five commands persist at desktop and narrow widths', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
+  const url = app.url + '/?id=11111111-1111-4111-8111-111111111111';
+  const control = page.locator('[data-sim-richtext-editor][data-mounted=ready]');
+  const toolbar = page.getByRole('toolbar', { name: 'Compatibility editor formatting' });
+  const frame = page.locator('iframe.cke_wysiwyg_frame');
+  const body = page.frameLocator('iframe.cke_wysiwyg_frame').locator('body');
+  const commands = [
+    ['Bold', 'b,strong'],
+    ['Italic', 'i,em'],
+    ['Underline', 'u'],
+    ['Bulleted list', 'ul li'],
+    ['Numbered list', 'ol li'],
+  ];
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(url);
+    await control.waitFor();
+    await page.addStyleTag({ content: '#EntityFormPanel { width: min(520px, 54vw); }' });
+    assert.equal(await frame.getAttribute('sandbox'), 'allow-same-origin');
+    const bounds = await control.boundingBox();
+    assert.ok(bounds.width < width);
+    for (const surface of [toolbar, frame]) {
+      const box = await surface.boundingBox();
+      assert.equal(box.x, bounds.x);
+      assert.equal(box.width, bounds.width);
+    }
+    const layout = await toolbar.evaluate((element) => ({
+      gap: Number.parseFloat(getComputedStyle(element).rowGap),
+      boxes: [...element.children].map((button) => button.getBoundingClientRect().toJSON()),
+    }));
+    assert.ok(layout.gap > 0);
+    assert.equal(new Set(layout.boxes.map(({ y }) => y)).size > 1, width === 390);
+    for (const box of layout.boxes) assert.ok(box.left >= bounds.x && box.right <= bounds.x + bounds.width);
+    await toolbar.evaluate((element) => {
+      const before = document.createElement('button');
+      before.textContent = 'Before toolbar';
+      element.before(before);
+      before.focus();
+    });
+    for (const [name] of commands) {
+      await page.keyboard.press('Tab');
+      const focus = await toolbar.getByRole('button', { name }).evaluate((button) => {
+        const { outlineStyle, outlineWidth } = getComputedStyle(button);
+        return [document.activeElement === button, outlineStyle, outlineWidth];
+      });
+      assert.deepEqual(focus, [true, 'solid', '2px'], name);
+    }
+
+    await body.evaluate((element) => {
+      element.innerHTML =
+        '<p>Bold</p><p>Italic</p><p>Underline</p><p>Bulleted list</p><p>Separator</p><p>Numbered list</p>';
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    for (const [name, selector] of commands) {
+      await body.getByText(name, { exact: true }).evaluate((element) => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const selection = document.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      const button = toolbar.getByRole('button', { name });
+      if (width === 390) await button.press('Enter');
+      else await button.click();
+      assert.equal(await body.locator(selector).count(), 1, `${name} applies to the selection`);
+      assert.equal(await body.locator(selector).textContent(), name);
+      assert.match(
+        JSON.parse(await page.locator('#narrative').inputValue()),
+        new RegExp(`<${selector.split(/[ ,]/)[0]}`),
+      );
+    }
+    const expected = JSON.parse(await page.locator('#narrative').inputValue());
+    const post = page.waitForResponse(
+      (response) => response.request().isNavigationRequest() && response.request().method() === 'POST',
+    );
+    await page.locator('#UpdateButton').click();
+    assert.equal((await post).status(), 200);
+    assert.equal(app.store.snapshot().tables.example[0].narrative, expected);
+    await page.goto(url);
+    await control.waitFor();
+    assert.equal(JSON.parse(await page.locator('#narrative').inputValue()), expected);
+    for (const [name, selector] of commands) assert.equal(await body.locator(selector).textContent(), name);
+  }
+  assert.deepEqual(errors, []);
+});
+
+for (const styleSources of ["'self'", "'unsafe-inline'"]) {
+  test(`the compatibility editor keeps responsive layout and visible focus under style-src ${styleSources}`, async (t) => {
+    const stylePolicy = `script-src 'self' 'nonce'; style-src ${styleSources}`;
+    const { app, page, errors } = await fixture(t, { compatibility: true, stylePolicy });
+    const response = await page.goto(app.url);
+    const servedPolicy = response.headers()['content-security-policy'];
+    assert.match(servedPolicy, /script-src 'self'.*'nonce-[^']+'/);
+    assert.equal(servedPolicy.split(';').at(-1).trim(), `style-src ${styleSources}`);
+    const control = page.locator('[data-sim-richtext-editor][data-mounted=ready]');
+    await control.evaluate((element) => {
+      element.style.width = '76px';
+    });
+    const toolbar = page.getByRole('toolbar', { name: 'Compatibility editor formatting' });
+    const toolbarLayout = await toolbar.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        display: style.display,
+        wraps: style.flexWrap,
+        width: element.clientWidth,
+        content: element.scrollWidth,
+      };
+    });
+    assert.deepEqual(toolbarLayout, { display: 'flex', wraps: 'wrap', width: 74, content: 74 });
+    const frame = page.locator('iframe.cke_wysiwyg_frame');
+    assert.equal((await frame.boundingBox()).width, 76);
+    const button = toolbar.getByRole('button', { name: 'Numbered list' });
+    await button.focus();
+    assert.equal(await button.evaluate((element) => getComputedStyle(element).outlineWidth), '2px');
+    await page.keyboard.press('Tab');
+    assert.equal(await frame.evaluate((element) => element === document.activeElement), true);
+    const body = page.frameLocator('iframe.cke_wysiwyg_frame').locator('body');
+    assert.equal(await body.evaluate((element) => getComputedStyle(element).outlineWidth), '2px');
+    const text = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    await page.keyboard.insertText(text);
+    assert.equal(JSON.parse(await page.locator('#narrative').inputValue()), `<p>${text}</p>`);
+    assert.deepEqual(
+      await body.evaluate((element) => ({
+        wrap: getComputedStyle(element).overflowWrap,
+        fits: element.scrollWidth === element.clientWidth,
+      })),
+      { wrap: 'anywhere', fits: true },
+    );
+    assert.deepEqual(errors, []);
+  });
+}
+
 // @test-kind security: the compatibility editor never lets executable markup, handlers, javascript URLs or a page script reach or replace its private sanitizer
 test('compatibility markup retains formatting while excluding executable elements, handlers and URLs', async (t) => {
   const { app, page } = await fixture(t, { compatibility: true, mode: 100000001 });
@@ -217,16 +370,21 @@ test('compatibility markup retains formatting while excluding executable element
   }
 });
 
-test('read-only compatibility editors retain empty values without editable bodies or enabled formatting', async (t) => {
-  const { app, page, errors } = await fixture(t, { compatibility: true, readOnly: true });
-  await page.goto(app.url, { waitUntil: 'domcontentloaded' });
+test('read-only compatibility forms prevent typing and formatting and retain the stored HTML', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000002 });
+  const html = '<p>Stored text</p>';
+  app.store.state.tables.example[0].narrative = html;
+  await page.goto(app.url + '/?id=11111111-1111-4111-8111-111111111111', { waitUntil: 'domcontentloaded' });
   await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
-  assert.equal(
-    await page.frameLocator('iframe.cke_wysiwyg_frame').locator('body').getAttribute('contenteditable'),
-    'false',
-  );
+  const body = page.frameLocator('iframe.cke_wysiwyg_frame').locator('body');
+  assert.equal(await body.getAttribute('contenteditable'), 'false');
   assert.equal(await page.locator('.sim-richtext-toolbar button:enabled').count(), 0);
-  assert.equal(await page.locator('#narrative').inputValue(), '""');
+  await body.click();
+  await page.keyboard.type('Forbidden edit');
+  assert.equal(await body.innerHTML(), html);
+  assert.equal(await page.locator('#narrative').inputValue(), JSON.stringify(html));
+  assert.equal(await page.locator('#UpdateButton').count(), 0);
+  assert.equal(app.store.snapshot().tables.example[0].narrative, html);
   assert.deepEqual(errors, []);
 });
 

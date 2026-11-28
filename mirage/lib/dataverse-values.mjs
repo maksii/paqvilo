@@ -1245,13 +1245,15 @@ function formattedDateTime(value, definition, settings) {
 /**
  * Primary name column of a table: the mapping's nameColumn, the metadata
  * column flagged isPrimaryName, Dataverse's <prefix>_name convention for
- * custom and portal tables, then "name". Values fall back to name/fullname.
+ * custom and portal tables, then "name". A caller with a known standard
+ * primary name can use it before the naming convention.
  */
-function primaryNameColumn(mapping, logicalName = mapping?.logicalName) {
+export function primaryNameColumn(mapping, logicalName = mapping?.logicalName, defaultColumn) {
   if (mapping?.nameColumn) return mapping.nameColumn;
   for (const fields of [mapping?.fields, mapping?.fieldMetadata])
     if (fields && typeof fields === 'object')
       for (const [name, definition] of Object.entries(fields)) if (definition?.isPrimaryName) return name;
+  if (defaultColumn) return defaultColumn;
   const prefix = /^([a-z][a-z0-9]*)_/i.exec(String(logicalName ?? ''))?.[1];
   return prefix ? `${prefix}_name` : 'name';
 }

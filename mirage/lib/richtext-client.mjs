@@ -3,7 +3,7 @@
  * purifier: the compatibility editor's private DOMPurify instance; page globals
  * (window.DOMPurify, an AMD define) neither supply nor receive it.
  */
-export async function mountRichTextEditors(settings, purifier) {
+export async function mountRichTextEditors(settings, purifier, compatibilityStyles) {
   const base = '/webresources/msdyn_/RichTextEditorControl/';
   const state = (globalThis.__portalSimulation ||= {});
   const loadJson = async (url) => {
@@ -31,7 +31,14 @@ export async function mountRichTextEditors(settings, purifier) {
     return true;
   };
   const clean = (html) => purifier.sanitize(html, { USE_PROFILES: { html: true } });
+  const installStyles = (targetDocument) => {
+    const stylesheet = new targetDocument.defaultView.CSSStyleSheet();
+    stylesheet.replaceSync(compatibilityStyles);
+    targetDocument.adoptedStyleSheets.push(stylesheet);
+    return stylesheet;
+  };
   const compatibilityEditor = async (id, input, container) => {
+    state.richTextCompatibilityStyle ||= installStyles(document);
     // The replaced textarea stays hidden in the control, as CKEditor leaves it,
     // and carries the editor's HTML for page scripts that read it.
     const source = document.getElementById(id + '_editor');
@@ -47,7 +54,6 @@ export async function mountRichTextEditors(settings, purifier) {
     frame.setAttribute('sandbox', 'allow-same-origin');
     frame.title = 'Compatibility rich text editor';
     frame.setAttribute('aria-label', frame.title);
-    frame.style.cssText = 'width:100%;min-height:12rem;border:1px solid #8a8886;background:#fff';
     const badge = document.createElement('span');
     badge.className = 'sim-compatibility-badge';
     badge.textContent = 'Compatibility editor';
@@ -81,7 +87,7 @@ export async function mountRichTextEditors(settings, purifier) {
       frame.addEventListener('load', currentDocumentLoaded);
     });
     frame.srcdoc =
-      '<!doctype html><html><head><meta charset="utf-8"><style>body{font:inherit;margin:8px;min-height:10rem;outline:none}body:focus{outline:none}</style></head><body contenteditable="' +
+      '<!doctype html><html><head><meta charset="utf-8"></head><body class="sim-richtext-content" contenteditable="' +
       !readOnly +
       '" role="textbox" aria-label="Rich text content" aria-readonly="' +
       readOnly +
@@ -165,6 +171,7 @@ export async function mountRichTextEditors(settings, purifier) {
     const bind = () => {
       const current = body();
       if (frame.contentDocument?.URL !== 'about:srcdoc' || !current || current.__ppSimBound) return;
+      installStyles(current.ownerDocument);
       current.__ppSimBound = true;
       if (current.innerHTML !== content) current.innerHTML = clean(content);
       current.addEventListener('input', sync);

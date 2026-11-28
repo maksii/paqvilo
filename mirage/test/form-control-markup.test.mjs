@@ -85,7 +85,11 @@ const layout = [
     ],
   },
 ];
-async function render(mode, schema = { entity: 'contact', title: 'Contact', fields, layout }) {
+async function render(
+  mode,
+  schema = { entity: 'contact', title: 'Contact', fields, layout },
+  { settings, args, modal } = {},
+) {
   const store = {
     resolveMapping: (entity) =>
       entity === 'account'
@@ -98,13 +102,19 @@ async function render(mode, schema = { entity: 'contact', title: 'Contact', fiel
     get: async () => record,
     query: async () => ({ value: [] }),
   };
-  const portal = { forms: [{ id: 'form', name: 'Contact', mode }], records: [], website: { id: 'site' }, pages: [] };
+  const portal = {
+    forms: [{ id: 'form', name: 'Contact', mode }],
+    records: [],
+    website: { id: 'site' },
+    pages: [],
+    settings,
+  };
   const schemas = { form: schema };
   return renderComponent(
     'entityform',
     'form',
     { user: { id: 'current' }, request: { params: { id: ID } } },
-    { portal, store, schemas },
+    { portal, store, schemas, args, modal },
   );
 }
 const element = (html, pattern) => {
@@ -112,6 +122,25 @@ const element = (html, pattern) => {
   assert.ok(match, `missing ${pattern}`);
   return match[0];
 };
+
+// @test-kind contract: attached forms, modal forms and Bootstrap 5 keep their field-level read-only markup.
+test('display-only lookup class handling stays scoped to an inline Bootstrap 3 edit form', async () => {
+  const lookup = { name: 'relatedrecordid', label: 'Related record', dataverseType: 'lookup', readOnly: true };
+  const schema = {
+    entity: 'contact',
+    title: 'Contact',
+    fields: [lookup],
+    layout: [{ name: 'general', columns: [{ sections: [{ name: 'details', rows: [[lookup]] }] }] }],
+  };
+  for (const options of [
+    { args: { pp_page_control: true } },
+    { modal: true },
+    { settings: { 'Site/BootstrapV5Enabled': 'true' } },
+  ]) {
+    const html = await render(100000001, schema, options);
+    assert.match(element(html, /<input [^>]*id="relatedrecordid_name"[^>]*>/), /class="[^"]+ readonly" readonly=""/);
+  }
+});
 
 test('configured FormXml honors an authored one-row textarea while keeping its other default heights', async () => {
   const cells = [

@@ -1801,9 +1801,13 @@ function collectionPayload(t, { mapping = t.mapping, policy = t.policy, ids } = 
     secret: pagingKey(store),
     pageWithoutTop: predicate !== null,
   });
-  // Checked once the cursor is valid: a forged token is the cursor's own 400.
-  if (predicate && !t.summary && url.searchParams.has('$skiptoken'))
-    for (const column of predicate) policy.assert(column);
+  // A validated cursor reuses the server's permission predicate. An exempt wildcard
+  // already admits its readable columns, including a source permission field missing
+  // from the exported attributes. Caller-authored filters passed schema checks above.
+  if (predicate && !t.summary && url.searchParams.has('$skiptoken')) {
+    const wildcardCursor = url.searchParams.get('$skiptoken') && policy.fields.includes('*');
+    for (const column of predicate) if (!wildcardCursor || !policy.readable(column)) policy.assert(column);
+  }
   const result = store.query(
     mapping.logicalName,
     paging.params,
@@ -1925,6 +1929,7 @@ async function getFetch(t) {
     store.fetchXml(authoredXml, deps.identity, {
       profile: 'webapi',
       portalRequest: true,
+      authoredPortalFetchXml: true,
       metadata: deps.metadata,
       returnTotal: counted,
     });
@@ -1940,7 +1945,9 @@ async function getFetch(t) {
   body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = fetched.total_record_count_limit_exceeded;
   body['@Microsoft.Dynamics.CRM.globalmetadataversion'] = globalMetadataVersion(store);
   addFetchResponseAnnotations(body, fetched, info, nativePolicy, xml, store);
-  body.value = fetched.entities.map((row) => project(t.formatter.formatFetchRow(row, info)));
+  body.value = fetched.entities.map((row) =>
+    project(t.formatter.formatFetchRow(row, info, { authoredPortalFetchXml: true })),
+  );
   return send(t, 200, body);
 }
 

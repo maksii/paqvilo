@@ -407,7 +407,7 @@ test('Timeline/RTEEnabled renders the note dialogs with the rich text editor in 
     // The form's rich text runtime mounts both dialog editors, in compatibility mode here.
     assert.match(
       html,
-      /<script>\(async function mountRichTextEditors\(settings, purifier\)[\s\S]*\)\(\{"notescontrol_addnote_text":\{"configuration":\{\},"configUrl":null,"compatibility":true\},"notescontrol_editnote_text":\{"configuration":\{\},"configUrl":null,"compatibility":true\}\},/,
+      /<script>\(async function mountRichTextEditors\(settings, purifier, compatibilityStyles\)[\s\S]*\)\(\{"notescontrol_addnote_text":\{"configuration":\{\},"configUrl":null,"compatibility":true\},"notescontrol_editnote_text":\{"configuration":\{\},"configUrl":null,"compatibility":true\}\},/,
     );
   }
 });
