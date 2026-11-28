@@ -94,7 +94,7 @@ async function simulatorBook(t, directory, gates) {
     if (url.pathname === QUICK && url.searchParams.has('isprofilepage')) {
       // Let the real startup refresh win before the first HTTP response can complete.
       response.end = () => response;
-      response.once('close', () => (gate.closed = true));
+      gate.held = { response, closed: new Promise((resolve) => response.once('close', resolve)) };
       gate.resolve();
     }
     if (url.pathname === `/_portal/${siteId}/Layout/GetAntiForgeryToken`) {
@@ -117,35 +117,66 @@ test('the exported basic form keeps passing after the actual simulator quick vie
   ]);
   const { app, bookid } = await simulatorBook(t, directory, gates);
   const publisher = { action: 'value', frame: '#publisher-view', selector: '#name', value: 'Sample Publisher' };
-  const result = await runAcceptance({
-    localUrl: app.url,
-    outputDir: path.join(directory, 'evidence'),
-    timeout: ACCEPTANCE_HANG_GUARD_MS,
-    flows: [
-      {
-        name: 'Edit a book',
-        steps: [
-          { action: 'navigate', path: `/?id=${bookid}&visit=open` },
-          publisher,
-          { action: 'fill', selector: '#note', value: 'Saved note' },
-          { action: 'click', selector: '#UpdateButton' },
-          { action: 'waitRecord', entity: 'book', fields: { note: 'Saved note' } },
-          { action: 'navigate', path: `/?id=${bookid}&visit=reopen` },
-          { action: 'value', selector: '#note', value: 'Saved note' },
-          publisher,
-        ],
-      },
-    ],
-  });
-  assert.equal(result.passed, true, JSON.stringify(result));
-  const flow = result.flows[0];
-  assert.equal(flow.quickViewReplacements.length, 2);
-  assert.ok([...gates.values()].every((gate) => gate.closed));
-  for (const proof of flow.quickViewReplacements) {
-    assert.equal(proof.status, null);
-    assert.equal(proof.replacement.status, 200);
-    assert.match(proof.replacement.compatibilitySha256, /^[a-f\d]{64}$/);
-    assert.notEqual(proof.loaderId, proof.replacement.loaderId);
+  try {
+    const result = await runAcceptance({
+      localUrl: app.url,
+      outputDir: path.join(directory, 'evidence'),
+      timeout: ACCEPTANCE_HANG_GUARD_MS,
+      flows: [
+        {
+          name: 'Edit a book',
+          steps: [
+            { action: 'navigate', path: `/?id=${bookid}&visit=open` },
+            publisher,
+            { action: 'fill', selector: '#note', value: 'Saved note' },
+            { action: 'click', selector: '#UpdateButton' },
+            { action: 'waitRecord', entity: 'book', fields: { note: 'Saved note' } },
+            { action: 'navigate', path: `/?id=${bookid}&visit=reopen` },
+            { action: 'value', selector: '#note', value: 'Saved note' },
+            publisher,
+          ],
+        },
+      ],
+    });
+    assert.equal(result.passed, true, JSON.stringify(result));
+    const flow = result.flows[0];
+    assert.equal(flow.quickViewReplacements.length, 2);
+    for (const [visit, { held }] of gates) {
+      assert.ok(held, `${visit} holds an initial response`);
+      assert.equal(held.response.writableFinished, false, `${visit} leaves the initial response unfinished`);
+    }
+    const { records } = JSON.parse(await fs.readFile(flow.browserNetworkFile, 'utf8'));
+    for (const proof of flow.quickViewReplacements) {
+      assert.equal(proof.status, null);
+      assert.equal(proof.replacement.status, 200);
+      assert.match(proof.replacement.compatibilitySha256, /^[a-f\d]{64}$/);
+      assert.notEqual(proof.requestId, proof.replacement.requestId);
+      assert.notEqual(proof.loaderId, proof.replacement.loaderId);
+      assert.ok(
+        flow.failedRequests.some(
+          ({ requestKey, method, errorText }) =>
+            requestKey === proof.requestKey && method === 'GET' && errorText === 'net::ERR_ABORTED',
+        ),
+      );
+      assert.ok(
+        records.some(({ requestId, loaderId }) => requestId === proof.requestId && loaderId === proof.loaderId),
+      );
+      assert.ok(
+        records.some(
+          ({ requestId, loaderId }) =>
+            requestId === proof.replacement.requestId && loaderId === proof.replacement.loaderId,
+        ),
+      );
+    }
+  } finally {
+    // Browser cancellation and server transport cleanup are separate events.
+    await Promise.all(
+      [...gates.values()].map(async ({ held }) => {
+        if (!held) return;
+        if (!held.response.destroyed) held.response.destroy();
+        await held.closed;
+      }),
+    );
   }
 });
 

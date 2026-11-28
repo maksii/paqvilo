@@ -148,7 +148,7 @@ function unloadHeaderDigest(headers, origin) {
     allowedOrigins.add(url.origin);
   }
   return createHash('sha256')
-    .update(JSON.stringify([...allowedOrigins].sort()))
+    .update(JSON.stringify([...allowedOrigins].sort((left, right) => Number(left > right) - Number(left < right))))
     .digest('hex');
 }
 
