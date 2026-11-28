@@ -24,6 +24,10 @@ actions and saved results against an explicitly registered dataset.
   choice can differ when names collide.
 - **Labels.** The selected metadata LCID applies to form names, field labels, tabs, sections, nested quick forms and the
   label fallback after tab-name matching; without a label in that LCID the first exported label is used.
+- **Inline Bootstrap 3 forms.** An authored `{% webform %}` lays out stacked progress and form content at the
+  enclosing template's inset. Page-attached forms and side progress columns use the Bootstrap grid row. A stock
+  display-only lookup from FormXml in an inline basic edit form renders a read-only name box with no picker launcher
+  or `readonly` CSS class. The HTML `readonly` attribute, accessible name and submission field restrictions still apply.
 - **Record sources.** An associated-record source checks authorized related rows first; several matches produce the
   observed server error. An attribute-query source binds the first authorized result, and no match leaves the lookup
   blank; use an exported unique key when one row must be identified.
@@ -155,7 +159,8 @@ takes its marks from the locale data (uncaptured).
   - With the code component style the hosted portal hosts `MscrmControls.RichTextEditorV2.RichTextEditorControlV2`
     from `/_pcfwebresource`. That bundle is platform code that no export carries, so Mirage renders its local editor
     in its place (native CKEditor when captured, otherwise the compatibility editor) and reports
-    `RICHTEXT_HOSTED_V2_CONTROL`.
+    `RICHTEXT_HOSTED_V2_CONTROL`. The compatibility toolbar wraps within the form control and shows a focus outline
+    for each formatting button during keyboard navigation.
   - The hosted control reads `/api/data/v9.1/EntityDefinitions(...)` from the page and gets 403 with an empty body.
     Mirage answers the same status from its apps-origin gate, whose body is its JSON refusal (`AppsOriginRequired`);
     that gate is a security boundary of the local runtime and keeps its body.

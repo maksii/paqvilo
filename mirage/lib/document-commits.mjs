@@ -36,7 +36,7 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
     const previous = documents.get(pair.frameId);
     if (previous?.token !== token) documents.set(pair.frameId, { frame: pair.frame, token });
     pairs.delete(token);
-    if (previous?.token !== token) ready?.(pair.frame, token);
+    if (previous?.token !== token) ready?.(pair.frame, token, pair.frameId);
   };
   const joinSession = (session, frameId) => {
     for (const [token, pair] of pairs)

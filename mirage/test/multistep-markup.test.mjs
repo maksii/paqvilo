@@ -111,6 +111,44 @@ test('a data reset forgets multistep sessions', () => {
   assert.equal(webFormSession({ webformId: 'survey', owner: 'contact:x', sessions }), null);
 });
 
+test('Bootstrap 3 keeps the row for attached and side-progress forms and places stacked progress in order', async () => {
+  for (const [position, code, attached, wrapped] of [
+    ['top', 756150000, false, false],
+    ['bottom', 756150001, false, false],
+    ['left', 756150002, false, true],
+    ['right', 756150003, false, true],
+    ['top', 756150000, true, true],
+  ]) {
+    const [definition] = portal.advancedForms;
+    const html = await renderComponent(
+      'webform',
+      definition.name,
+      { request: { params: {} } },
+      {
+        portal: {
+          ...portal,
+          settings: {},
+          advancedForms: [{ ...definition, metadata: { ...definition.metadata, adx_progressindicatorposition: code } }],
+        },
+        store,
+        schemas,
+        args: { pp_page_control: attached },
+        webFormSessions: createWebFormSessions(),
+        webFormOwner: () => 'visitor:a',
+      },
+    );
+    const progress = html.indexOf(`<ol class="progress list-group ${position}">`);
+    const panel = html.indexOf('id="WebFormPanel"');
+    assert.ok(progress >= 0 && panel >= 0, position);
+    assert.equal(progress < panel, position !== 'bottom', position);
+    const config = html.indexOf('data-paqvilo-mirage-form-config>');
+    const closeScript = '</script>';
+    const configEnd = html.indexOf(closeScript, config);
+    assert.ok(config >= 0 && configEnd > config, position);
+    assert.equal(html.startsWith('<div class="row">', configEnd + closeScript.length), wrapped, position);
+  }
+});
+
 test('a step without its source record redirects to msg=source-invalid and then shows the not-found message alone', async () => {
   const editSchemas = {
     survey: {

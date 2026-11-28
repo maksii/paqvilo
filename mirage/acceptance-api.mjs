@@ -7,6 +7,7 @@ export * from './lib/evidence.mjs';
 export * from './lib/request-evidence.mjs';
 export { observePageLifecycle, observeContextLifecycle } from './lib/page-lifecycle.mjs';
 export * from './lib/native-network-baseline.mjs';
+export { observeBrowserPolicyDiagnostics } from './lib/browser-policy-diagnostics.mjs';
 export * from './lib/navigation-observations.mjs';
 export { AssetCache } from './lib/asset-cache.mjs';
 export { validateLivePath, decodePagingCookie } from './lib/live.mjs';

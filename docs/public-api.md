@@ -353,6 +353,40 @@ unique strings of 1–160 characters; `statusOnly` and `unordered` must be boole
   Detached frames and committed document replacements release their pending work; fragment and History
   API changes and a 204/205 document response (listed under `noContentNavigations`) keep the document.
   A cancelled write records browser lifecycle, not whether the server saved it.
+- A local read-only quick-view document that reports `net::ERR_ABORTED` can be reconciled when the
+  installed compatibility script's bound startup refresh commits and completes a successful GET in
+  the same child frame for the same entity, record, form and control. `quickViewReplacements` records
+  both request and loader IDs and the script digest. `failedRequests` and the browser network file
+  retain the original observations.
+
+To opt in to a native browser policy baseline, import `observeBrowserPolicyDiagnostics` from
+`paqvilo/mirage/acceptance`. Attach it to a read-only reference Chromium or Edge page before opening
+the reference placement. Use a fresh tab in the intended signed-in browser context.
+
+```js
+const observer = await observeBrowserPolicyDiagnostics(referencePage, { origin: referenceOrigin });
+try {
+  await referencePage.goto(new URL('/example-page', referenceOrigin).href);
+  const report = await observer.report();
+  await runAcceptance({
+    localUrl,
+    outputDir,
+    flows,
+    channel: referenceBrowserChannel,
+    nativeBrowserDiagnosticBaseline: { referenceOrigin, report },
+  });
+} finally {
+  await observer.dispose();
+}
+```
+
+The observer verifies the browser's unload policy violation, header policy context and executed
+static script bytes. The report includes the exact browser build and origin, and the page, frame
+and asset paths. Select the channel matching the reference browser and configure a distinct
+reference origin. Keep the report as project evidence. Reference observations expire after 30 days.
+When observing several placements, call `report()` at each placement before navigating again so
+its browser policy queries complete. Local runs record matched proofs in
+`nativeBrowserDiagnosticComparison` and retain the raw console errors.
 
 `observePageLifecycle(page, { origin, maxRecords: 10000 })` and `observeContextLifecycle(context, options)`
 are read-only Chromium observers. Await attachment (for a new page in an observed context,

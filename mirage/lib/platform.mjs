@@ -614,10 +614,11 @@ export function injectRuntime(
  * replaces a page's DOMPurify global nor registers with a page's AMD loader.
  */
 let compatibilitySanitizerSource;
+let compatibilityStylesSource;
 function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replaceAll('<', String.raw`\u003c`);
   const compatibility = Object.values(settings).some((setting) => setting.compatibility);
-  if (compatibility)
+  if (compatibility) {
     compatibilitySanitizerSource ??=
       '(function(){var module={exports:{}},exports=module.exports,define;\n' +
       readFileSync(createRequire(import.meta.url).resolve('dompurify/purify.min.js'), 'utf8').replace(
@@ -625,12 +626,17 @@ function clientRichTextRuntime(settings) {
         String.raw`<\/script`,
       ) +
       '\nreturn module.exports;})()';
+    // Only package-owned CSS reaches the compatibility editor's constructed stylesheets.
+    compatibilityStylesSource ??= JSON.stringify(
+      readFileSync(new URL('./richtext-compat.css', import.meta.url), 'utf8'),
+    ).replaceAll('<', String.raw`\u003c`);
+  }
   return (
     '(' +
     mountRichTextEditors.toString() +
     ')(' +
     data +
-    (compatibility ? ',' + compatibilitySanitizerSource : '') +
+    (compatibility ? ',' + compatibilitySanitizerSource + ',' + compatibilityStylesSource : '') +
     ');'
   );
 }
@@ -3748,7 +3754,7 @@ function prepopulateValue(row, identity, now) {
     const disabled = field.readOnly;
     // CrmEntityFormView.MakeControlsReadonly: a read-only form adds readonly="readonly" to every
     // web control and disables list controls, which ASP.NET renders with the aspNetDisabled
-    // class. Field-level read-only keeps its own markup (class "readonly", aria-disabled).
+    // class. Field-level read-only generally keeps its own markup (class "readonly", aria-disabled).
     const fieldLevel = field.fieldReadOnly ?? field.readOnly;
     const formLevel = readOnly && !fieldLevel;
     const formReadonly = readOnly ? ' readonly="readonly"' : '';
@@ -3784,7 +3790,17 @@ function prepopulateValue(row, identity, now) {
         }
         if (disabled) {
           const locked = field.ownerLocked && field.required;
-          return `<div><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ' title="' + attr(field.tooltip) + '"' : ''} class="text form-control lookup form-control${css}${(bs.v5 && formLevel) || field.ownerLocked ? '' : ' readonly'}" readonly="${readOnly ? 'readonly' : ''}" aria-readonly="true" aria-labelledby="${locked ? '' : attr(field.id) + '_label'}" aria-label="${attr(locked ? field.requiredMessage || field.label + ' is a required field.' : field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${locked ? ' aria-required="true" aria-invalid="true"' : ''}${valueAttr(idValue)}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+          // A stock lookup displayed by an inline Bootstrap 3 edit form keeps its readonly
+          // attribute and omits the field-level class when the FormXml disables its control.
+          const displayOnly =
+            !bs.v5 &&
+            kind === 'entityform' &&
+            !pageControl &&
+            !modal &&
+            mode === FORM_MODE.edit &&
+            field.formCellReadOnly;
+          const readonlyClass = (bs.v5 && formLevel) || field.ownerLocked || displayOnly ? '' : ' readonly';
+          return `<div><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ' title="' + attr(field.tooltip) + '"' : ''} class="text form-control lookup form-control${css}${readonlyClass}" readonly="${readOnly ? 'readonly' : ''}" aria-readonly="true" aria-labelledby="${locked ? '' : attr(field.id) + '_label'}" aria-label="${attr(locked ? field.requiredMessage || field.label + ' is a required field.' : field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${locked ? ' aria-required="true" aria-invalid="true"' : ''}${valueAttr(idValue)}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
         }
         const lookupBase = {
           kind: 'lookup',
@@ -5600,7 +5616,11 @@ function prepopulateValue(row, identity, now) {
     kind === 'webform' && truthy(fieldOf(definition?.metadata ?? {}, 'savechangeswarningonclose'))
       ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, 'savechangeswarningmessage'), ''))}">`
       : '';
-  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown && !fixtureCaptcha ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
+  // An inline Bootstrap 3 form with stacked content sits directly in the author's container.
+  // Keep the grid row for attached forms and for layouts with side-by-side progress columns.
+  const progressAtSide = progress?.position === 'left' || progress?.position === 'right';
+  const formRow = kind === 'webform' && (bs.v5 || pageControl || progressAtSide);
+  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown && !fixtureCaptcha ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${formRow ? '<div class="row">' : ''}`;
   // F7 recorded the documents alert outside the page's forms without its exact place; it leads the form content here.
   const formContent = `${documentsFailure}${formInstructionsMarkup(instructions)}${confirmOnExit}${formHtml}`;
   if (progress && (progressTop || (!truncated && progressBottom))) {
@@ -5613,7 +5633,7 @@ function prepopulateValue(row, identity, now) {
     progressTop +
     formContent +
     (truncated ? '' : progressBottom) +
-    `${kind === 'webform' && !truncated ? '</div>' : ''}${validatorStartupScript(validators, summaryId, summaryHeader, group)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : '</div>'}`
+    `${formRow && !truncated ? '</div>' : ''}${validatorStartupScript(validators, summaryId, summaryHeader, group)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : '</div>'}`
   );
 }
 
@@ -6690,6 +6710,7 @@ function normalizedFormField(bound, context) {
     hidden: field.hidden || ownerHidden,
     // Field-level read-only (the EntityForm cell Metadata.ReadOnly). A read-only form also
     // marks every control (MakeControlsReadonly) without this field-level markup.
+    formCellReadOnly: field.readOnly === true,
     fieldReadOnly: formFieldReadOnly(field, immutable, control, false),
     readOnly: formFieldReadOnly(field, immutable, control, context.readOnly),
     required: formFieldRequired(field, row, forceRequired, recommendedRequired),

@@ -1247,7 +1247,7 @@ function formattedDateTime(value, definition, settings) {
  * column flagged isPrimaryName, Dataverse's <prefix>_name convention for
  * custom and portal tables, then "name". Values fall back to name/fullname.
  */
-function primaryNameColumn(mapping, logicalName = mapping?.logicalName) {
+export function primaryNameColumn(mapping, logicalName = mapping?.logicalName) {
   if (mapping?.nameColumn) return mapping.nameColumn;
   for (const fields of [mapping?.fields, mapping?.fieldMetadata])
     if (fields && typeof fields === 'object')
