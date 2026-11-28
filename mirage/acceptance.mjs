@@ -13,7 +13,7 @@ import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
 import { BROWSER_HANG_GUARD_MS, windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
-import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
+import { reconcileSupersededRead, correlateNetworkConsole, recordCdpFailure } from './lib/request-evidence.mjs';
 import { auditQuery, hostMonotonicMs } from './lib/audit-log.mjs';
 import { redactUrl } from './parity-suite.mjs';
 import {
@@ -681,12 +681,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
       cdp.on('Network.loadingFailed', (event) => {
         const record = cdpRecords.get(event.requestId);
         releaseNavigationBudget(event.requestId);
-        if (record) {
-          Object.defineProperty(record, 'failedObservedTicks', { value: performance.now() });
-          record.failure = event.errorText;
-          record.failedTimestamp = event.timestamp;
-          record.failedAt = Date.parse(record.startedAt) + (event.timestamp - record.startedTimestamp) * 1000;
-        }
+        recordCdpFailure(record, event);
       });
       page.on('console', (message) => {
         if (message.type() === 'error') {

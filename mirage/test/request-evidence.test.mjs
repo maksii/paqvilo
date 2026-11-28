@@ -1,7 +1,25 @@
 // @test-kind contract: Paqvilo's acceptance runner rules for proving a superseded read, on invented CDP records and audit rows
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcileSupersededRead, correlateNetworkConsole } from '../lib/request-evidence.mjs';
+import { reconcileSupersededRead, correlateNetworkConsole, recordCdpFailure } from '../lib/request-evidence.mjs';
+
+test('duplicate CDP failures preserve the first failure and its receipt for one request', () => {
+  const startedAt = '2026-10-07T12:00:00.000Z';
+  const record = { requestId: 'navigation', startedAt, startedTimestamp: 10 };
+  const failure = { requestId: record.requestId, timestamp: 11, errorText: 'net::ERR_CONNECTION_RESET' };
+  recordCdpFailure(record, failure, 100);
+  recordCdpFailure(record, { ...failure, timestamp: 12, errorText: 'net::ERR_ABORTED' }, 200);
+  assert.equal(record.failedObservedTicks, 100);
+  assert.equal(Object.keys(record).includes('failedObservedTicks'), false);
+  assert.equal(record.failedTimestamp, 11);
+  assert.equal(record.failedAt, Date.parse(startedAt) + 1000);
+  assert.equal(record.failure, 'net::ERR_CONNECTION_RESET');
+
+  const unrelated = { requestId: 'frame', startedAt, startedTimestamp: 12 };
+  recordCdpFailure(unrelated, { requestId: unrelated.requestId, timestamp: 13, errorText: 'net::ERR_ABORTED' }, 300);
+  assert.equal(unrelated.failedObservedTicks, 300);
+  assert.equal(unrelated.failure, 'net::ERR_ABORTED');
+});
 // intentional-abort.mjs RECEIPT_SKEW_MS: how far apart the runner's two receipts of one send may lie.
 const RECEIPT_SKEW_MS = 250;
 const fixture = () => {
