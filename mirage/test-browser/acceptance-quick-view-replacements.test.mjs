@@ -97,9 +97,11 @@ async function simulatorBook(t, directory, gates) {
       gate.held = { response, closed: new Promise((resolve) => response.once('close', resolve)) };
       gate.resolve();
     }
-    if (url.pathname === `/_portal/${siteId}/Layout/GetAntiForgeryToken`) {
+    // The startup script awaits the parent page's shell token before it replaces the iframe.
+    if (request.method === 'GET' && url.pathname === '/_layout/tokenhtml') {
       const end = response.end.bind(response);
       response.end = (...args) => {
+        gate.shellTokenSeen = true;
         void gate.promise.then(() => end(...args));
         return response;
       };
@@ -141,7 +143,8 @@ test('the exported basic form keeps passing after the actual simulator quick vie
     assert.equal(result.passed, true, JSON.stringify(result));
     const flow = result.flows[0];
     assert.equal(flow.quickViewReplacements.length, 2);
-    for (const [visit, { held }] of gates) {
+    for (const [visit, { held, shellTokenSeen }] of gates) {
+      assert.ok(shellTokenSeen, `${visit} gates the parent document's shell token response`);
       assert.ok(held, `${visit} holds an initial response`);
       assert.equal(held.response.writableFinished, false, `${visit} leaves the initial response unfinished`);
     }
