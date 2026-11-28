@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createSimulator } from '../server.mjs';
+import { standardFields } from '../lib/dataverse-standard.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
@@ -245,8 +246,72 @@ test('configured lookup display names follow the current related primary name un
   assert.deepEqual(await api(renamed), [[card, 'Entry Updated']]);
 });
 
-test('a scalar OData read keeps its stored values when the portal translates it to FetchXML', async (t) => {
+test('authored FetchXML resolves a declared lookup companion without changing scalar OData or ordinary text', async (t) => {
   const card = id(21);
+  const xml =
+    '<fetch><entity name="card"><attribute name="cardid"/><attribute name="categoryidname"/><attribute name="regionidname"/></entity></fetch>';
+  const fixture = await startPortal(t, {
+    template: fetchTag('declared', xml, 'cardid', 'categoryidname'),
+    webApi: { card: 'cardid,categoryidname,regionidname' },
+    mappings: {
+      card: {
+        entitySet: 'cards',
+        idColumn: 'cardid',
+        fields: {
+          categoryid: { dataverseType: 'lookup', target: 'contact' },
+          categoryidname: { dataverseType: 'nvarchar', columnMetadata: { attributeOf: 'categoryid' } },
+          regionid: { dataverseType: 'lookup', target: 'contact' },
+          regionidname: { dataverseType: 'nvarchar' },
+        },
+      },
+    },
+    tables: {
+      card: [
+        {
+          cardid: card,
+          categoryid: visitor,
+          categoryidname: 'Stored text',
+          regionid: visitor,
+          regionidname: 'Authored text',
+        },
+      ],
+    },
+    permissions: [permission('card', 'global', { operations: ['read', 'update'] })],
+    observed: { odataPermissionQueryPipeline: 'native-classic' },
+  });
+  const odata = await fixture.get('/_api/cards?$select=cardid,categoryidname');
+  assert.equal(odata.status, 200, await odata.clone().text());
+  assert.deepEqual(
+    (await odata.json()).value.map((row) => [row.cardid, row.categoryidname]),
+    [[card, 'Stored text']],
+  );
+
+  const fetchXml = await fixture.fetchXml('cards', xml);
+  assert.equal(fetchXml.status, 200, await fetchXml.clone().text());
+  assert.deepEqual(
+    (await fetchXml.json()).value.map((row) => [row.cardid, row.categoryidname, row.regionidname]),
+    [[card, 'Visitor', 'Authored text']],
+  );
+  assert.deepEqual(extract(await (await fixture.get('/')).text(), 'declared'), [[card, 'Visitor']]);
+  const write = await fetch(`${fixture.app.url}/_api/cards(${card})`, {
+    method: 'PATCH',
+    headers: {
+      ...fixture.headers,
+      'content-type': 'application/json',
+      __RequestVerificationToken: fixture.app.portalToken,
+    },
+    body: JSON.stringify({ categoryidname: 'Ignored', regionidname: 'Changed ordinary text' }),
+  });
+  assert.equal(write.status, 204, await write.text());
+  const stored = await (await fixture.get('/_api/cards?$select=categoryidname,regionidname')).json();
+  assert.deepEqual(
+    stored.value.map((row) => [row.categoryidname, row.regionidname]),
+    [['Stored text', 'Changed ordinary text']],
+  );
+});
+
+test('an inferred lookup display does not change stored values in translated scalar OData', async (t) => {
+  const card = id(22);
   const fixture = await startPortal(t, {
     template: '',
     webApi: { card: 'cardid,categoryidname' },
@@ -267,7 +332,6 @@ test('a scalar OData read keeps its stored values when the portal translates it 
     (await odata.json()).value.map((row) => [row.cardid, row.categoryidname]),
     [[card, 'Stored text']],
   );
-
   const xml =
     '<fetch><entity name="card"><attribute name="cardid"/><attribute name="categoryidname"/></entity></fetch>';
   const fetchXml = await fixture.fetchXml('cards', xml);
@@ -276,6 +340,74 @@ test('a scalar OData read keeps its stored values when the portal translates it 
     (await fetchXml.json()).value.map((row) => [row.cardid, row.categoryidname]),
     [[card, 'Visitor']],
   );
+});
+
+test('standard owner lookup display uses the system user primary name with a sparse mapping', async (t) => {
+  const account = id(23);
+  const owner = id(24);
+  const xml =
+    '<fetch><entity name="account"><attribute name="accountid"/><attribute name="owneridname"/></entity></fetch>';
+  const fixture = await startPortal(t, {
+    template: fetchTag('owner', xml, 'accountid', 'owneridname'),
+    webApi: { account: 'accountid,owneridname' },
+    mappings: {
+      account: { entitySet: 'accounts', idColumn: 'accountid', fields: standardFields('account') },
+      systemuser: { idColumn: 'systemuserid' },
+    },
+    tables: {
+      account: [{ accountid: account, name: 'Fixture account', ownerid: { id: owner, logical_name: 'systemuser' } }],
+      systemuser: [{ systemuserid: owner, fullname: 'Current owner', name: 'Unrelated text' }],
+    },
+    permissions: [permission('account', 'global')],
+  });
+  assert.deepEqual(extract(await (await fixture.get('/')).text(), 'owner'), [[account, 'Current owner']]);
+  const response = await fixture.fetchXml('accounts', xml);
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(
+    (await response.json()).value.map((row) => [row.accountid, row.owneridname]),
+    [[account, 'Current owner']],
+  );
+});
+
+test('observed portal projection omits lookup display columns while authored filters still use them', async (t) => {
+  const card = id(25);
+  const source = (label) =>
+    `<fetch><entity name="card"><attribute name="cardid"/><attribute name="categoryidname"/>` +
+    `<attribute name="categoryidname" alias="displayalias"/><filter>${rootCondition('categoryidname', 'eq', label)}</filter></entity></fetch>`;
+  const xml = source('Visitor');
+  const fixture = await startPortal(t, {
+    template: fetchTag('display', xml, 'cardid', 'categoryidname') + fetchTag('aliased', xml, 'cardid', 'displayalias'),
+    webApi: { card: 'cardid,categoryidname' },
+    mappings: {
+      card: {
+        entitySet: 'cards',
+        idColumn: 'cardid',
+        fields: { categoryid: { dataverseType: 'lookup', target: 'contact' } },
+      },
+    },
+    tables: {
+      card: [
+        { cardid: card, categoryid: visitor },
+        { cardid: id(26), categoryid: foreign },
+      ],
+    },
+    permissions: [permission('card', 'global')],
+    observed: { portalFetchLookupDisplayProjection: 'omit-scalars' },
+  });
+  const html = await (await fixture.get('/')).text();
+  assert.deepEqual(extract(html, 'display'), [[card, null]]);
+  assert.deepEqual(extract(html, 'aliased'), [[card, null]]);
+  const response = await fixture.fetchXml('cards', xml);
+  assert.equal(response.status, 200, await response.clone().text());
+  const { value } = await response.json();
+  assert.deepEqual(
+    value.map(({ cardid }) => cardid),
+    [card],
+  );
+  assert.ok(!Object.hasOwn(value[0], 'categoryidname') && !Object.hasOwn(value[0], 'displayalias'));
+  const mismatch = await fixture.fetchXml('cards', source('No matching contact'));
+  assert.equal(mismatch.status, 200, await mismatch.clone().text());
+  assert.deepEqual((await mismatch.json()).value, []);
 });
 
 const allowedGroup = id(100);

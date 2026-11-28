@@ -165,6 +165,53 @@ test('default and observed reads hydrate storage attachments after commit and be
   }
 });
 
+// @test-kind contract: Portal FetchXML serializes generated lookup display names as text.
+test('authored FetchXML preserves date-shaped lookup display names and their aliases', async () => {
+  const categoryId = '10000000-0000-4000-8000-000000000002';
+  const displayName = '2026-02-15T12:34:56+02:00';
+  const store = new DataStore({
+    state: {
+      settings: { permissionMode: 'permissive' },
+      mappings: {
+        item: {
+          entitySet: 'items',
+          idColumn: 'itemid',
+          fields: { categoryid: { dataverseType: 'lookup', targets: ['category'] } },
+        },
+        category: { entitySet: 'categories', idColumn: 'categoryid', nameColumn: 'title' },
+      },
+      tables: {
+        item: [{ itemid: id, categoryid: categoryId, importedvalue: displayName }],
+        category: [{ categoryid: categoryId, title: displayName }],
+      },
+    },
+  });
+  const xml = `<fetch><entity name="item"><attribute name="categoryidname"/><attribute name="categoryidname" alias="label"/><attribute name="importedvalue"/></entity></fetch>`;
+  const url = new URL('/_api/items', origin);
+  url.searchParams.set('fetchXml', xml);
+  const out = response();
+  await handleWebApi({ method: 'GET', headers: {} }, out, url, {
+    store,
+    portal: {
+      settings: {
+        'Webapi/item/enabled': 'true',
+        'Webapi/item/fields': 'itemid,categoryidname,importedvalue',
+      },
+    },
+    origin,
+    identity: {},
+    json,
+  });
+  assert.equal(out.statusCode, 200, out.body);
+  const [row] = JSON.parse(out.body).value;
+  assert.equal(row.categoryidname, displayName);
+  assert.equal(row.label, displayName);
+  assert.equal(row['label@OData.Community.Display.V1.AttributeName'], 'categoryidname');
+  assert.equal(row['categoryidname@OData.Community.Display.V1.FormattedValue'], undefined);
+  assert.equal(row['label@OData.Community.Display.V1.FormattedValue'], undefined);
+  assert.equal(row.importedvalue, '2026-02-15T10:34:56Z');
+});
+
 test('observed raw response profiles retain collection and created-record trace outputs', async () => {
   const deps = fixture({ webApiReadResponse: 'jsonnet-indented', webApiWriteResponse: 'portal-classic' });
   deps.store.traces = createTraceStore({ settings: { level: 'full' } });

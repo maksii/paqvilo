@@ -36,7 +36,7 @@ import {
   duplicateAlternateKey,
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { customerAddressColumns, relationshipsOf, standardFields, standardTableDef } from './dataverse-standard.mjs';
 import { cascadeAction } from './relationship-cascade.mjs';
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { countWork, trackWork, workOf } from './work-counter.mjs';
@@ -4561,19 +4561,26 @@ export class DataStore {
     const external = typeof metadata === 'function' ? metadata(mapping?.logicalName ?? logical) : null;
     return find(external) ?? find(mapping?.fields) ?? find(mapping?.fieldMetadata);
   }
-  /** Generated lookup display columns are absent from exported Solution attributes. */
+  /** Solution sources can omit lookup display columns or identify them through AttributeOf. */
   fetchLookupDisplayField(mapping, attribute, metadata) {
     const name = String(attribute ?? '').toLowerCase();
     if (!name.endsWith('name') || name === 'name' || name.startsWith('__sim')) return null;
     const relationships = Object.values(mapping.relationships ?? {});
-    if (
-      name === mapping.nameColumn ||
-      name === mapping.idColumn ||
-      this.fieldDefinition(mapping.logicalName, name, metadata) ||
-      relationships.some((rel) => rel?.from === name)
-    )
+    if (name === mapping.nameColumn || name === mapping.idColumn || relationships.some((rel) => rel?.from === name))
       return null;
     const column = name.slice(0, -4);
+    const display = this.fieldDefinition(mapping.logicalName, name, metadata);
+    const attributeOf =
+      display?.attributeOf ?? display?.columnMetadata?.attributeOf ?? display?.dataverseMetadata?.AttributeOf;
+    if (display) {
+      const linked =
+        attributeOf != null
+          ? String(attributeOf).toLowerCase() === column
+          : display.validForCreate === false &&
+            display.validForUpdate === false &&
+            standardFields(mapping.logicalName)[name]?.validForUpdate === false;
+      if (!linked || fieldKind(display) !== 'string') return null;
+    }
     const definition = this.fieldDefinition(mapping.logicalName, column, metadata);
     const related = relationships.filter((rel) => rel?.many === false && rel.from === column && !rel.intersect);
     if (column === mapping.idColumn || (fieldKind(definition) !== 'lookup' && !related.length)) return null;
@@ -4606,7 +4613,9 @@ export class DataStore {
       });
       if (index >= 0) {
         const [target] = this.withComputed(mapping.logicalName, [rows[index]]);
-        return visible(mapping.logicalName, target)[primaryNameColumn(mapping)] ?? undefined;
+        const defaultName = standardTableDef(mapping.logicalName)?.primaryNameAttribute;
+        const name = primaryNameColumn(mapping, mapping.logicalName, defaultName);
+        return visible(mapping.logicalName, target)[name] ?? undefined;
       }
     }
     return undefined;
@@ -8209,6 +8218,8 @@ export class DataStore {
       noBackendAdmission: options.noBackendAdmission === true,
       nativeLiquidStructuralEndpoints:
         portalAuthoredFetch && nativeBackend && options.liquidTag === true && profile === 'portal',
+      omitLookupDisplayProjection:
+        portalAuthoredFetch && this.observed?.portalFetchLookupDisplayProjection === 'omit-scalars',
       canMatchExplicitNullText: explicitNullTextInequality
         ? (mapping, row, attribute) =>
             !this.computedColumns(mapping.logicalName)?.has(attribute) &&

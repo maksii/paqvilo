@@ -689,6 +689,12 @@ Liquid and portal Web API FetchXML resolve a generated `<lookup>name` column fro
 name. A null lookup or a missing target leaves the column empty. The portal Web API applies its configured field list
 to the display-name column and treats it as read-only.
 
+On sites that filter by a generated lookup name but omit it from selected scalar results, set
+`observed.portalFetchLookupDisplayProjection: omit-scalars`. Qualify this with an authored Liquid and portal Web API
+query that selects the generated column directly and by alias. Use a known nonempty lookup name and confirm that
+matching and nonmatching filters still give the expected rows. The lookup value and its own display annotation are
+separate from the generated scalar. This setting applies to authored portal FetchXML and requires `observed.evidence`.
+
 `observed.webApiErrorDetails: odata-wrapper` additionally formats supported JSON-reader failures from the submitted
 value and imported Edm column type. It preserves the stable OData exception and nested conversion cause while omitting
 generated CLR stacks. The default `diagnostic` mode and non-Web-API errors keep their existing diagnostics. Inner errors

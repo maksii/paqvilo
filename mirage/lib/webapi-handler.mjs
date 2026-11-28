@@ -1945,7 +1945,9 @@ async function getFetch(t) {
   body['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] = fetched.total_record_count_limit_exceeded;
   body['@Microsoft.Dynamics.CRM.globalmetadataversion'] = globalMetadataVersion(store);
   addFetchResponseAnnotations(body, fetched, info, nativePolicy, xml, store);
-  body.value = fetched.entities.map((row) => project(t.formatter.formatFetchRow(row, info)));
+  body.value = fetched.entities.map((row) =>
+    project(t.formatter.formatFetchRow(row, info, { authoredPortalFetchXml: true })),
+  );
   return send(t, 200, body);
 }
 

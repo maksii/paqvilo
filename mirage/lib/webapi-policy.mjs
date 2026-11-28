@@ -696,7 +696,8 @@ export function webApiPolicy(portal, store, entity) {
       definitions[Object.keys(definitions).find((key) => key.toLowerCase() === physical.toLowerCase())];
     if (
       rel?.many !== true &&
-      (operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false
+      ((operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false ||
+        fetchLookup(physical))
     )
       return { skip: true };
     let written = value;

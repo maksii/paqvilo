@@ -114,6 +114,7 @@ const OBSERVED_CHOICES = {
   // Normal exported permission graphs keep incomplete parent chains closed.
   tablePermissionOrphans: ['closed', 'unrestricted'],
   tablePermissionQueryPipeline: ['row-filtered', 'native-classic'],
+  portalFetchLookupDisplayProjection: ['omit-scalars'],
   portalFetchTextInequality: ['include-explicit-null'],
   webApiFetchXmlLinkTypes: ['dataverse', 'portal-classic'],
   liquidFetchXmlLinkTypes: ['dataverse', 'portal-classic'],

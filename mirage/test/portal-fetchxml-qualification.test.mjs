@@ -220,12 +220,13 @@ const missingId = id(15);
 const foreignId = id(16);
 const draftQuery = (condition = '') =>
   `<fetch><entity name="x_item"><attribute name="x_itemid"/><order attribute="x_itemid"/>${condition}</entity></fetch>`;
-const inequality = (attribute, value) =>
-  `<filter><condition attribute="${attribute}" operator="ne" value="${value}"/></filter>`;
+const inequality = (attribute, value, operator = 'ne') =>
+  `<filter><condition attribute="${attribute}" operator="${operator}" value="${value}"/></filter>`;
 const explicitNullKey = `<filter><condition attribute="x_itemid" operator="eq" value="${nullTextId}"/></filter>`;
 const draftQueries = {
   all: draftQuery(),
   text: draftQuery(inequality('x_name', marker)),
+  textAlias: draftQuery(inequality('x_name', marker, 'neq')),
   keyed: draftQuery(explicitNullKey),
   keyedText: draftQuery(explicitNullKey + inequality('x_name', marker)),
   count: draftQuery(inequality('x_count', 1)),
@@ -279,6 +280,7 @@ async function verifyBoundaries(site, expectedText) {
   for (const [variant, expected] of [
     ['all', all],
     ['text', expectedText],
+    ['textAlias', expectedText],
     ['keyed', [nullTextId]],
     ['keyedText', expectedText.filter((id) => id === nullTextId)],
     ['count', [distinctId]],

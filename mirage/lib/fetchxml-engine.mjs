@@ -1049,7 +1049,11 @@ function validatePortalDateOnlyIn(operator, definition, values) {
       now,
       table: mappingOf.get(targetNode).logicalName,
     });
-    if (ctx.canMatchExplicitNullText && condition.attrs.operator === 'ne' && fieldKind(columnDefinition) === 'string')
+    if (
+      ctx.canMatchExplicitNullText &&
+      ['ne', 'neq'].includes(condition.attrs.operator) &&
+      fieldKind(columnDefinition) === 'string'
+    )
       return (item) => {
         const row = targetAlias == null ? item.base : item.aliases[targetAlias];
         const value = read(item);
@@ -1620,6 +1624,10 @@ function validatePortalDateOnlyIn(operator, definition, values) {
     more = end < rowLimit;
   }
   const pageEntities = deferredProjection ? entities.slice(start, end).map(project) : entities.slice(start, end);
+  if (ctx.omitLookupDisplayProjection && !plan.aggregate) {
+    const omitted = columns.filter(({ entity, attribute }) => ctx.lookupDisplayField(ctx.mapping(entity), attribute));
+    for (const row of pageEntities) for (const { key } of omitted) delete row[key];
+  }
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
   else if (
