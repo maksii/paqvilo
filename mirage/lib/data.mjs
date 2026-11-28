@@ -4564,7 +4564,7 @@ export class DataStore {
   /** Generated lookup display columns are absent from exported Solution attributes. */
   fetchLookupDisplayField(mapping, attribute, metadata) {
     const name = String(attribute ?? '').toLowerCase();
-    if (!name.endsWith('name') || name === 'name' || /^__sim/.test(name)) return null;
+    if (!name.endsWith('name') || name === 'name' || name.startsWith('__sim')) return null;
     const relationships = Object.values(mapping.relationships ?? {});
     if (
       name === mapping.nameColumn ||

@@ -130,7 +130,7 @@ function predecessorOf(request, rows) {
   return row;
 }
 
-function completedReplacement(before, request, rows, events) {
+function completedReplacement(before, rows) {
   const next = rows.find(
     (row) =>
       row.type === 'Document' && row.frameId === before.frameId && row.startedTimestamp > before.startedTimestamp,
@@ -149,22 +149,62 @@ function completedReplacement(before, request, rows, events) {
     next.finishedTimestamp < next.startedTimestamp
   )
     return null;
-  // A renderer asks for the replacement before either network client publishes the cancelled navigation.
-  // In particular, CDP can omit loadingFailed when the aborted stream had already committed its headers.
-  const navigation = events.find(
-    (event) =>
-      event.event === 'frameRequestedNavigation' &&
-      event.frameId === before.frameId &&
-      event.observedTicks >= before.observedTicks,
+  return next;
+}
+
+function replacementCommit(before, next, request, rows, events) {
+  const frameEvents = events.filter(
+    (event) => event.frameId === before.frameId && event.observedTicks >= before.observedTicks,
   );
+  const navigation = frameEvents.find((event) => event.event === 'frameRequestedNavigation');
   if (
     navigation?.reason !== 'scriptInitiated' ||
     navigation.path !== next.path ||
-    navigation.observedTicks > next.observedTicks ||
-    !sameSendReceipt(request.endedTicks, navigation.observedTicks)
+    navigation.observedTicks > next.observedTicks
   )
     return null;
-  return next;
+  const commit = frameEvents.find(
+    (event) => event.event === 'frameNavigated' && event.observedTicks >= navigation.observedTicks,
+  );
+  if (commit?.loaderId !== next.loaderId || !commit.parentFrameId || commit.observedTicks < next.observedTicks)
+    return null;
+  if (
+    frameEvents.some(
+      (event) =>
+        event.observedTicks <= commit.observedTicks &&
+        (event.event === 'frameDetached' || (event.event === 'frameRequestedNavigation' && event !== navigation)),
+    ) ||
+    rows.some(
+      (row) =>
+        row !== before &&
+        row !== next &&
+        row.type === 'Document' &&
+        row.frameId === before.frameId &&
+        row.observedTicks >= navigation.observedTicks &&
+        row.observedTicks <= commit.observedTicks,
+    )
+  )
+    return null;
+  const priorCommits = frameEvents.filter(
+    (event) => event.event === 'frameNavigated' && event.observedTicks < navigation.observedTicks,
+  );
+  if (!priorCommits.length) return sameSendReceipt(request.endedTicks, navigation.observedTicks) ? commit : null;
+  const [predecessorCommit] = priorCommits;
+  // A committed document can stream until the successor commits. Correlate its abort with that
+  // transition, since CDP can omit loadingFailed for the committed predecessor.
+  const protocolAgrees =
+    before.failure === undefined ||
+    (before.failedTimestamp >= next.startedTimestamp &&
+      sameSendReceipt(before.failedObservedTicks, commit.observedTicks));
+  return priorCommits.length === 1 &&
+    predecessorCommit.loaderId === before.loaderId &&
+    predecessorCommit.parentFrameId === commit.parentFrameId &&
+    before.status === 200 &&
+    request.endedTicks >= next.observedTicks &&
+    protocolAgrees &&
+    sameSendReceipt(request.endedTicks, commit.observedTicks)
+    ? commit
+    : null;
 }
 
 /** Retain the failure and give its verdict an exact same-frame replacement proof. */
@@ -181,26 +221,10 @@ export function reconcileQuickViewReplacement(failure, { request, rows, events, 
   if (!initial) return null;
   const before = predecessorOf(request, rows);
   if (!before) return null;
-  const next = completedReplacement(before, request, rows, events);
+  const next = completedReplacement(before, rows);
   if (!next || !sameBinding(initial, next, origin)) return null;
-  const commit = events.find(
-    (event) =>
-      event.event === 'frameNavigated' &&
-      event.frameId === before.frameId &&
-      event.loaderId === next.loaderId &&
-      event.parentFrameId,
-  );
+  const commit = replacementCommit(before, next, request, rows, events);
   if (!commit) return null;
-  if (
-    events.some(
-      (event) =>
-        event.event === 'frameDetached' &&
-        event.frameId === commit.frameId &&
-        event.observedTicks >= before.observedTicks &&
-        event.observedTicks <= commit.observedTicks,
-    )
-  )
-    return null;
   return {
     classification: 'bound-quick-view-replaced',
     requestKey: failure.requestKey,

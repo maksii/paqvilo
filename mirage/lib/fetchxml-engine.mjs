@@ -694,6 +694,12 @@ export function webApiPagingCookie(cookie, page) {
 export function fieldValue(row, attribute) {
   return lookupColumnValue(row, attribute);
 }
+
+function readSelectedColumn(row, column) {
+  const source = column.alias == null ? row.base : row.aliases[column.alias];
+  return source == null ? undefined : column.read(source);
+}
+
 const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
 const joinKey = (value) => {
   const raw = scalar(value);
@@ -1656,11 +1662,6 @@ function validatePortalDateOnlyIn(operator, definition, values) {
   function copyProjectedAttributes(out, source, prefix = '') {
     for (const [key, value] of Object.entries(source))
       if (!isEmpty(value) && !key.includes('@')) out[`${prefix}${key}`] = copyValue(value);
-  }
-
-  function readSelectedColumn(row, column) {
-    const source = column.alias == null ? row.base : row.aliases[column.alias];
-    return source == null ? undefined : column.read(source);
   }
 
   function project(row) {

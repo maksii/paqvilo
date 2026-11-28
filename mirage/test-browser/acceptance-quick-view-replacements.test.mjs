@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { runAcceptance } from '../acceptance-api.mjs';
 import { createSimulator } from '../server.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
@@ -15,6 +16,10 @@ const VIEW =
 const INITIAL = QUICK + '?' + VIEW + '&isprofilepage=false&lang=en-US';
 const BOOTSTRAP_3 = QUICK + '?' + VIEW.replace('formname=Publisher', 'formname=Sample%20Publisher');
 const COMPAT = '/xrm-adx/js/crmentityformview.js';
+const SUCCESSOR_DELAYS = new Map([
+  ['short-successor', 25],
+  ['slow-successor', 600],
+]);
 const STATE = {
   config: { mode: 'local', pageMode: 'local', endpoints: [] },
   status: { sourceFingerprint: 'book-fixture', implementationFingerprint: 'book-fixture' },
@@ -86,7 +91,12 @@ async function simulatorBook(t, directory, gates) {
     const parent = new URL(request.headers.referer ?? app.url);
     const gate = parent.pathname === '/' && gates.get(parent.searchParams.get('visit'));
     if (!gate) return;
-    if (url.pathname === QUICK && url.searchParams.has('isprofilepage')) gate.resolve();
+    if (url.pathname === QUICK && url.searchParams.has('isprofilepage')) {
+      // Let the real startup refresh win before the first HTTP response can complete.
+      response.end = () => response;
+      response.once('close', () => (gate.closed = true));
+      gate.resolve();
+    }
     if (url.pathname === `/_portal/${siteId}/Layout/GetAntiForgeryToken`) {
       const end = response.end.bind(response);
       response.end = (...args) => {
@@ -130,6 +140,7 @@ test('the exported basic form keeps passing after the actual simulator quick vie
   assert.equal(result.passed, true, JSON.stringify(result));
   const flow = result.flows[0];
   assert.equal(flow.quickViewReplacements.length, 2);
+  assert.ok([...gates.values()].every((gate) => gate.closed));
   for (const proof of flow.quickViewReplacements) {
     assert.equal(proof.status, null);
     assert.equal(proof.replacement.status, 200);
@@ -178,6 +189,7 @@ function bookForm(variant, saved) {
 async function serveBooks(t) {
   const compat = await fs.readFile(new URL('../lib/crmentityformview-compat.js', import.meta.url));
   const firstUnanswered = Promise.withResolvers();
+  const streams = new Map();
   let bs3Visit = 0;
   let note = '';
   return loopbackServer(t, async (req, res) => {
@@ -197,6 +209,11 @@ async function serveBooks(t) {
         .end(variant === 'authored' ? authored : compat);
     }
     if (url.pathname === '/network-reset') return res.destroy();
+    if (url.pathname === '/held-image') {
+      // Start a subresource before letting the parent request the replacement.
+      streams.get(url.searchParams.get('variant')).write('<script>parent.initialReady();</script>');
+      return;
+    }
     if (url.pathname === '/shell-token') {
       if (variant === 'no-headers') await firstUnanswered.promise;
       return res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
@@ -219,6 +236,11 @@ async function serveBooks(t) {
       res.writeHead(variant === 'initial-error' ? 503 : 200, { 'content-type': 'text/html' });
       // This first document has received headers and committed, but the stream stays open until
       // the parent receives the gate from the parser and the bound startup refresh abandons it.
+      if (SUCCESSOR_DELAYS.has(variant)) {
+        streams.set(variant, res);
+        res.write(`<!doctype html><img alt="" src="/held-image?variant=${variant}">`);
+        return;
+      }
       res.write('<!doctype html><script>parent.initialReady();</script>');
       return;
     }
@@ -227,11 +249,63 @@ async function serveBooks(t) {
       res.write('<!doctype html>', () => res.destroy());
       return;
     }
+    const successorDelay = SUCCESSOR_DELAYS.get(variant);
+    if (successorDelay !== undefined) await delay(successorDelay);
     return res
       .writeHead(variant === 'replacement-error' ? 503 : 200, { 'content-type': 'text/html' })
       .end('<!doctype html><p id="publisher">Sample Publisher</p>');
   });
 }
+
+test('acceptance qualifies a committed streaming quick view when its replacement commits later', async (t) => {
+  const outputDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-quick-delay-'));
+  ownedFixture(t).remove(() => fs.rm(outputDir, { recursive: true, force: true }));
+  const { origin: localUrl } = await serveBooks(t);
+  const result = await runAcceptance({
+    localUrl,
+    outputDir,
+    timeout: ACCEPTANCE_HANG_GUARD_MS,
+    flows: [...SUCCESSOR_DELAYS.keys()].map((name) => ({
+      name,
+      steps: [
+        { action: 'navigate', path: '/book/' + name },
+        { action: 'text', frame: '#publisher-view', selector: '#publisher', value: 'Sample Publisher' },
+      ],
+    })),
+  });
+  for (const flow of result.flows) {
+    assert.equal(flow.passed, true, JSON.stringify(flow));
+    const [proof] = flow.quickViewReplacements;
+    assert.equal(flow.quickViewReplacements.length, 1);
+    const { frameEvents } = JSON.parse(await fs.readFile(flow.browserNetworkFile, 'utf8'));
+    const commit = (loaderId) =>
+      frameEvents.find(
+        (row) => row.event === 'frameNavigated' && row.frameId === proof.frameId && row.loaderId === loaderId,
+      );
+    const before = commit(proof.loaderId);
+    const after = commit(proof.replacement.loaderId);
+    const intent = frameEvents.find(
+      (row) =>
+        row.event === 'frameRequestedNavigation' &&
+        row.frameId === proof.frameId &&
+        row.observedTicks > before.observedTicks,
+    );
+    assert.notEqual(proof.requestId, proof.replacement.requestId);
+    assert.notEqual(proof.loaderId, proof.replacement.loaderId);
+    assert.ok(after.observedTicks - intent.observedTicks >= SUCCESSOR_DELAYS.get(flow.name) - 10);
+    assert.ok(
+      flow.failedRequests.some(
+        ({ requestKey, status, errorText }) =>
+          requestKey === proof.requestKey && status === 200 && errorText === 'net::ERR_ABORTED',
+      ),
+    );
+    assert.ok(
+      flow.navigationCancelledRequests.some(
+        ({ reason, url }) => reason === 'document-replaced' && new URL(url).pathname === '/held-image',
+      ),
+    );
+  }
+});
 
 test('acceptance retains both loader IDs for a committed quick-view replacement during edit, save and reopen', async (t) => {
   const outputDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-quick-acceptance-'));

@@ -682,6 +682,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
         const record = cdpRecords.get(event.requestId);
         releaseNavigationBudget(event.requestId);
         if (record) {
+          Object.defineProperty(record, 'failedObservedTicks', { value: performance.now() });
           record.failure = event.errorText;
           record.failedTimestamp = event.timestamp;
           record.failedAt = Date.parse(record.startedAt) + (event.timestamp - record.startedTimestamp) * 1000;

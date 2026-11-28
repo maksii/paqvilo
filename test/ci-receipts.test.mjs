@@ -334,6 +334,95 @@ test('cached validation cannot restore a receipt after source changes during dep
   assert.equal(fs.existsSync(receipt), false, 'a source change during audit revokes previous qualifying evidence');
 });
 
+test(
+  'full validation prepares an executable linked CLI in a clean Unix checkout and rejects preparation drift',
+  {
+    skip: process.platform === 'win32',
+  },
+  async (t) => {
+    const { npmCliPath } = await import('../scripts/ci.mjs');
+    const { directory, write, env } = ciFixture(t);
+    const toolkit = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const mode = await boundedCommand(
+      t,
+      'git',
+      ['--no-optional-locks', 'ls-files', '--stage', '--', toolkit.bin.paqvilo],
+      {
+        cwd: new URL('..', import.meta.url),
+        env,
+      },
+    );
+    assert.equal(mode.status, 0, mode.error?.message ?? mode.stderr);
+    assert.match(mode.stdout, /^100[0-7]{3} /);
+    const bin = write(toolkit.bin.paqvilo, '#!/usr/bin/env node\nconsole.log("Linked CLI");\n');
+    fs.chmodSync(bin, Number.parseInt(mode.stdout.slice(3, 6), 8));
+    write('.gitignore', '.paqvilo/\nnode_modules/\n');
+    write('tracked.txt', 'original');
+    write(
+      'package.json',
+      JSON.stringify({
+        name: 'linked-cli-fixture',
+        bin: toolkit.bin,
+        scripts: { quality: 'npm run check-linked-cli' },
+      }),
+    );
+    write('examples/project/package.json', JSON.stringify({ dependencies: { 'linked-cli-fixture': 'file:../..' } }));
+    write(
+      '.github/scripts/change-scope.mjs',
+      'export const classifyChanges = () => ({quality: true}); export const suitesForScope = () => [];',
+    );
+    write('scripts/check-test-tags.mjs', '');
+    write('scripts/sonar-rules.mjs', '');
+    write('node_modules/playwright-core/package.json', '{"version":"1.0.0"}');
+    write('node_modules/playwright-core/index.js', '');
+    env.npm_execpath = write(
+      'fixture-npm.mjs',
+      `
+    import fs from 'node:fs';
+    import { execFileSync } from 'node:child_process';
+    const args = process.argv.slice(2);
+    if (args[0] === '--version') console.log('1.0.0');
+    if (args.includes('examples/project')) {
+      execFileSync(process.execPath, [${JSON.stringify(npmCliPath())}, ...args, '--offline'], {stdio: 'inherit'});
+      if (process.env.FIXTURE_EDIT) fs.writeFileSync('tracked.txt', 'changed during preparation');
+      if (process.env.FIXTURE_EDIT === 'staged') execFileSync('git', ['add', 'tracked.txt']);
+    }
+    if (args[1] === 'check-linked-cli') fs.writeFileSync('.paqvilo/lane-ran', 'yes');
+  `,
+    );
+    env.PAQ_CI_BROWSER = 'chromium';
+    env.PAQ_CI_JOBS = '1';
+    const git = commitReceiptFixture({ directory, env }, 'test: executable link fixture');
+    const validate = (edit) =>
+      boundedCommand(t, process.execPath, [path.join(directory, 'scripts/ci.mjs'), 'verify', '--full'], {
+        cwd: directory,
+        env: { ...env, FIXTURE_EDIT: edit },
+      });
+    const result = await validate('');
+    assert.equal(result.status, 0, result.error?.message + '\n' + result.stdout + result.stderr);
+    assert.match(result.stdout, /✔ check-linked-cli/);
+    assert.equal(git('diff', '--exit-code'), '');
+    assert.equal(git('diff', '--cached', '--exit-code'), '');
+    const linked = path.join(directory, 'examples/project/node_modules');
+    assert.equal(fs.realpathSync(path.join(linked, 'linked-cli-fixture')), fs.realpathSync(directory));
+    const version = await boundedCommand(t, path.join(linked, '.bin/paqvilo'), [], { cwd: directory, env });
+    assert.equal(version.status, 0, version.error?.message ?? version.stderr);
+    assert.equal(version.stdout.trim(), 'Linked CLI');
+    const marker = path.join(directory, '.paqvilo/lane-ran');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'yes');
+    fs.unlinkSync(marker);
+
+    for (const edit of ['unstaged', 'staged']) {
+      const rejected = await validate(edit);
+      assert.equal(rejected.status, 1, edit);
+      assert.match(rejected.stderr, /Source or toolchain changed during preparation/);
+      assert.equal(fs.existsSync(marker), false);
+      assert.equal(git('status', '--porcelain'), edit === 'staged' ? 'M  tracked.txt' : 'M tracked.txt');
+      git('restore', '--staged', '--worktree', 'tracked.txt');
+    }
+  },
+);
+
 test('validation concurrency follows the contributor setting, else the machine, and stays serial on hosted CI', async () => {
   const { validationJobs } = await import('../scripts/ci.mjs');
   const GiB = 2 ** 30;
